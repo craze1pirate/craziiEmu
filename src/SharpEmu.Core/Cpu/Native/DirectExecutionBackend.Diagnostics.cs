@@ -97,12 +97,13 @@ public sealed partial class DirectExecutionBackend
 
 	private void ProbeReturnRip(ulong returnRip, long dispatchIndex)
 	{
-		if (_cpuContext == null || returnRip == 0)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || returnRip == 0)
 		{
 			return;
 		}
 		Span<byte> destination = stackalloc byte[128];
-		if (!_cpuContext.Memory.TryRead(returnRip, destination))
+		if (!cpuContext.Memory.TryRead(returnRip, destination))
 		{
 			Console.Error.WriteLine($"[LOADER][TRACE] Import#{dispatchIndex} return-rip probe: unreadable @0x{returnRip:X16}");
 			return;
@@ -113,7 +114,7 @@ public sealed partial class DirectExecutionBackend
 		{
 			int num = BitConverter.ToInt32(destination.Slice(2, 4));
 			ulong num2 = returnRip + 6 + (ulong)num;
-			if (_cpuContext.TryReadUInt64(num2, out var value2))
+			if (cpuContext.TryReadUInt64(num2, out var value2))
 			{
 				Console.Error.WriteLine($"[LOADER][TRACE] Import#{dispatchIndex} return-rip slot: [0x{num2:X16}] = 0x{value2:X16}");
 			}
@@ -122,7 +123,7 @@ public sealed partial class DirectExecutionBackend
 		{
 			int num3 = BitConverter.ToInt32(destination.Slice(3, 4));
 			ulong num4 = returnRip + 7 + (ulong)num3;
-			if (_cpuContext.TryReadUInt64(num4, out var value3))
+			if (cpuContext.TryReadUInt64(num4, out var value3))
 			{
 				Console.Error.WriteLine($"[LOADER][TRACE] Import#{dispatchIndex} return-rip mov-slot: [0x{num4:X16}] = 0x{value3:X16}");
 			}
@@ -134,9 +135,79 @@ public sealed partial class DirectExecutionBackend
 				int num5 = BitConverter.ToInt32(destination.Slice(i + 2, 4));
 				ulong num6 = returnRip + (ulong)i;
 				ulong num7 = num6 + 6 + (ulong)num5;
-				if (_cpuContext.TryReadUInt64(num7, out var value4))
+				if (cpuContext.TryReadUInt64(num7, out var value4))
 				{
 					Console.Error.WriteLine($"[LOADER][TRACE] Import#{dispatchIndex} near-indirect @{num6:X16}: slot=0x{num7:X16} val=0x{value4:X16}");
+				}
+			}
+		}
+		Span<byte> targetBytes = stackalloc byte[32];
+		for (int i = 0; i + 5 <= destination.Length; i++)
+		{
+			if (destination[i] != 0xE8)
+			{
+				continue;
+			}
+
+			int rel32 = BitConverter.ToInt32(destination.Slice(i + 1, 4));
+			ulong callRip = returnRip + (ulong)i;
+			ulong target = unchecked((ulong)((long)(callRip + 5) + rel32));
+			Console.Error.WriteLine($"[LOADER][TRACE] Import#{dispatchIndex} near-call @{callRip:X16}: target=0x{target:X16}");
+			for (int importIndex = 0; importIndex < _importEntries.Length; importIndex++)
+			{
+				if (_importEntries[importIndex].Address != target)
+				{
+					continue;
+				}
+
+				string nid = _importEntries[importIndex].Nid;
+				if (_moduleManager.TryGetExport(nid, out var export))
+				{
+					Console.Error.WriteLine(
+						$"[LOADER][TRACE] Import#{dispatchIndex} near-call import: index={importIndex} {export.LibraryName}:{export.Name} ({nid})");
+				}
+				else
+				{
+					Console.Error.WriteLine(
+						$"[LOADER][TRACE] Import#{dispatchIndex} near-call import: index={importIndex} nid={nid}");
+				}
+				break;
+			}
+
+			if (cpuContext.Memory.TryRead(target, targetBytes))
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][TRACE] Import#{dispatchIndex} near-call target bytes @0x{target:X16}: " +
+					BitConverter.ToString(targetBytes.ToArray()).Replace("-", " "));
+				if (targetBytes[0] == 0xFF && targetBytes[1] == 0x25)
+				{
+					int slotRel32 = BitConverter.ToInt32(targetBytes.Slice(2, 4));
+					ulong slot = unchecked((ulong)((long)(target + 6) + slotRel32));
+					if (cpuContext.TryReadUInt64(slot, out var slotTarget))
+					{
+						Console.Error.WriteLine(
+							$"[LOADER][TRACE] Import#{dispatchIndex} near-call PLT slot: [0x{slot:X16}] = 0x{slotTarget:X16}");
+						for (int importIndex = 0; importIndex < _importEntries.Length; importIndex++)
+						{
+							if (_importEntries[importIndex].Address != slotTarget)
+							{
+								continue;
+							}
+
+							string nid = _importEntries[importIndex].Nid;
+							if (_moduleManager.TryGetExport(nid, out var export))
+							{
+								Console.Error.WriteLine(
+									$"[LOADER][TRACE] Import#{dispatchIndex} near-call PLT import: index={importIndex} {export.LibraryName}:{export.Name} ({nid})");
+							}
+							else
+							{
+								Console.Error.WriteLine(
+									$"[LOADER][TRACE] Import#{dispatchIndex} near-call PLT import: index={importIndex} nid={nid}");
+							}
+							break;
+						}
+					}
 				}
 			}
 		}

@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -74,7 +75,8 @@ public sealed partial class DirectExecutionBackend
 	{
 		long num = Interlocked.Increment(ref _importDispatchCount);
 		MarkExecutionProgress();
-		if (_cpuContext == null)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null)
 		{
 			LastError = "Import dispatch called without active CPU context";
 			return 18446744071562199298uL;
@@ -91,32 +93,32 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine($"[LOADER][TRACE] Raw sentinel recoveries: {num2} (last import index={importIndex})");
 			_lastReportedRawSentinelRecoveries = num2;
 		}
-		_cpuContext.Rip = importStubEntry.Address;
-		_cpuContext[CpuRegister.Rdi] = *(ulong*)argPackPtr;
-		_cpuContext[CpuRegister.Rsi] = *(ulong*)(argPackPtr + 8);
-		_cpuContext[CpuRegister.Rdx] = *(ulong*)(argPackPtr + 16);
-		_cpuContext[CpuRegister.Rcx] = *(ulong*)(argPackPtr + 24);
-		_cpuContext[CpuRegister.R8] = *(ulong*)(argPackPtr + 32);
-		_cpuContext[CpuRegister.R9] = *(ulong*)(argPackPtr + 40);
-		_cpuContext[CpuRegister.Rbx] = *(ulong*)(argPackPtr + 48);
-		_cpuContext[CpuRegister.Rbp] = *(ulong*)(argPackPtr + 56);
-		_cpuContext[CpuRegister.R12] = *(ulong*)(argPackPtr + 64);
-		_cpuContext[CpuRegister.R13] = *(ulong*)(argPackPtr + 72);
-		_cpuContext[CpuRegister.R14] = *(ulong*)(argPackPtr + 80);
-		_cpuContext[CpuRegister.R15] = *(ulong*)(argPackPtr + 88);
-		_cpuContext[CpuRegister.Rsp] = (ulong)argPackPtr + 96uL;
-		ulong value = _cpuContext[CpuRegister.Rdi];
-		ulong value2 = _cpuContext[CpuRegister.Rsi];
-		ulong num3 = _cpuContext[CpuRegister.Rdx];
-		ulong num4 = _cpuContext[CpuRegister.Rcx];
-		ulong num5 = _cpuContext[CpuRegister.R8];
-		ulong num6 = _cpuContext[CpuRegister.R9];
-		ulong value3 = _cpuContext[CpuRegister.Rbx];
-		ulong value4 = _cpuContext[CpuRegister.Rbp];
-		ulong value5 = _cpuContext[CpuRegister.R12];
-		ulong value6 = _cpuContext[CpuRegister.R13];
-		ulong value7 = _cpuContext[CpuRegister.R14];
-		ulong value8 = _cpuContext[CpuRegister.R15];
+		cpuContext.Rip = importStubEntry.Address;
+		cpuContext[CpuRegister.Rdi] = *(ulong*)argPackPtr;
+		cpuContext[CpuRegister.Rsi] = *(ulong*)(argPackPtr + 8);
+		cpuContext[CpuRegister.Rdx] = *(ulong*)(argPackPtr + 16);
+		cpuContext[CpuRegister.Rcx] = *(ulong*)(argPackPtr + 24);
+		cpuContext[CpuRegister.R8] = *(ulong*)(argPackPtr + 32);
+		cpuContext[CpuRegister.R9] = *(ulong*)(argPackPtr + 40);
+		cpuContext[CpuRegister.Rbx] = *(ulong*)(argPackPtr + 48);
+		cpuContext[CpuRegister.Rbp] = *(ulong*)(argPackPtr + 56);
+		cpuContext[CpuRegister.R12] = *(ulong*)(argPackPtr + 64);
+		cpuContext[CpuRegister.R13] = *(ulong*)(argPackPtr + 72);
+		cpuContext[CpuRegister.R14] = *(ulong*)(argPackPtr + 80);
+		cpuContext[CpuRegister.R15] = *(ulong*)(argPackPtr + 88);
+		cpuContext[CpuRegister.Rsp] = (ulong)argPackPtr + 96uL;
+		ulong value = cpuContext[CpuRegister.Rdi];
+		ulong value2 = cpuContext[CpuRegister.Rsi];
+		ulong num3 = cpuContext[CpuRegister.Rdx];
+		ulong num4 = cpuContext[CpuRegister.Rcx];
+		ulong num5 = cpuContext[CpuRegister.R8];
+		ulong num6 = cpuContext[CpuRegister.R9];
+		ulong value3 = cpuContext[CpuRegister.Rbx];
+		ulong value4 = cpuContext[CpuRegister.Rbp];
+		ulong value5 = cpuContext[CpuRegister.R12];
+		ulong value6 = cpuContext[CpuRegister.R13];
+		ulong value7 = cpuContext[CpuRegister.R14];
+		ulong value8 = cpuContext[CpuRegister.R15];
 		ulong num7 = *(ulong*)(argPackPtr + 96);
 		if (!IsLikelyReturnAddress(num7))
 		{
@@ -133,6 +135,13 @@ public sealed partial class DirectExecutionBackend
 			}
 		}
 		TrackDistinctImportNid(importStubEntry.Nid);
+		var probeImportReturn = Environment.GetEnvironmentVariable("SHARPEMU_PROBE_IMPORT_RET");
+		if (!string.IsNullOrWhiteSpace(probeImportReturn) &&
+			(string.Equals(probeImportReturn, "*", StringComparison.Ordinal) ||
+			 string.Equals(probeImportReturn, importStubEntry.Nid, StringComparison.Ordinal)))
+		{
+			ProbeReturnRip(num7, num);
+		}
 		TrackStrlenPrelude(importStubEntry.Nid, num, num7);
 		bool logBootstrap = string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_BOOTSTRAP"), "1", StringComparison.Ordinal);
 		if (logBootstrap && string.Equals(importStubEntry.Nid, RuntimeStubNids.BootstrapBridge, StringComparison.Ordinal))
@@ -145,9 +154,9 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine(
 				$"[LOADER][TRACE] bootstrap_call#{num}: op=0x{value:X16} sym_ptr=0x{value2:X16} sym='{symbolText}' out_ptr=0x{num3:X16} ret=0x{num7:X16}");
 		}
-		if (!_forcedGuestExit && ShouldForceGuestExitOnImportLoop(importStubEntry.Nid, num7, num, value, value2) && TryForceGuestExitToHostStub(argPackPtr, num, num7, importStubEntry.Nid))
+		if (!ActiveForcedGuestExit && ShouldForceGuestExitOnImportLoop(importStubEntry.Nid, num7, num, value, value2) && TryForceGuestExitToHostStub(argPackPtr, num, num7, importStubEntry.Nid))
 		{
-			_cpuContext[CpuRegister.Rax] = 1uL;
+			cpuContext[CpuRegister.Rax] = 1uL;
 			return 1uL;
 		}
 		bool flag0 = ShouldSuppressStrlenTrace(importStubEntry.Nid);
@@ -209,32 +218,40 @@ public sealed partial class DirectExecutionBackend
 		}
 		if (!flag0)
 		{
-			RecordRecentImportTrace($"#{num} nid={importStubEntry.Nid} ret=0x{num7:X16} rdi=0x{_cpuContext[CpuRegister.Rdi]:X16} rsi=0x{_cpuContext[CpuRegister.Rsi]:X16} rdx=0x{_cpuContext[CpuRegister.Rdx]:X16}");
+			RecordRecentImportTrace($"#{num} nid={importStubEntry.Nid} ret=0x{num7:X16} rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} rdx=0x{cpuContext[CpuRegister.Rdx]:X16}");
 		}
 		if (importStubEntry.Nid == "8zTFvBIAIN8" && num <= 256)
 		{
-			Console.Error.WriteLine($"[LOADER][TRACE] memset#{num}: dst=0x{_cpuContext[CpuRegister.Rdi]:X16} val=0x{_cpuContext[CpuRegister.Rsi] & 0xFF:X2} len=0x{_cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
+			Console.Error.WriteLine($"[LOADER][TRACE] memset#{num}: dst=0x{cpuContext[CpuRegister.Rdi]:X16} val=0x{cpuContext[CpuRegister.Rsi] & 0xFF:X2} len=0x{cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
 		}
 		if (importStubEntry.Nid == "tsvEmnenz48" && num <= 64)
 		{
-			Console.Error.WriteLine($"[LOADER][TRACE] __cxa_atexit#{num}: func=0x{_cpuContext[CpuRegister.Rdi]:X16} arg=0x{_cpuContext[CpuRegister.Rsi]:X16} dso=0x{_cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
+			Console.Error.WriteLine($"[LOADER][TRACE] __cxa_atexit#{num}: func=0x{cpuContext[CpuRegister.Rdi]:X16} arg=0x{cpuContext[CpuRegister.Rsi]:X16} dso=0x{cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
 		}
 		if (importStubEntry.Nid == "bzQExy189ZI" || importStubEntry.Nid == "8G2LB+A3rzg")
 		{
-			Console.Error.WriteLine($"[LOADER][TRACE] {importStubEntry.Nid}#{num}: rdi=0x{_cpuContext[CpuRegister.Rdi]:X16} rsi=0x{_cpuContext[CpuRegister.Rsi]:X16} rdx=0x{_cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
+			Console.Error.WriteLine($"[LOADER][TRACE] {importStubEntry.Nid}#{num}: rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} rdx=0x{cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
 		}
-		if (flag || flag2 || flag3)
+		if (flag6 || flag || flag2 || flag3)
 		{
-			Console.Error.WriteLine($"[LOADER][TRACE] ImportCtx#{num}: nid={importStubEntry.Nid} ret=0x{num7:X16} rdi=0x{_cpuContext[CpuRegister.Rdi]:X16} rsi=0x{_cpuContext[CpuRegister.Rsi]:X16} rdx=0x{_cpuContext[CpuRegister.Rdx]:X16} rcx=0x{_cpuContext[CpuRegister.Rcx]:X16}");
+			Console.Error.WriteLine($"[LOADER][TRACE] ImportCtx#{num}: nid={importStubEntry.Nid} ret=0x{num7:X16} rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} rdx=0x{cpuContext[CpuRegister.Rdx]:X16} rcx=0x{cpuContext[CpuRegister.Rcx]:X16}");
 			Console.Error.WriteLine($"[LOADER][TRACE] ImportNV#{num}: rbx=0x{value3:X16} rbp=0x{value4:X16} r12=0x{value5:X16} r13=0x{value6:X16} r14=0x{value7:X16} r15=0x{value8:X16}");
 			if (flag3)
 			{
-				ulong num9 = _cpuContext[CpuRegister.Rsp];
-				if (_cpuContext.TryReadUInt64(num9, out var value9) && _cpuContext.TryReadUInt64(num9 + 8, out var value10) && _cpuContext.TryReadUInt64(num9 + 16, out var value11) && _cpuContext.TryReadUInt64(num9 + 24, out var value12) && _cpuContext.TryReadUInt64(num9 + 32, out var value13) && _cpuContext.TryReadUInt64(num9 + 40, out var value14) && _cpuContext.TryReadUInt64(num9 + 48, out var value15) && _cpuContext.TryReadUInt64(num9 + 56, out var value16) && _cpuContext.TryReadUInt64(num9 + 64, out var value17))
+				ulong num9 = cpuContext[CpuRegister.Rsp];
+				if (cpuContext.TryReadUInt64(num9, out var value9) && cpuContext.TryReadUInt64(num9 + 8, out var value10) && cpuContext.TryReadUInt64(num9 + 16, out var value11) && cpuContext.TryReadUInt64(num9 + 24, out var value12) && cpuContext.TryReadUInt64(num9 + 32, out var value13) && cpuContext.TryReadUInt64(num9 + 40, out var value14) && cpuContext.TryReadUInt64(num9 + 48, out var value15) && cpuContext.TryReadUInt64(num9 + 56, out var value16) && cpuContext.TryReadUInt64(num9 + 64, out var value17))
 				{
 					Console.Error.WriteLine($"[LOADER][TRACE] ImportStackHead#{num}: rsp=0x{num9:X16} [0]=0x{value9:X16} [20]=0x{value13:X16} [40]=0x{value17:X16}");
 					Console.Error.WriteLine($"[LOADER][TRACE] ImportStack#{num}: rsp=0x{num9:X16} [0]=0x{value9:X16} [8]=0x{value10:X16} [10]=0x{value11:X16} [18]=0x{value12:X16} [20]=0x{value13:X16} [28]=0x{value14:X16} [30]=0x{value15:X16} [38]=0x{value16:X16} [40]=0x{value17:X16}");
 				}
+			}
+			if (flag6 && string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_IMPORT_FRAMES"), "1", StringComparison.Ordinal))
+			{
+				TraceImportFrameChain(cpuContext, num);
+			}
+			if (flag6 && string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_IMPORT_RECENT"), "1", StringComparison.Ordinal))
+			{
+				DumpRecentImportTrace();
 			}
 			if (flag3)
 			{
@@ -243,6 +260,16 @@ public sealed partial class DirectExecutionBackend
 		}
 		if (importStubEntry.Nid == "Ou3iL1abvng")
 		{
+			if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_STACK_CHK"), "1", StringComparison.Ordinal))
+			{
+				var savedGuardAddress = value4 >= 0x10 ? value4 - 0x10 : 0;
+				var guardKnown = TryReadUInt64Compat(value3, out var guardValue);
+				var savedKnown = TryReadUInt64Compat(savedGuardAddress, out var savedGuardValue);
+				Console.Error.WriteLine(
+					$"[LOADER][TRACE] stack_chk_diag#{num}: ret=0x{num7:X16} guard_ptr=0x{value3:X16} " +
+					$"guard={(guardKnown ? $"0x{guardValue:X16}" : "?")} saved@0x{savedGuardAddress:X16}={(savedKnown ? $"0x{savedGuardValue:X16}" : "?")} " +
+					$"rbp=0x{value4:X16} rsp=0x{((ulong)argPackPtr + 96uL):X16}");
+			}
 			try
 			{
 				byte[] array = new byte[64];
@@ -258,17 +285,31 @@ public sealed partial class DirectExecutionBackend
 		{
 			OrbisGen2Result orbisGen2Result;
 			bool dispatchResolved = true;
-			if (string.Equals(importStubEntry.Nid, RuntimeStubNids.BootstrapBridge, StringComparison.Ordinal))
+			var previousImportCallFrame = GuestThreadExecution.EnterImportCallFrame(num7, (ulong)argPackPtr + 104uL);
+			try
 			{
-				orbisGen2Result = DispatchBootstrapBridge();
+				if (string.Equals(importStubEntry.Nid, RuntimeStubNids.BootstrapBridge, StringComparison.Ordinal))
+				{
+					orbisGen2Result = DispatchBootstrapBridge();
+				}
+				else if (string.Equals(importStubEntry.Nid, RuntimeStubNids.KernelDynlibDlsym, StringComparison.Ordinal))
+				{
+					orbisGen2Result = DispatchKernelDynlibDlsym();
+				}
+				else
+				{
+					dispatchResolved = _moduleManager.TryDispatch(importStubEntry.Nid, cpuContext, out orbisGen2Result);
+				}
 			}
-			else if (string.Equals(importStubEntry.Nid, RuntimeStubNids.KernelDynlibDlsym, StringComparison.Ordinal))
+			finally
 			{
-				orbisGen2Result = DispatchKernelDynlibDlsym();
+				GuestThreadExecution.RestoreImportCallFrame(previousImportCallFrame);
 			}
-			else
+			if (dispatchResolved &&
+				orbisGen2Result == OrbisGen2Result.ORBIS_GEN2_OK &&
+				string.Equals(importStubEntry.Nid, "BohYr-F7-is", StringComparison.Ordinal))
 			{
-				dispatchResolved = _moduleManager.TryDispatch(importStubEntry.Nid, _cpuContext, out orbisGen2Result);
+				RegisterPrtLazyCommitRange(value2, num3);
 			}
 			if (!dispatchResolved)
 			{
@@ -287,59 +328,86 @@ public sealed partial class DirectExecutionBackend
 					ExportedFunction export2;
 					bool value20 = _moduleManager.TryGetExport(importStubEntry.Nid, out export2);
 					Console.Error.WriteLine($"[LOADER][WARN] map_direct lookup with import nid: function={value19}, export={value20}");
-					Console.Error.WriteLine(_moduleManager.TryGetExport("L-Q3LEjIbgA", out ExportedFunction export3) ? $"[LOADER][WARN] Canonical map_direct exists as {export3.LibraryName}:{export3.Name}, target={export3.Target}, ctx_target={_cpuContext.TargetGeneration}" : "[LOADER][WARN] Canonical map_direct export lookup also missing");
+					Console.Error.WriteLine(_moduleManager.TryGetExport("L-Q3LEjIbgA", out ExportedFunction export3) ? $"[LOADER][WARN] Canonical map_direct exists as {export3.LibraryName}:{export3.Name}, target={export3.Target}, ctx_target={cpuContext.TargetGeneration}" : "[LOADER][WARN] Canonical map_direct export lookup also missing");
 				}
 			}
 			else if (orbisGen2Result != OrbisGen2Result.ORBIS_GEN2_OK)
 			{
-				Console.Error.WriteLine($"[LOADER][WARN] Import#{num} result: {orbisGen2Result} ({importStubEntry.Nid})");
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] Import#{num} result: {orbisGen2Result} ({importStubEntry.Nid}) " +
+					$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} ret=0x{num7:X16}");
 			}
-			_cpuContext[CpuRegister.Rbx] = value3;
-			_cpuContext[CpuRegister.Rbp] = value4;
-			_cpuContext[CpuRegister.R12] = value5;
-			_cpuContext[CpuRegister.R13] = value6;
-			_cpuContext[CpuRegister.R14] = value7;
-			_cpuContext[CpuRegister.R15] = value8;
-			_cpuContext[CpuRegister.Rdi] = value;
-			_cpuContext[CpuRegister.Rsi] = value2;
+			cpuContext[CpuRegister.Rbx] = value3;
+			cpuContext[CpuRegister.Rbp] = value4;
+			cpuContext[CpuRegister.R12] = value5;
+			cpuContext[CpuRegister.R13] = value6;
+			cpuContext[CpuRegister.R14] = value7;
+			cpuContext[CpuRegister.R15] = value8;
+			cpuContext[CpuRegister.Rdi] = value;
+			cpuContext[CpuRegister.Rsi] = value2;
 			if (GuestThreadExecution.TryConsumeCurrentEntryExit(out var exitStatus, out var exitReason))
 			{
 				if (TryCompleteGuestEntryToHostStub(argPackPtr, num, num7, importStubEntry.Nid, exitReason, exitStatus))
 				{
-					_cpuContext[CpuRegister.Rax] = unchecked((ulong)exitStatus);
+					cpuContext[CpuRegister.Rax] = unchecked((ulong)exitStatus);
 				}
 				else
 				{
 					LastError = $"Failed to complete guest entry after {importStubEntry.Nid}: missing host return sentinel";
-					_cpuContext[CpuRegister.Rax] = 18446744071562199298uL;
+					cpuContext[CpuRegister.Rax] = 18446744071562199298uL;
 				}
 			}
 			if (GuestThreadExecution.TryConsumeCurrentThreadBlock(out var blockReason) &&
 				TryYieldGuestThreadToHostStub(argPackPtr, num, num7, importStubEntry.Nid, blockReason))
 			{
-				_cpuContext[CpuRegister.Rax] = 0uL;
+				cpuContext[CpuRegister.Rax] = 0uL;
 			}
 			if (flag || flag2 || flag3)
 			{
-				Console.Error.WriteLine($"[LOADER][TRACE] ImportRet#{num}: nid={importStubEntry.Nid} result={orbisGen2Result} rax=0x{_cpuContext[CpuRegister.Rax]:X16}");
+				Console.Error.WriteLine($"[LOADER][TRACE] ImportRet#{num}: nid={importStubEntry.Nid} result={orbisGen2Result} rax=0x{cpuContext[CpuRegister.Rax]:X16}");
 				if (flag3)
 				{
 					Console.Error.Flush();
 				}
 			}
-			return _cpuContext[CpuRegister.Rax];
+			return cpuContext[CpuRegister.Rax];
 		}
 		catch (Exception ex)
 		{
 			LastError = $"HLE dispatch error for {importStubEntry.Nid}: {ex.GetType().Name}: {ex.Message}";
-			_cpuContext[CpuRegister.Rax] = 18446744071562199298uL;
+			cpuContext[CpuRegister.Rax] = 18446744071562199298uL;
 			return 18446744071562199298uL;
+		}
+	}
+
+	private void TraceImportFrameChain(CpuContext context, long dispatchIndex)
+	{
+		var frame = context[CpuRegister.Rbp];
+		for (int i = 0; i < 16; i++)
+		{
+			if (!context.TryReadUInt64(frame, out var next) ||
+				!context.TryReadUInt64(frame + sizeof(ulong), out var returnRip))
+			{
+				break;
+			}
+
+			var symbol = TryFormatNearestRuntimeSymbol(returnRip, out var formatted)
+				? $" [{formatted}]"
+				: string.Empty;
+			Console.Error.WriteLine(
+				$"[LOADER][TRACE] ImportFrame#{dispatchIndex}.{i}: rbp=0x{frame:X16} ret=0x{returnRip:X16}{symbol} next=0x{next:X16}");
+			if (next <= frame || next - frame > 0x100000)
+			{
+				break;
+			}
+
+			frame = next;
 		}
 	}
 
 	private unsafe bool TryForceGuestExitToHostStub(nint argPackPtr, long dispatchIndex, ulong returnRip, string nid)
 	{
-		ulong num = _entryReturnSentinelRip;
+		ulong num = ActiveEntryReturnSentinelRip;
 		if (num < 65536)
 		{
 			return false;
@@ -352,7 +420,7 @@ public sealed partial class DirectExecutionBackend
 		{
 			return false;
 		}
-		_forcedGuestExit = true;
+		ActiveForcedGuestExit = true;
 		LastError = $"Detected repeating import loop at import#{dispatchIndex} ({nid}) and forced guest exit.";
 		Console.Error.WriteLine($"[LOADER][ERROR] Import-loop guard fired at import#{dispatchIndex}: nid={nid} ret=0x{returnRip:X16} -> host_exit=0x{num:X16}");
 		DumpRecentImportTrace();
@@ -361,7 +429,7 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe bool TryCompleteGuestEntryToHostStub(nint argPackPtr, long dispatchIndex, ulong returnRip, string nid, string reason, int status)
 	{
-		ulong hostExit = _entryReturnSentinelRip;
+		ulong hostExit = ActiveEntryReturnSentinelRip;
 		if (hostExit < 65536)
 		{
 			return false;
@@ -381,7 +449,7 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe bool TryYieldGuestThreadToHostStub(nint argPackPtr, long dispatchIndex, ulong returnRip, string nid, string reason)
 	{
-		ulong hostExit = _entryReturnSentinelRip;
+		ulong hostExit = ActiveEntryReturnSentinelRip;
 		if (hostExit < 65536)
 		{
 			return false;
@@ -395,10 +463,10 @@ public sealed partial class DirectExecutionBackend
 			return false;
 		}
 
-		_guestThreadYieldRequested = true;
-		_guestThreadYieldReason = string.IsNullOrWhiteSpace(reason) ? nid : reason;
+		ActiveGuestThreadYieldRequested = true;
+		ActiveGuestThreadYieldReason = string.IsNullOrWhiteSpace(reason) ? nid : reason;
 		Console.Error.WriteLine(
-			$"[LOADER][INFO] Guest thread yield at import#{dispatchIndex}: nid={nid} ret=0x{returnRip:X16} reason={_guestThreadYieldReason}");
+			$"[LOADER][INFO] Guest thread yield at import#{dispatchIndex}: nid={nid} ret=0x{returnRip:X16} reason={ActiveGuestThreadYieldReason}");
 		return true;
 	}
 
@@ -424,10 +492,35 @@ public sealed partial class DirectExecutionBackend
 			{
 				_importLoopPatternHits--;
 			}
+			if (_importLoopPatternHits == 0)
+			{
+				_importLoopPatternStartTimestamp = 0;
+			}
 			return false;
 		}
+		if (_importLoopPatternStartTimestamp == 0)
+		{
+			_importLoopPatternStartTimestamp = Stopwatch.GetTimestamp();
+		}
 		_importLoopPatternHits++;
-		return _importLoopPatternHits >= 6;
+		var guardSeconds = GetImportLoopGuardSeconds();
+		if (guardSeconds <= 0 || _importLoopPatternHits < 6)
+		{
+			return false;
+		}
+
+		var elapsedTicks = Stopwatch.GetTimestamp() - _importLoopPatternStartTimestamp;
+		return elapsedTicks >= (long)(guardSeconds * Stopwatch.Frequency);
+	}
+
+	private static int GetImportLoopGuardSeconds()
+	{
+		if (int.TryParse(Environment.GetEnvironmentVariable("SHARPEMU_IMPORT_LOOP_GUARD_SECONDS"), out var seconds))
+		{
+			return Math.Max(0, seconds);
+		}
+
+		return DefaultImportLoopGuardSeconds;
 	}
 
 	private ulong BuildImportLoopSignature(ulong nidHash, ulong returnRip, ulong arg0, ulong arg1)
@@ -645,41 +738,43 @@ public sealed partial class DirectExecutionBackend
 
 	private OrbisGen2Result DispatchKernelDynlibDlsym()
 	{
-		if (_cpuContext == null)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null)
 		{
 			return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
 		}
-		ulong symbolNameAddress = _cpuContext[CpuRegister.Rsi];
-		ulong outputAddress = _cpuContext[CpuRegister.Rdx];
+		ulong symbolNameAddress = cpuContext[CpuRegister.Rsi];
+		ulong outputAddress = cpuContext[CpuRegister.Rdx];
 		if (!TryReadAsciiZ(symbolNameAddress, 512, out var symbolName))
 		{
-			_cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
 			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (!TryResolveRuntimeSymbolAddress(symbolName, out var resolvedAddress))
 		{
-			_cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
 			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (outputAddress == 0L || !TryWriteUInt64Compat(outputAddress, resolvedAddress))
 		{
-			_cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
 			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
-		_cpuContext[CpuRegister.Rax] = 0uL;
+		cpuContext[CpuRegister.Rax] = 0uL;
 		return OrbisGen2Result.ORBIS_GEN2_OK;
 	}
 
 	private OrbisGen2Result DispatchBootstrapBridge()
 	{
-		if (_cpuContext == null)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null)
 		{
 			return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
 		}
 
-		ulong bridgeHandle = _cpuContext[CpuRegister.Rdi];
-		ulong symbolNameAddress = _cpuContext[CpuRegister.Rsi];
-		ulong outputAddress = _cpuContext[CpuRegister.Rdx];
+		ulong bridgeHandle = cpuContext[CpuRegister.Rdi];
+		ulong symbolNameAddress = cpuContext[CpuRegister.Rsi];
+		ulong outputAddress = cpuContext[CpuRegister.Rdx];
 		_ = TryReadAsciiZ(symbolNameAddress, 512, out var symbolName);
 
 		OrbisGen2Result result = DispatchKernelDynlibDlsym();
@@ -691,10 +786,10 @@ public sealed partial class DirectExecutionBackend
 		if (logBootstrap)
 		{
 			Console.Error.WriteLine(
-				$"[LOADER][TRACE] bootstrap_dispatch: handle=0x{bridgeHandle:X16} symbol='{symbolName}' out=0x{outputAddress:X16} rax=0x{_cpuContext[CpuRegister.Rax]:X16}");
+				$"[LOADER][TRACE] bootstrap_dispatch: handle=0x{bridgeHandle:X16} symbol='{symbolName}' out=0x{outputAddress:X16} rax=0x{cpuContext[CpuRegister.Rax]:X16}");
 		}
 
-		if (_cpuContext[CpuRegister.Rax] == 0uL)
+		if (cpuContext[CpuRegister.Rax] == 0uL)
 		{
 			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
@@ -737,7 +832,7 @@ public sealed partial class DirectExecutionBackend
 	private bool TryReadAsciiZ(ulong address, int maxLength, out string value)
 	{
 		value = string.Empty;
-		if (_cpuContext == null || address == 0L || maxLength <= 0)
+		if (ActiveCpuContext == null || address == 0L || maxLength <= 0)
 		{
 			return false;
 		}
@@ -762,11 +857,12 @@ public sealed partial class DirectExecutionBackend
 
 	private bool TryReadByteCompat(ulong address, Span<byte> destination)
 	{
-		if (_cpuContext == null || destination.Length == 0)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || destination.Length == 0)
 		{
 			return false;
 		}
-		if (_cpuContext.Memory.TryRead(address, destination))
+		if (cpuContext.Memory.TryRead(address, destination))
 		{
 			return true;
 		}
@@ -781,13 +877,38 @@ public sealed partial class DirectExecutionBackend
 		}
 	}
 
-	private bool TryWriteUInt64Compat(ulong address, ulong value)
+	private bool TryReadUInt64Compat(ulong address, out ulong value)
 	{
-		if (_cpuContext == null || address == 0L)
+		value = 0;
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || address == 0L)
 		{
 			return false;
 		}
-		if (_cpuContext.TryWriteUInt64(address, value))
+		if (cpuContext.TryReadUInt64(address, out value))
+		{
+			return true;
+		}
+		try
+		{
+			value = unchecked((ulong)Marshal.ReadInt64((nint)address));
+			return true;
+		}
+		catch
+		{
+			value = 0;
+			return false;
+		}
+	}
+
+	private bool TryWriteUInt64Compat(ulong address, ulong value)
+	{
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || address == 0L)
+		{
+			return false;
+		}
+		if (cpuContext.TryWriteUInt64(address, value))
 		{
 			return true;
 		}
@@ -804,7 +925,8 @@ public sealed partial class DirectExecutionBackend
 
 	private void TryBypassStackChkFailTrap(long dispatchIndex, ulong returnRip)
 	{
-		if (_cpuContext == null || returnRip < 32)
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || returnRip < 32)
 		{
 			return;
 		}
@@ -818,8 +940,8 @@ public sealed partial class DirectExecutionBackend
 				return;
 			}
 			ulong value = returnRip - 21;
-			ulong address = _cpuContext[CpuRegister.Rsp];
-			if (_cpuContext.TryWriteUInt64(address, value))
+			ulong address = cpuContext[CpuRegister.Rsp];
+			if (cpuContext.TryWriteUInt64(address, value))
 			{
 				if (_stackChkBypassSites.Add(num) && TryPatchStackChkFailBranch(num))
 				{

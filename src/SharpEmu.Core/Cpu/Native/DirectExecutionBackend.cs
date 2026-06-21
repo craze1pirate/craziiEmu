@@ -20,6 +20,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private const int ImportLoopWideDiversityWindow = 768;
 
+	private const int DefaultImportLoopGuardSeconds = 5;
+
 	private readonly struct ImportStubEntry
 	{
 		public ulong Address { get; }
@@ -98,6 +100,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private const ulong GuestThreadTlsSize = 0x0001_0000UL;
 
+	private const ulong GuestThreadTlsPrefixSize = 0x0000_1000UL;
+
 	private const ulong GuestThreadRegionStride = 0x0100_0000UL;
 
 	private const uint PAGE_EXECUTE_READWRITE = 64u;
@@ -122,6 +126,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private bool _ownsTlsBaseAddress;
 
+	private uint _guestTlsBaseTlsIndex = uint.MaxValue;
+
+	private uint _hostRspSlotTlsIndex = uint.MaxValue;
+
+	private nint _tlsGetValueAddress;
+
 	private int _tlsPatchStubOffset;
 
 	private nint _unresolvedReturnStub;
@@ -141,6 +151,24 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private ulong _entryPoint;
 
 	private CpuContext? _cpuContext;
+
+	[ThreadStatic]
+	private static DirectExecutionBackend? _activeExecutionBackend;
+
+	[ThreadStatic]
+	private static CpuContext? _activeCpuContext;
+
+	[ThreadStatic]
+	private static ulong _activeEntryReturnSentinelRip;
+
+	[ThreadStatic]
+	private static bool _activeForcedGuestExit;
+
+	[ThreadStatic]
+	private static bool _activeGuestThreadYieldRequested;
+
+	[ThreadStatic]
+	private static string? _activeGuestThreadYieldReason;
 
 	private ImportStubEntry[] _importEntries = Array.Empty<ImportStubEntry>();
 
@@ -182,6 +210,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private readonly HashSet<ulong> _contextualUnresolvedReturnSites = new HashSet<ulong>();
 
+	private readonly object _lazyCommitRangeGate = new object();
+
+	private readonly List<LazyCommitRange> _prtLazyCommitRanges = new List<LazyCommitRange>();
+
 	private ulong _returnFallbackTarget;
 
 	private static int _rawSentinelRecoveries;
@@ -209,6 +241,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private int _importLoopSignatureWriteIndex;
 
 	private int _importLoopPatternHits;
+
+	private long _importLoopPatternStartTimestamp;
 
 	private readonly Dictionary<string, ulong> _importNidHashCache = new Dictionary<string, ulong>(StringComparer.Ordinal);
 
@@ -244,7 +278,90 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		public GuestThreadRunState State { get; set; }
 
 		public string? BlockReason { get; set; }
+
+		public Thread? HostThread { get; set; }
+
+		public GuestContinuationRunner? ContinuationRunner { get; set; }
 	}
+
+	private sealed class GuestContinuationRunner : IDisposable
+	{
+		private readonly ulong _guestThreadHandle;
+		private readonly object _runGate = new();
+		private readonly AutoResetEvent _workAvailable = new(false);
+		private readonly AutoResetEvent _workCompleted = new(false);
+		private readonly Thread _thread;
+		private Action? _work;
+		private volatile bool _stopping;
+
+		public GuestContinuationRunner(ulong guestThreadHandle)
+		{
+			_guestThreadHandle = guestThreadHandle;
+			_thread = new Thread(ThreadMain)
+			{
+				IsBackground = true,
+				Name = $"GuestContinuation-{guestThreadHandle:X}",
+				Priority = ThreadPriority.BelowNormal,
+			};
+			_thread.Start();
+		}
+
+		public bool IsCurrentThread => ReferenceEquals(Thread.CurrentThread, _thread);
+
+		public void Run(Action work)
+		{
+			lock (_runGate)
+			{
+				_work = work;
+				_workAvailable.Set();
+				_workCompleted.WaitOne();
+				_work = null;
+			}
+		}
+
+		private void ThreadMain()
+		{
+			var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(_guestThreadHandle);
+			try
+			{
+				while (true)
+				{
+					_workAvailable.WaitOne();
+					if (_stopping)
+					{
+						return;
+					}
+
+					try
+					{
+						_work?.Invoke();
+					}
+					finally
+					{
+						_workCompleted.Set();
+					}
+				}
+			}
+			finally
+			{
+				GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
+			}
+		}
+
+		public void Dispose()
+		{
+			_stopping = true;
+			_workAvailable.Set();
+			if (!IsCurrentThread)
+			{
+				_thread.Join(500);
+			}
+			_workAvailable.Dispose();
+			_workCompleted.Dispose();
+		}
+	}
+
+	private readonly record struct LazyCommitRange(ulong BaseAddress, ulong Size);
 
 	private readonly object _guestThreadGate = new object();
 
@@ -284,9 +401,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private delegate ulong ImportGatewayDelegate(nint backendHandle, int importIndex, nint argPackPtr);
 	private delegate int RawExceptionHandlerDelegate(void* exceptionInfo);
-	[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-	private delegate int NativeEntryDelegate();
-
 	private static readonly ImportGatewayDelegate ImportGatewayDelegateInstance = ImportDispatchGatewayManaged;
 	private static readonly RawExceptionHandlerDelegate RawVectoredHandlerDelegateInstance = RawVectoredHandlerManaged;
 	private static readonly RawExceptionHandlerDelegate RawUnhandledFilterDelegateInstance = RawUnhandledFilterManaged;
@@ -347,6 +461,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	[ThreadStatic]
 	private static int _vectoredHandlerDepth;
 
+	private static int _nestedVehTraceCount;
+
 	private const uint MEM_COMMIT = 4096u;
 
 	private const uint MEM_RESERVE = 8192u;
@@ -363,6 +479,16 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private const uint PAGE_NOACCESS = 1u;
 
+	private const uint DBG_PRINTEXCEPTION_C = 0x40010006u;
+
+	private const uint DBG_PRINTEXCEPTION_WIDE_C = 0x4001000Au;
+
+	private const uint MS_VC_THREADNAME_EXCEPTION = 0x406D1388u;
+
+	private const uint MSVC_CPP_EXCEPTION = 0xE06D7363u;
+
+	private const uint HostXmmSaveAreaSize = 0xA0u;
+
 	public string BackendName => "native-backend";
 
 	public string? LastError { get; private set; }
@@ -370,6 +496,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private unsafe static ulong ReadCtxU64(void* contextRecord, int offset)
 	{
 		return *(ulong*)((byte*)contextRecord + offset);
+	}
+
+	private unsafe static int CallNativeEntry(void* entry)
+	{
+		var nativeEntry = (delegate* unmanaged[Cdecl]<int>)entry;
+		return nativeEntry();
 	}
 
 	private unsafe static void WriteCtxU64(void* contextRecord, int offset, ulong value)
@@ -387,11 +519,107 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		*(uint*)((byte*)contextRecord + offset) = value;
 	}
 
+	private bool HasActiveExecutionThread => ReferenceEquals(_activeExecutionBackend, this);
+
+	private CpuContext? ActiveCpuContext => HasActiveExecutionThread ? _activeCpuContext : _cpuContext;
+
+	private ulong ActiveEntryReturnSentinelRip
+	{
+		get => HasActiveExecutionThread ? _activeEntryReturnSentinelRip : _entryReturnSentinelRip;
+		set
+		{
+			if (HasActiveExecutionThread)
+			{
+				_activeEntryReturnSentinelRip = value;
+			}
+			else
+			{
+				_entryReturnSentinelRip = value;
+			}
+		}
+	}
+
+	private bool ActiveForcedGuestExit
+	{
+		get => HasActiveExecutionThread ? _activeForcedGuestExit : _forcedGuestExit;
+		set
+		{
+			if (HasActiveExecutionThread)
+			{
+				_activeForcedGuestExit = value;
+			}
+			else
+			{
+				_forcedGuestExit = value;
+			}
+		}
+	}
+
+	private bool ActiveGuestThreadYieldRequested
+	{
+		get => HasActiveExecutionThread ? _activeGuestThreadYieldRequested : _guestThreadYieldRequested;
+		set
+		{
+			if (HasActiveExecutionThread)
+			{
+				_activeGuestThreadYieldRequested = value;
+			}
+			else
+			{
+				_guestThreadYieldRequested = value;
+			}
+		}
+	}
+
+	private string? ActiveGuestThreadYieldReason
+	{
+		get => HasActiveExecutionThread ? _activeGuestThreadYieldReason : _guestThreadYieldReason;
+		set
+		{
+			if (HasActiveExecutionThread)
+			{
+				_activeGuestThreadYieldReason = value;
+			}
+			else
+			{
+				_guestThreadYieldReason = value;
+			}
+		}
+	}
+
+	private static void RestoreActiveExecutionThread(
+		DirectExecutionBackend? previousBackend,
+		CpuContext? previousContext,
+		ulong previousSentinel,
+		bool previousForcedExit,
+		bool previousYieldRequested,
+		string? previousYieldReason)
+	{
+		_activeExecutionBackend = previousBackend;
+		_activeCpuContext = previousContext;
+		_activeEntryReturnSentinelRip = previousSentinel;
+		_activeForcedGuestExit = previousForcedExit;
+		_activeGuestThreadYieldRequested = previousYieldRequested;
+		_activeGuestThreadYieldReason = previousYieldReason;
+	}
+
 	public unsafe DirectExecutionBackend(IModuleManager moduleManager)
 	{
 		_moduleManager = moduleManager ?? throw new ArgumentNullException("moduleManager");
 		_selfHandle = GCHandle.Alloc(this);
 		_selfHandlePtr = GCHandle.ToIntPtr(_selfHandle);
+		_guestTlsBaseTlsIndex = TlsAlloc();
+		_hostRspSlotTlsIndex = TlsAlloc();
+		if (_guestTlsBaseTlsIndex == uint.MaxValue || _hostRspSlotTlsIndex == uint.MaxValue)
+		{
+			throw new OutOfMemoryException("Failed to allocate native TLS slots");
+		}
+		nint kernel32 = GetModuleHandle("kernel32.dll");
+		_tlsGetValueAddress = kernel32 != 0 ? GetProcAddress(kernel32, "TlsGetValue") : 0;
+		if (_tlsGetValueAddress == 0)
+		{
+			throw new InvalidOperationException("Failed to resolve kernel32!TlsGetValue");
+		}
 		_tlsBaseAddress = (nint)VirtualAlloc(null, 4096u, 12288u, 4u);
 		if (_tlsBaseAddress == 0)
 		{
@@ -437,7 +665,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_importLoopSignatureCount = 0;
 		_importLoopSignatureWriteIndex = 0;
 		_importLoopPatternHits = 0;
+		_importLoopPatternStartTimestamp = 0;
 		_importNidHashCache.Clear();
+		lock (_lazyCommitRangeGate)
+		{
+			_prtLazyCommitRanges.Clear();
+		}
 		ClearGuestThreads();
 		_contextualUnresolvedReturnSites.Clear();
 		_stallWatchdogTriggered = 0;
@@ -709,17 +942,17 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		{
 			num = _tlsBaseAddress;
 		}
-		if (num != _tlsBaseAddress)
+		if (!HasActiveExecutionThread && num != _tlsBaseAddress)
 		{
 			_tlsBaseAddress = num;
 			_ownsTlsBaseAddress = _tlsBaseAddress == _ownedTlsBaseAddress;
 		}
-		if (_tlsBaseAddress != 0)
+		if (num != 0)
 		{
-			context.FsBase = (ulong)_tlsBaseAddress;
-			context.GsBase = (ulong)_tlsBaseAddress;
-			SeedTlsLayout(_tlsBaseAddress);
-			UpdateTlsHandlerBase(_tlsBaseAddress);
+			context.FsBase = (ulong)num;
+			context.GsBase = (ulong)num;
+			SeedTlsLayout(num);
+			TlsSetValue(_guestTlsBaseTlsIndex, num);
 		}
 	}
 
@@ -727,7 +960,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	{
 		ulong num = (ulong)tlsBase;
 		*(ulong*)tlsBase = num;
-		*(ulong*)(tlsBase + 16) = num;
+		if (*(ulong*)(tlsBase + 16) == 0)
+		{
+			*(ulong*)(tlsBase + 16) = num;
+		}
 		*(long*)(tlsBase + 40) = -4548986510476657986L;
 		*(ulong*)(tlsBase + 96) = num;
 	}
@@ -786,26 +1022,29 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num++] = 82;
 			ptr2[num++] = 86;
 			ptr2[num++] = 87;
-			ptr2[num++] = 72;
-			ptr2[num++] = 185;
-			*(long*)(ptr2 + num) = _selfHandlePtr;
-			num += 8;
-			ptr2[num++] = 186;
-			*(int*)(ptr2 + num) = importIndex;
-			num += 4;
-			ptr2[num++] = 73;
-			ptr2[num++] = 137;
-			ptr2[num++] = 224;
 			ptr2[num++] = 73;
 			ptr2[num++] = 137;
 			ptr2[num++] = 228;
-			ptr2[num++] = 73;
-			ptr2[num++] = 187;
-			*(long*)(ptr2 + num) = _hostRspSlotStorage;
+			ptr2[num++] = 72;
+			ptr2[num++] = 131;
+			ptr2[num++] = 236;
+			ptr2[num++] = 40;
+			ptr2[num++] = 185;
+			*(uint*)(ptr2 + num) = _hostRspSlotTlsIndex;
+			num += 4;
+			ptr2[num++] = 72;
+			ptr2[num++] = 184;
+			*(long*)(ptr2 + num) = _tlsGetValueAddress;
 			num += 8;
-			ptr2[num++] = 77;
-			ptr2[num++] = 139;
-			ptr2[num++] = 27;
+			ptr2[num++] = byte.MaxValue;
+			ptr2[num++] = 208;
+			ptr2[num++] = 72;
+			ptr2[num++] = 131;
+			ptr2[num++] = 196;
+			ptr2[num++] = 40;
+			ptr2[num++] = 73;
+			ptr2[num++] = 137;
+			ptr2[num++] = 195;
 			ptr2[num++] = 73;
 			ptr2[num++] = 139;
 			ptr2[num++] = 35;
@@ -813,6 +1052,16 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num++] = 131;
 			ptr2[num++] = 236;
 			ptr2[num++] = 40;
+			ptr2[num++] = 72;
+			ptr2[num++] = 185;
+			*(long*)(ptr2 + num) = _selfHandlePtr;
+			num += 8;
+			ptr2[num++] = 186;
+			*(int*)(ptr2 + num) = importIndex;
+			num += 4;
+			ptr2[num++] = 77;
+			ptr2[num++] = 137;
+			ptr2[num++] = 224;
 			ptr2[num++] = 72;
 			ptr2[num++] = 184;
 			*(long*)(ptr2 + num) = ImportGatewayPtr;
@@ -949,9 +1198,22 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		byte* tlsHandlerAddress = (byte*)_tlsHandlerAddress;
 		int num = 0;
 		tlsHandlerAddress[num++] = 72;
+		tlsHandlerAddress[num++] = 131;
+		tlsHandlerAddress[num++] = 236;
+		tlsHandlerAddress[num++] = 40;
+		tlsHandlerAddress[num++] = 185;
+		*(uint*)(tlsHandlerAddress + num) = _guestTlsBaseTlsIndex;
+		num += 4;
+		tlsHandlerAddress[num++] = 72;
 		tlsHandlerAddress[num++] = 184;
-		*(long*)(tlsHandlerAddress + num) = _tlsBaseAddress;
+		*(long*)(tlsHandlerAddress + num) = _tlsGetValueAddress;
 		num += 8;
+		tlsHandlerAddress[num++] = byte.MaxValue;
+		tlsHandlerAddress[num++] = 208;
+		tlsHandlerAddress[num++] = 72;
+		tlsHandlerAddress[num++] = 131;
+		tlsHandlerAddress[num++] = 196;
+		tlsHandlerAddress[num++] = 40;
 		tlsHandlerAddress[num++] = 195;
 		_tlsPatchStubOffset = (num + 15) & ~15;
 		uint num2 = default(uint);
@@ -1423,6 +1685,65 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 	}
 
+	private void RegisterPrtLazyCommitRange(ulong baseAddress, ulong size)
+	{
+		if (size == 0)
+		{
+			return;
+		}
+
+		bool added = false;
+		lock (_lazyCommitRangeGate)
+		{
+			if (!_prtLazyCommitRanges.Any(range => range.BaseAddress == baseAddress && range.Size == size))
+			{
+				_prtLazyCommitRanges.Add(new LazyCommitRange(baseAddress, size));
+				added = true;
+			}
+		}
+
+		if (added)
+		{
+			Console.Error.WriteLine($"[LOADER][TRACE] registered PRT lazy range: base=0x{baseAddress:X16} size=0x{size:X16}");
+		}
+	}
+
+	private bool IsGuestOwnedLazyCommitAddress(ulong address, out string owner)
+	{
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext != null && TryGetVirtualMemory(cpuContext, out var virtualMemory))
+		{
+			foreach (var region in virtualMemory.SnapshotRegions())
+			{
+				if (ContainsAddress(region.VirtualAddress, region.MemorySize, address))
+				{
+					owner = $"vmem:0x{region.VirtualAddress:X16}+0x{region.MemorySize:X}";
+					return true;
+				}
+			}
+		}
+
+		lock (_lazyCommitRangeGate)
+		{
+			foreach (var range in _prtLazyCommitRanges)
+			{
+				if (ContainsAddress(range.BaseAddress, range.Size, address))
+				{
+					owner = $"prt:0x{range.BaseAddress:X16}+0x{range.Size:X}";
+					return true;
+				}
+			}
+		}
+
+		owner = string.Empty;
+		return false;
+	}
+
+	private static bool ContainsAddress(ulong baseAddress, ulong size, ulong address)
+	{
+		return size != 0 && address >= baseAddress && address - baseAddress < size;
+	}
+
 	public bool TryStartThread(CpuContext creatorContext, GuestThreadStartRequest request, out string? error)
 	{
 		error = null;
@@ -1442,12 +1763,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 		Console.Error.WriteLine(
 			$"[LOADER][INFO] Scheduled guest thread '{thread.Name}' handle=0x{thread.ThreadHandle:X16} entry=0x{thread.EntryPoint:X16} arg=0x{thread.Argument:X16}");
+		Pump(creatorContext, "pthread_create");
 		return true;
 	}
 
 	public void Pump(CpuContext callerContext, string reason)
 	{
 		_ = callerContext;
+		var runSynchronously = string.Equals(reason, "entry_return", StringComparison.Ordinal);
 		if (_guestThreadPumpDepth != 0)
 		{
 			return;
@@ -1475,7 +1798,25 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				{
 					return;
 				}
-				RunGuestThread(thread, reason);
+
+				if (runSynchronously)
+				{
+					RunGuestThread(thread, reason);
+					continue;
+				}
+
+				var hostThread = new Thread(() => RunGuestThread(thread, reason))
+				{
+					IsBackground = true,
+					Name = $"SharpEmu-{thread.Name}",
+					Priority = ThreadPriority.BelowNormal,
+				};
+				lock (_guestThreadGate)
+				{
+					thread.HostThread = hostThread;
+				}
+				hostThread.Start();
+				return;
 			}
 		}
 		finally
@@ -1484,12 +1825,291 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 	}
 
-	private void ClearGuestThreads()
+	private void PumpUntilGuestThreadsIdle(CpuContext callerContext, string reason)
+	{
+		while (!ActiveForcedGuestExit)
+		{
+			Pump(callerContext, reason);
+
+			var threads = SnapshotGuestThreads();
+			if (threads.Length == 0)
+			{
+				return;
+			}
+
+			var hasReadyThread = false;
+			var hasBlockedThread = false;
+			foreach (var thread in threads)
+			{
+				switch (thread.State)
+				{
+					case GuestThreadRunState.Ready:
+						hasReadyThread = true;
+						break;
+					case GuestThreadRunState.Running:
+						hasReadyThread = true;
+						break;
+					case GuestThreadRunState.Blocked:
+						hasBlockedThread = true;
+						break;
+				}
+			}
+
+			if (hasReadyThread)
+			{
+				continue;
+			}
+
+			if (!hasBlockedThread)
+			{
+				return;
+			}
+
+			Thread.Sleep(1);
+		}
+	}
+
+	private GuestThreadState[] SnapshotGuestThreads()
 	{
 		lock (_guestThreadGate)
 		{
+			return _guestThreads.Values.ToArray();
+		}
+	}
+
+	public bool TryCallGuestFunction(
+		CpuContext callerContext,
+		ulong entryPoint,
+		ulong arg0,
+		ulong arg1,
+		ulong stackAddress,
+		ulong stackSize,
+		string reason,
+		out string? error)
+	{
+		error = null;
+		if (entryPoint < 65536)
+		{
+			error = $"invalid guest callback entry=0x{entryPoint:X16}";
+			return false;
+		}
+		if (!TryGetVirtualMemory(callerContext, out var virtualMemory))
+		{
+			error = "caller context memory is not backed by IVirtualMemory";
+			return false;
+		}
+
+		ulong callbackStackBase;
+		ulong callbackStackSize;
+		if (stackAddress != 0 && stackSize >= 0x100)
+		{
+			callbackStackBase = stackAddress;
+			callbackStackSize = stackSize;
+		}
+		else
+		{
+			if (!TryMapGuestThreadRegion(virtualMemory, GuestThreadStackBaseAddress, GuestThreadStackSize, ProgramHeaderFlags.Read | ProgramHeaderFlags.Write, out callbackStackBase, out error))
+			{
+				return false;
+			}
+			callbackStackSize = GuestThreadStackSize;
+		}
+
+		var trackedMemory = new TrackedCpuMemory(virtualMemory);
+		var fallbackTlsBase = unchecked((ulong)_tlsBaseAddress);
+		var context = new CpuContext(trackedMemory, callerContext.TargetGeneration)
+		{
+			Rip = entryPoint,
+			Rflags = 0x202,
+			FsBase = callerContext.FsBase != 0 ? callerContext.FsBase : fallbackTlsBase,
+			GsBase = callerContext.GsBase != 0 ? callerContext.GsBase : fallbackTlsBase,
+		};
+		context[CpuRegister.Rsp] = AlignDown(callbackStackBase + callbackStackSize, 16) - sizeof(ulong);
+		context[CpuRegister.Rdi] = arg0;
+		context[CpuRegister.Rsi] = arg1;
+		context[CpuRegister.Rdx] = 0;
+		context[CpuRegister.Rcx] = 0;
+		context[CpuRegister.R8] = 0;
+		context[CpuRegister.R9] = 0;
+		if (!InitializeGuestThreadFrame(context))
+		{
+			error = "failed to initialize guest callback stack";
+			return false;
+		}
+
+		var previousLastError = LastError;
+		try
+		{
+			LastError = null;
+			var exitReason = ExecuteGuestThreadEntry(context, entryPoint, reason, out var callbackReason);
+			if (exitReason is GuestNativeCallExitReason.Exception or GuestNativeCallExitReason.ForcedExit)
+			{
+				error = callbackReason ?? LastError ?? "guest callback failed";
+				return false;
+			}
+
+			return true;
+		}
+		finally
+		{
+			LastError = previousLastError;
+		}
+	}
+
+	public bool TryCallGuestContinuation(
+		CpuContext callerContext,
+		GuestCpuContinuation continuation,
+		string reason,
+		out string? error)
+	{
+		error = null;
+		if (continuation.Rip < 65536 || continuation.Rsp == 0)
+		{
+			error = $"invalid guest continuation rip=0x{continuation.Rip:X16} rsp=0x{continuation.Rsp:X16}";
+			return false;
+		}
+		if (!TryGetVirtualMemory(callerContext, out var virtualMemory))
+		{
+			error = "caller context memory is not backed by IVirtualMemory";
+			return false;
+		}
+
+		var trackedMemory = new TrackedCpuMemory(virtualMemory);
+		var fallbackTlsBase = unchecked((ulong)_tlsBaseAddress);
+		var context = new CpuContext(trackedMemory, callerContext.TargetGeneration)
+		{
+			Rip = continuation.Rip,
+			Rflags = continuation.Rflags == 0 ? 0x202UL : continuation.Rflags,
+			FsBase = continuation.FsBase != 0 ? continuation.FsBase : (callerContext.FsBase != 0 ? callerContext.FsBase : fallbackTlsBase),
+			GsBase = continuation.GsBase != 0 ? continuation.GsBase : (callerContext.GsBase != 0 ? callerContext.GsBase : fallbackTlsBase),
+		};
+
+		context[CpuRegister.Rax] = continuation.Rax;
+		context[CpuRegister.Rcx] = continuation.Rcx;
+		context[CpuRegister.Rdx] = continuation.Rdx;
+		context[CpuRegister.Rbx] = continuation.Rbx;
+		context[CpuRegister.Rbp] = continuation.Rbp;
+		context[CpuRegister.Rsi] = continuation.Rsi;
+		context[CpuRegister.Rdi] = continuation.Rdi;
+		context[CpuRegister.R8] = continuation.R8;
+		context[CpuRegister.R9] = continuation.R9;
+		context[CpuRegister.R12] = continuation.R12;
+		context[CpuRegister.R13] = continuation.R13;
+		context[CpuRegister.R14] = continuation.R14;
+		context[CpuRegister.R15] = continuation.R15;
+		context[CpuRegister.Rsp] = continuation.Rsp + 16uL;
+
+		var currentGuestThreadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
+		var exitReason = GuestNativeCallExitReason.Exception;
+		string? callbackReason = null;
+		string? callbackLastError = null;
+		Exception? callbackException = null;
+
+		void RunContinuation()
+		{
+			var previousLastError = LastError;
+			try
+			{
+				LastError = null;
+				exitReason = ExecuteGuestContinuationEntry(context, continuation.Rip, reason, out callbackReason);
+				callbackLastError = LastError;
+			}
+			catch (Exception ex)
+			{
+				callbackException = ex;
+				callbackReason = ex.GetType().Name + ": " + ex.Message;
+				exitReason = GuestNativeCallExitReason.Exception;
+			}
+			finally
+			{
+				LastError = previousLastError;
+			}
+		}
+
+		if (currentGuestThreadHandle != 0)
+		{
+			GuestContinuationRunner? runner;
+			lock (_guestThreadGate)
+			{
+				if (_guestThreads.TryGetValue(currentGuestThreadHandle, out var guestThread))
+				{
+					runner = guestThread.ContinuationRunner ??= new GuestContinuationRunner(currentGuestThreadHandle);
+				}
+				else
+				{
+					runner = null;
+				}
+			}
+
+			if (runner is not null && !runner.IsCurrentThread)
+			{
+				runner.Run(RunContinuation);
+			}
+			else
+			{
+				RunContinuationOnTemporaryThread(currentGuestThreadHandle, RunContinuation);
+			}
+		}
+		else
+		{
+			RunContinuation();
+		}
+
+		if (callbackException is not null)
+		{
+			error = callbackReason ?? callbackException.Message;
+			return false;
+		}
+
+		if (exitReason is GuestNativeCallExitReason.Exception or GuestNativeCallExitReason.ForcedExit)
+		{
+			error = callbackReason ?? callbackLastError ?? "guest continuation failed";
+			return false;
+		}
+
+		return true;
+	}
+
+	private static void RunContinuationOnTemporaryThread(ulong guestThreadHandle, Action continuation)
+	{
+		var continuationThread = new Thread(() =>
+		{
+			var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(guestThreadHandle);
+			try
+			{
+				continuation();
+			}
+			finally
+			{
+				GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
+			}
+		})
+		{
+			IsBackground = true,
+			Name = $"GuestContinuationNested-{guestThreadHandle:X}",
+			Priority = ThreadPriority.BelowNormal,
+		};
+		continuationThread.Start();
+		continuationThread.Join();
+	}
+
+	private void ClearGuestThreads()
+	{
+		GuestContinuationRunner[] runners;
+		lock (_guestThreadGate)
+		{
+			runners = _guestThreads.Values
+				.Select(static thread => thread.ContinuationRunner)
+				.Where(static runner => runner is not null)
+				.Cast<GuestContinuationRunner>()
+				.ToArray();
 			_readyGuestThreads.Clear();
 			_guestThreads.Clear();
+		}
+
+		foreach (var runner in runners)
+		{
+			runner.Dispose();
 		}
 	}
 
@@ -1505,7 +2125,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		{
 			return false;
 		}
-		if (!TryMapGuestThreadRegion(virtualMemory, GuestThreadTlsBaseAddress, GuestThreadTlsSize, ProgramHeaderFlags.Read | ProgramHeaderFlags.Write, out var tlsBase, out error))
+		if (!TryMapGuestThreadTlsRegion(virtualMemory, out var tlsBase, out error))
 		{
 			return false;
 		}
@@ -1525,7 +2145,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		context[CpuRegister.Rcx] = 0;
 		context[CpuRegister.R8] = 0;
 		context[CpuRegister.R9] = 0;
-		if (!InitializeGuestThreadFrame(context) || !InitializeGuestThreadTls(context, tlsBase))
+		if (!InitializeGuestThreadFrame(context) || !InitializeGuestThreadTls(context, tlsBase, request.ThreadHandle))
 		{
 			error = "failed to initialize guest thread stack/TLS";
 			return false;
@@ -1598,6 +2218,42 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		return false;
 	}
 
+	private static bool TryMapGuestThreadTlsRegion(
+		IVirtualMemory virtualMemory,
+		out ulong tlsBase,
+		out string? error)
+	{
+		for (int i = 0; i < 64; i++)
+		{
+			var candidateBase = GuestThreadTlsBaseAddress - ((ulong)i * GuestThreadRegionStride);
+			var mappedBase = candidateBase - GuestThreadTlsPrefixSize;
+			var mappedSize = GuestThreadTlsSize + GuestThreadTlsPrefixSize;
+			if (!IsGuestThreadRegionFree(virtualMemory, mappedBase, mappedSize))
+			{
+				continue;
+			}
+			try
+			{
+				virtualMemory.Map(
+					mappedBase,
+					mappedSize,
+					fileOffset: 0,
+					fileData: ReadOnlySpan<byte>.Empty,
+					protection: ProgramHeaderFlags.Read | ProgramHeaderFlags.Write);
+				tlsBase = candidateBase;
+				error = null;
+				return true;
+			}
+			catch (InvalidOperationException)
+			{
+			}
+		}
+
+		tlsBase = 0;
+		error = $"failed to map guest TLS region near 0x{GuestThreadTlsBaseAddress:X16}";
+		return false;
+	}
+
 	private static bool IsGuestThreadRegionFree(IVirtualMemory virtualMemory, ulong candidateBase, ulong size)
 	{
 		var candidateEnd = candidateBase + size;
@@ -1631,29 +2287,24 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		return true;
 	}
 
-	private static bool InitializeGuestThreadTls(CpuContext context, ulong tlsBase)
+	private static bool InitializeGuestThreadTls(CpuContext context, ulong tlsBase, ulong threadHandle)
 	{
-		return context.TryWriteUInt64(tlsBase + 0x00, tlsBase) &&
-			context.TryWriteUInt64(tlsBase + 0x10, tlsBase) &&
-			context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBABEUL);
+		return context.TryWriteUInt64(tlsBase - 0xF0, 0) &&
+			context.TryWriteUInt64(tlsBase + 0x00, tlsBase) &&
+			context.TryWriteUInt64(tlsBase + 0x10, threadHandle) &&
+			context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBABEUL) &&
+			context.TryWriteUInt64(tlsBase + 0x60, tlsBase);
 	}
 
 	private void RunGuestThread(GuestThreadState thread, string reason)
 	{
 		Console.Error.WriteLine(
 			$"[LOADER][INFO] Pumping guest thread '{thread.Name}' reason={reason} entry=0x{thread.EntryPoint:X16}");
-		var previousContext = _cpuContext;
-		var previousTlsBase = _tlsBaseAddress;
-		var previousOwnsTlsBase = _ownsTlsBaseAddress;
-		var previousForcedGuestExit = _forcedGuestExit;
 		var previousLastError = LastError;
 		var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(thread.ThreadHandle);
 		try
 		{
-			_cpuContext = thread.Context;
-			_forcedGuestExit = false;
 			LastError = null;
-			BindTlsBase(thread.Context);
 			var exitReason = ExecuteGuestThreadEntry(thread.Context, thread.EntryPoint, thread.Name, out var blockReason);
 			lock (_guestThreadGate)
 			{
@@ -1678,15 +2329,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		finally
 		{
 			GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
-			_cpuContext = previousContext;
-			_tlsBaseAddress = previousTlsBase;
-			_ownsTlsBaseAddress = previousOwnsTlsBase;
-			if (_tlsBaseAddress != 0)
-			{
-				SeedTlsLayout(_tlsBaseAddress);
-				UpdateTlsHandlerBase(_tlsBaseAddress);
-			}
-			_forcedGuestExit = previousForcedGuestExit;
 			LastError = previousLastError;
 		}
 	}
@@ -1699,25 +2341,45 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			reason = "guest thread stack pointer is zero";
 			return GuestNativeCallExitReason.Exception;
 		}
-		void* ptr = VirtualAlloc(null, 256u, 12288u, 64u);
+		const uint stubSize = 512u;
+		void* ptr = VirtualAlloc(null, stubSize, 12288u, 64u);
 		if (ptr == null)
 		{
 			reason = "failed to allocate executable memory for guest thread stub";
 			return GuestNativeCallExitReason.Exception;
 		}
-		var previousSentinel = _entryReturnSentinelRip;
-		var previousHostRspSlotValue = _hostRspSlotStorage != 0 ? *(ulong*)_hostRspSlotStorage : 0;
-		var previousYieldRequested = _guestThreadYieldRequested;
-		var previousYieldReason = _guestThreadYieldReason;
+		var previousActiveBackend = _activeExecutionBackend;
+		var previousActiveContext = _activeCpuContext;
+		var previousSentinel = _activeEntryReturnSentinelRip;
+		var previousForcedExit = _activeForcedGuestExit;
+		var previousYieldRequested = _activeGuestThreadYieldRequested;
+		var previousYieldReason = _activeGuestThreadYieldReason;
+		nint previousHostRspSlotValue = TlsGetValue(_hostRspSlotTlsIndex);
 		try
 		{
+			_activeExecutionBackend = this;
+			_activeCpuContext = context;
+			_activeEntryReturnSentinelRip = 0;
+			_activeForcedGuestExit = false;
+			_activeGuestThreadYieldRequested = false;
+			_activeGuestThreadYieldReason = null;
+			BindTlsBase(context);
 			byte* ptr2 = (byte*)ptr;
-			ulong hostRspSlot = (ulong)ptr + 224uL;
+			ulong hostRspSlot = (ulong)ptr + stubSize - 16uL;
 			int offset = 0;
 			ptr2[offset++] = 83;
 			ptr2[offset++] = 85;
 			ptr2[offset++] = 87;
 			ptr2[offset++] = 86;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 84;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 85;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 86;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 87;
+			EmitHostNonvolatileXmmSave(ptr2, ref offset);
 			ptr2[offset++] = 73;
 			ptr2[offset++] = 186;
 			*(ulong*)(ptr2 + offset) = hostRspSlot;
@@ -1786,36 +2448,42 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[offset++] = 73;
 			ptr2[offset++] = 139;
 			ptr2[offset++] = 34;
+			EmitHostNonvolatileXmmRestore(ptr2, ref offset);
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 95;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 94;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 93;
+			ptr2[offset++] = 65;
+			ptr2[offset++] = 92;
 			ptr2[offset++] = 94;
 			ptr2[offset++] = 95;
 			ptr2[offset++] = 93;
 			ptr2[offset++] = 91;
 			ptr2[offset++] = 195;
 			ulong sentinel = (ulong)ptr + (ulong)sentinelOffset;
-			_entryReturnSentinelRip = sentinel;
+			ActiveEntryReturnSentinelRip = sentinel;
 			if (!context.TryWriteUInt64(context[CpuRegister.Rsp], sentinel))
 			{
 				reason = $"failed to patch guest thread return sentinel at 0x{context[CpuRegister.Rsp]:X16}";
 				return GuestNativeCallExitReason.Exception;
 			}
 			uint oldProtect = default(uint);
-			VirtualProtect(ptr, 256u, 64u, &oldProtect);
-			FlushInstructionCache(GetCurrentProcess(), ptr, 256u);
-			if (_hostRspSlotStorage != 0)
-			{
-				*(ulong*)_hostRspSlotStorage = hostRspSlot;
-			}
-			_guestThreadYieldRequested = false;
-			_guestThreadYieldReason = null;
+			VirtualProtect(ptr, stubSize, 64u, &oldProtect);
+			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
+			TlsSetValue(_hostRspSlotTlsIndex, (nint)hostRspSlot);
+			ActiveGuestThreadYieldRequested = false;
+			ActiveGuestThreadYieldReason = null;
 			try
 			{
-				var nativeReturn = Marshal.GetDelegateForFunctionPointer<NativeEntryDelegate>((nint)ptr)();
-				if (_guestThreadYieldRequested)
+				var nativeReturn = CallNativeEntry(ptr);
+				if (ActiveGuestThreadYieldRequested)
 				{
-					reason = _guestThreadYieldReason ?? "guest thread blocked";
+					reason = ActiveGuestThreadYieldReason ?? "guest thread blocked";
 					return GuestNativeCallExitReason.Blocked;
 				}
-				if (_forcedGuestExit)
+				if (ActiveForcedGuestExit)
 				{
 					reason = LastError ?? "guest thread forced exit";
 					return GuestNativeCallExitReason.ForcedExit;
@@ -1836,13 +2504,162 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 		finally
 		{
-			_entryReturnSentinelRip = previousSentinel;
-			if (_hostRspSlotStorage != 0)
+			TlsSetValue(_hostRspSlotTlsIndex, previousHostRspSlotValue);
+			RestoreActiveExecutionThread(
+				previousActiveBackend,
+				previousActiveContext,
+				previousSentinel,
+				previousForcedExit,
+				previousYieldRequested,
+				previousYieldReason);
+			VirtualFree(ptr, 0u, 32768u);
+		}
+	}
+
+	private unsafe GuestNativeCallExitReason ExecuteGuestContinuationEntry(CpuContext context, ulong entryPoint, string name, out string? reason)
+	{
+		reason = null;
+		if (context[CpuRegister.Rsp] == 0)
+		{
+			reason = "guest thread stack pointer is zero";
+			return GuestNativeCallExitReason.Exception;
+		}
+		const uint stubSize = 512u;
+		void* ptr = VirtualAlloc(null, stubSize, 12288u, 64u);
+		if (ptr == null)
+		{
+			reason = "failed to allocate executable memory for guest thread stub";
+			return GuestNativeCallExitReason.Exception;
+		}
+		var previousActiveBackend = _activeExecutionBackend;
+		var previousActiveContext = _activeCpuContext;
+		var previousSentinel = _activeEntryReturnSentinelRip;
+		var previousForcedExit = _activeForcedGuestExit;
+		var previousYieldRequested = _activeGuestThreadYieldRequested;
+		var previousYieldReason = _activeGuestThreadYieldReason;
+		nint previousHostRspSlotValue = TlsGetValue(_hostRspSlotTlsIndex);
+		try
+		{
+			_activeExecutionBackend = this;
+			_activeCpuContext = context;
+			_activeEntryReturnSentinelRip = 0;
+			_activeForcedGuestExit = false;
+			_activeGuestThreadYieldRequested = false;
+			_activeGuestThreadYieldReason = null;
+			BindTlsBase(context);
+			byte* ptr2 = (byte*)ptr;
+			ulong hostRspSlot = (ulong)ptr + stubSize - 16uL;
+			int offset = 0;
+
+			void Emit(byte value) => ptr2[offset++] = value;
+			void EmitU64(ulong value)
 			{
-				*(ulong*)_hostRspSlotStorage = previousHostRspSlotValue;
+				*(ulong*)(ptr2 + offset) = value;
+				offset += sizeof(ulong);
 			}
-			_guestThreadYieldRequested = previousYieldRequested;
-			_guestThreadYieldReason = previousYieldReason;
+			void EmitMovR64Imm(byte rex, byte opcode, ulong value)
+			{
+				Emit(rex);
+				Emit(opcode);
+				EmitU64(value);
+			}
+
+			Emit(0x53); // push rbx
+			Emit(0x55); // push rbp
+			Emit(0x57); // push rdi
+			Emit(0x56); // push rsi
+			Emit(0x41); Emit(0x54); // push r12
+			Emit(0x41); Emit(0x55); // push r13
+			Emit(0x41); Emit(0x56); // push r14
+			Emit(0x41); Emit(0x57); // push r15
+			EmitHostNonvolatileXmmSave(ptr2, ref offset);
+			EmitMovR64Imm(0x49, 0xBA, hostRspSlot); // mov r10, hostRspSlot
+			Emit(0x49); Emit(0x89); Emit(0x22); // mov [r10], rsp
+			EmitMovR64Imm(0x48, 0xB8, context[CpuRegister.Rsp]); // mov rax, guest rsp
+			Emit(0x48); Emit(0x89); Emit(0xC4); // mov rsp, rax
+			Emit(0x48); Emit(0x83); Emit(0xEC); Emit(0x08); // sub rsp, 8
+			EmitMovR64Imm(0x48, 0xBB, context[CpuRegister.Rbx]); // mov rbx, imm64
+			EmitMovR64Imm(0x48, 0xBD, context[CpuRegister.Rbp]); // mov rbp, imm64
+			EmitMovR64Imm(0x48, 0xBF, context[CpuRegister.Rdi]); // mov rdi, imm64
+			EmitMovR64Imm(0x48, 0xBE, context[CpuRegister.Rsi]); // mov rsi, imm64
+			EmitMovR64Imm(0x48, 0xBA, context[CpuRegister.Rdx]); // mov rdx, imm64
+			EmitMovR64Imm(0x48, 0xB9, context[CpuRegister.Rcx]); // mov rcx, imm64
+			EmitMovR64Imm(0x49, 0xB8, context[CpuRegister.R8]); // mov r8, imm64
+			EmitMovR64Imm(0x49, 0xB9, context[CpuRegister.R9]); // mov r9, imm64
+			EmitMovR64Imm(0x49, 0xBC, context[CpuRegister.R12]); // mov r12, imm64
+			EmitMovR64Imm(0x49, 0xBD, context[CpuRegister.R13]); // mov r13, imm64
+			EmitMovR64Imm(0x49, 0xBE, context[CpuRegister.R14]); // mov r14, imm64
+			EmitMovR64Imm(0x49, 0xBF, context[CpuRegister.R15]); // mov r15, imm64
+			EmitMovR64Imm(0x48, 0xB8, context[CpuRegister.Rax]); // mov rax, imm64
+			EmitMovR64Imm(0x49, 0xBB, entryPoint); // mov r11, entryPoint
+			Emit(0x41); Emit(0xFF); Emit(0xD3); // call r11
+			int sentinelOffset = offset + 4;
+			Emit(0x48); Emit(0x83); Emit(0xC4); Emit(0x08); // add rsp, 8
+			EmitMovR64Imm(0x49, 0xBA, hostRspSlot); // mov r10, hostRspSlot
+			Emit(0x49); Emit(0x8B); Emit(0x22); // mov rsp, [r10]
+			EmitHostNonvolatileXmmRestore(ptr2, ref offset);
+			Emit(0x41); Emit(0x5F); // pop r15
+			Emit(0x41); Emit(0x5E); // pop r14
+			Emit(0x41); Emit(0x5D); // pop r13
+			Emit(0x41); Emit(0x5C); // pop r12
+			Emit(0x5E); // pop rsi
+			Emit(0x5F); // pop rdi
+			Emit(0x5D); // pop rbp
+			Emit(0x5B); // pop rbx
+			Emit(0xC3); // ret
+			ulong sentinel = (ulong)ptr + (ulong)sentinelOffset;
+			ActiveEntryReturnSentinelRip = sentinel;
+			var sentinelStackAddress = context[CpuRegister.Rsp] >= 16uL
+				? context[CpuRegister.Rsp] - 16uL
+				: 0;
+			if (sentinelStackAddress == 0 || !context.TryWriteUInt64(sentinelStackAddress, sentinel))
+			{
+				reason = $"failed to patch guest continuation return sentinel at 0x{sentinelStackAddress:X16}";
+				return GuestNativeCallExitReason.Exception;
+			}
+			uint oldProtect = default(uint);
+			VirtualProtect(ptr, stubSize, 64u, &oldProtect);
+			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
+			TlsSetValue(_hostRspSlotTlsIndex, (nint)hostRspSlot);
+			ActiveGuestThreadYieldRequested = false;
+			ActiveGuestThreadYieldReason = null;
+			try
+			{
+				var nativeReturn = CallNativeEntry(ptr);
+				if (ActiveGuestThreadYieldRequested)
+				{
+					reason = ActiveGuestThreadYieldReason ?? "guest thread blocked";
+					return GuestNativeCallExitReason.Blocked;
+				}
+				if (ActiveForcedGuestExit)
+				{
+					reason = LastError ?? "guest thread forced exit";
+					return GuestNativeCallExitReason.ForcedExit;
+				}
+				reason = $"returned 0x{nativeReturn:X8}";
+				return GuestNativeCallExitReason.Returned;
+			}
+			catch (AccessViolationException ex)
+			{
+				reason = "access violation: " + ex.Message;
+				return GuestNativeCallExitReason.Exception;
+			}
+			catch (Exception ex)
+			{
+				reason = ex.GetType().Name + ": " + ex.Message;
+				return GuestNativeCallExitReason.Exception;
+			}
+		}
+		finally
+		{
+			TlsSetValue(_hostRspSlotTlsIndex, previousHostRspSlotValue);
+			RestoreActiveExecutionThread(
+				previousActiveBackend,
+				previousActiveContext,
+				previousSentinel,
+				previousForcedExit,
+				previousYieldRequested,
+				previousYieldReason);
 			VirtualFree(ptr, 0u, 32768u);
 		}
 	}
@@ -1854,6 +2671,55 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			return value;
 		}
 		return value & ~(alignment - 1);
+	}
+
+	private static unsafe void EmitByte(byte* code, ref int offset, byte value)
+	{
+		code[offset++] = value;
+	}
+
+	private static unsafe void EmitUInt32(byte* code, ref int offset, uint value)
+	{
+		*(uint*)(code + offset) = value;
+		offset += sizeof(uint);
+	}
+
+	private static unsafe void EmitHostNonvolatileXmmSave(byte* code, ref int offset)
+	{
+		EmitByte(code, ref offset, 0x48);
+		EmitByte(code, ref offset, 0x81);
+		EmitByte(code, ref offset, 0xEC);
+		EmitUInt32(code, ref offset, HostXmmSaveAreaSize);
+		for (int xmm = 6; xmm <= 15; xmm++)
+		{
+			EmitMovdquRspXmm(code, ref offset, store: true, xmm, (byte)((xmm - 6) * 16));
+		}
+	}
+
+	private static unsafe void EmitHostNonvolatileXmmRestore(byte* code, ref int offset)
+	{
+		for (int xmm = 6; xmm <= 15; xmm++)
+		{
+			EmitMovdquRspXmm(code, ref offset, store: false, xmm, (byte)((xmm - 6) * 16));
+		}
+		EmitByte(code, ref offset, 0x48);
+		EmitByte(code, ref offset, 0x81);
+		EmitByte(code, ref offset, 0xC4);
+		EmitUInt32(code, ref offset, HostXmmSaveAreaSize);
+	}
+
+	private static unsafe void EmitMovdquRspXmm(byte* code, ref int offset, bool store, int xmm, byte displacement)
+	{
+		EmitByte(code, ref offset, 0xF3);
+		if (xmm >= 8)
+		{
+			EmitByte(code, ref offset, 0x44);
+		}
+		EmitByte(code, ref offset, 0x0F);
+		EmitByte(code, ref offset, store ? (byte)0x7F : (byte)0x6F);
+		EmitByte(code, ref offset, (byte)(0x44 | ((xmm & 7) << 3)));
+		EmitByte(code, ref offset, 0x24);
+		EmitByte(code, ref offset, displacement);
 	}
 
 	private unsafe bool ExecuteEntry(CpuContext context, ulong entryPoint, out OrbisGen2Result result)
@@ -1868,22 +2734,46 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			return false;
 		}
 		Console.Error.WriteLine($"[LOADER][INFO] StackTop: 0x{num:X16}");
-		void* ptr = VirtualAlloc(null, 256u, 12288u, 64u);
+		const uint stubSize = 512u;
+		void* ptr = VirtualAlloc(null, stubSize, 12288u, 64u);
 		if (ptr == null)
 		{
 			LastError = "Failed to allocate executable memory for stub";
 			result = OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
 			return false;
 		}
+		var previousActiveBackend = _activeExecutionBackend;
+		var previousActiveContext = _activeCpuContext;
+		var previousSentinel = _activeEntryReturnSentinelRip;
+		var previousForcedExit = _activeForcedGuestExit;
+		var previousYieldRequested = _activeGuestThreadYieldRequested;
+		var previousYieldReason = _activeGuestThreadYieldReason;
+		nint previousHostRspSlotValue = TlsGetValue(_hostRspSlotTlsIndex);
 		try
 		{
+			_activeExecutionBackend = this;
+			_activeCpuContext = context;
+			_activeEntryReturnSentinelRip = 0;
+			_activeForcedGuestExit = false;
+			_activeGuestThreadYieldRequested = false;
+			_activeGuestThreadYieldReason = null;
+			BindTlsBase(context);
 			byte* ptr2 = (byte*)ptr;
-			ulong num2 = (ulong)ptr + 224uL;
+			ulong num2 = (ulong)ptr + stubSize - 16uL;
 			int num3 = 0;
 			ptr2[num3++] = 83;
 			ptr2[num3++] = 85;
 			ptr2[num3++] = 87;
 			ptr2[num3++] = 86;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 84;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 85;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 86;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 87;
+			EmitHostNonvolatileXmmSave(ptr2, ref num3);
 			ptr2[num3++] = 73;
 			ptr2[num3++] = 186;
 			*(ulong*)(ptr2 + num3) = num2;
@@ -1952,13 +2842,22 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num3++] = 73;
 			ptr2[num3++] = 139;
 			ptr2[num3++] = 34;
+			EmitHostNonvolatileXmmRestore(ptr2, ref num3);
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 95;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 94;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 93;
+			ptr2[num3++] = 65;
+			ptr2[num3++] = 92;
 			ptr2[num3++] = 94;
 			ptr2[num3++] = 95;
 			ptr2[num3++] = 93;
 			ptr2[num3++] = 91;
 			ptr2[num3++] = 195;
 			ulong value = (ulong)ptr + (ulong)num4;
-			_entryReturnSentinelRip = value;
+			ActiveEntryReturnSentinelRip = value;
 			if (!context.TryWriteUInt64(context[CpuRegister.Rsp], value))
 			{
 				LastError = $"Failed to patch native return sentinel at 0x{context[CpuRegister.Rsp]:X16}";
@@ -1966,16 +2865,17 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				return false;
 			}
 			uint num5 = default(uint);
-			VirtualProtect(ptr, 256u, 64u, &num5);
-			FlushInstructionCache(GetCurrentProcess(), ptr, 256u);
+			VirtualProtect(ptr, stubSize, 64u, &num5);
+			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
 			if (_hostRspSlotStorage != 0)
 			{
 				*(ulong*)_hostRspSlotStorage = num2;
 			}
+			TlsSetValue(_hostRspSlotTlsIndex, (nint)num2);
 			if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_SENTINEL_PROBE"), "1", StringComparison.Ordinal))
 			{
 				Console.Error.WriteLine("[LOADER][INFO] Running unresolved sentinel probe...");
-				Marshal.GetDelegateForFunctionPointer<NativeEntryDelegate>((nint)65534)();
+				CallNativeEntry((void*)65534);
 				Console.Error.WriteLine("[LOADER][INFO] Sentinel probe returned.");
 			}
 			Console.Error.WriteLine("[LOADER][INFO] Calling guest entry...");
@@ -1983,9 +2883,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			int num6 = -1;
 			try
 			{
-				num6 = Marshal.GetDelegateForFunctionPointer<NativeEntryDelegate>((nint)ptr)();
+				num6 = CallNativeEntry(ptr);
 				Console.Error.WriteLine($"[LOADER][INFO] Guest returned: {num6}");
-				Pump(context, "entry_return");
+				PumpUntilGuestThreadsIdle(context, "entry_return");
 			}
 			catch (AccessViolationException ex)
 			{
@@ -2002,7 +2902,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				LastError = "Exception during execution: " + ex2.GetType().Name + ": " + ex2.Message;
 				num6 = -1;
 			}
-			if (_forcedGuestExit)
+			if (ActiveForcedGuestExit)
 			{
 				result = OrbisGen2Result.ORBIS_GEN2_ERROR_CPU_TRAP;
 				if (string.IsNullOrEmpty(LastError))
@@ -2029,11 +2929,19 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		finally
 		{
 			StopStallWatchdog();
-			_entryReturnSentinelRip = 0uL;
+			ActiveEntryReturnSentinelRip = 0uL;
+			TlsSetValue(_hostRspSlotTlsIndex, previousHostRspSlotValue);
 			if (_hostRspSlotStorage != 0)
 			{
 				*(long*)_hostRspSlotStorage = 0L;
 			}
+			RestoreActiveExecutionThread(
+				previousActiveBackend,
+				previousActiveContext,
+				previousSentinel,
+				previousForcedExit,
+				previousYieldRequested,
+				previousYieldReason);
 			VirtualFree(ptr, 0u, 32768u);
 		}
 	}
@@ -2165,6 +3073,24 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 
 	[DllImport("kernel32.dll")]
+	private static extern uint TlsAlloc();
+
+	[DllImport("kernel32.dll")]
+	private static extern bool TlsFree(uint dwTlsIndex);
+
+	[DllImport("kernel32.dll")]
+	private static extern bool TlsSetValue(uint dwTlsIndex, nint lpTlsValue);
+
+	[DllImport("kernel32.dll")]
+	private static extern nint TlsGetValue(uint dwTlsIndex);
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+	private static extern nint GetModuleHandle(string lpModuleName);
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+	private static extern nint GetProcAddress(nint hModule, string procName);
+
+	[DllImport("kernel32.dll")]
 	private unsafe static extern void* AddVectoredExceptionHandler(uint first, IntPtr handler);
 
 	[DllImport("kernel32.dll")]
@@ -2230,6 +3156,16 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		{
 			VirtualFree((void*)_hostRspSlotStorage, 0u, 32768u);
 			_hostRspSlotStorage = 0;
+		}
+		if (_guestTlsBaseTlsIndex != uint.MaxValue)
+		{
+			TlsFree(_guestTlsBaseTlsIndex);
+			_guestTlsBaseTlsIndex = uint.MaxValue;
+		}
+		if (_hostRspSlotTlsIndex != uint.MaxValue)
+		{
+			TlsFree(_hostRspSlotTlsIndex);
+			_hostRspSlotTlsIndex = uint.MaxValue;
 		}
 		if (_unresolvedReturnStub != 0)
 		{

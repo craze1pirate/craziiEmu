@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
 using SharpEmu.Core.Cpu.Disasm;
 using SharpEmu.HLE;
 
@@ -61,7 +62,7 @@ public sealed partial class DirectExecutionBackend
 	{
 		if (_vectoredHandlerDepth > 0)
 		{
-			Console.Error.WriteLine("[LOADER][TRACE] Nested VEH exception; passing through.");
+			LogNestedVectoredException(exceptionInfo);
 			Console.Error.Flush();
 			return 0;
 		}
@@ -84,9 +85,17 @@ public sealed partial class DirectExecutionBackend
 			ulong rip = ReadCtxU64(contextRecord, 248);
 			ulong rsp = ReadCtxU64(contextRecord, 152);
 
-			if (exceptionCode == 3221225477u && TryHandleLazyCommittedPage(exceptionRecord))
+			if (exceptionCode == 3221225477u && TryHandleLazyCommittedPage(exceptionRecord, rip, rsp))
 			{
 				return -1;
+			}
+			if (IsBenignHostDebugException(exceptionCode))
+			{
+				return -1;
+			}
+			if (exceptionCode == MSVC_CPP_EXCEPTION)
+			{
+				return 0;
 			}
 
 			switch (exceptionCode)
@@ -275,6 +284,37 @@ public sealed partial class DirectExecutionBackend
 		finally
 		{
 			_vectoredHandlerDepth--;
+		}
+	}
+
+	private static bool IsBenignHostDebugException(uint exceptionCode)
+	{
+		return exceptionCode is DBG_PRINTEXCEPTION_C or DBG_PRINTEXCEPTION_WIDE_C or MS_VC_THREADNAME_EXCEPTION;
+	}
+
+	private unsafe static void LogNestedVectoredException(void* exceptionInfo)
+	{
+		int count = Interlocked.Increment(ref _nestedVehTraceCount);
+		if (count > 16 && count % 128 != 0)
+		{
+			return;
+		}
+
+		try
+		{
+			EXCEPTION_POINTERS* pointers = (EXCEPTION_POINTERS*)exceptionInfo;
+			EXCEPTION_RECORD* record = pointers->ExceptionRecord;
+			void* contextRecord = pointers->ContextRecord;
+			ulong rip = contextRecord != null ? ReadCtxU64(contextRecord, 248) : 0;
+			ulong rsp = contextRecord != null ? ReadCtxU64(contextRecord, 152) : 0;
+			ulong accessType = record->NumberParameters >= 1 ? *record->ExceptionInformation : 0;
+			ulong target = record->NumberParameters >= 2 ? record->ExceptionInformation[1] : 0;
+			Console.Error.WriteLine(
+				$"[LOADER][TRACE] Nested VEH exception#{count}: code=0x{record->ExceptionCode:X8} ex=0x{(ulong)record->ExceptionAddress:X16} rip=0x{rip:X16} rsp=0x{rsp:X16} type={accessType} target=0x{target:X16}; passing through.");
+		}
+		catch
+		{
+			Console.Error.WriteLine($"[LOADER][TRACE] Nested VEH exception#{count}; passing through.");
 		}
 	}
 
@@ -828,7 +868,7 @@ public sealed partial class DirectExecutionBackend
 		return true;
 	}
 
-	private unsafe static bool TryHandleLazyCommittedPage(EXCEPTION_RECORD* exceptionRecord)
+	private unsafe bool TryHandleLazyCommittedPage(EXCEPTION_RECORD* exceptionRecord, ulong rip, ulong rsp)
 	{
 		if (exceptionRecord->NumberParameters < 2)
 		{
@@ -845,6 +885,10 @@ public sealed partial class DirectExecutionBackend
 		{
 			return false;
 		}
+		if (!IsGuestOwnedLazyCommitAddress(faultAddress, out var owner))
+		{
+			return false;
+		}
 		if (VirtualQuery((void*)faultAddress, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) == 0)
 		{
 			return false;
@@ -852,7 +896,7 @@ public sealed partial class DirectExecutionBackend
 
 		ulong pageBase = faultAddress & 0xFFFFFFFFFFFFF000uL;
 		uint commitProtect = ResolveLazyCommitProtection(accessType, mbi.AllocationProtect);
-		Console.Error.WriteLine($"[LOADER][TRACE] lazy-query: fault=0x{faultAddress:X16} state=0x{mbi.State:X08} base=0x{mbi.BaseAddress:X16} size=0x{mbi.RegionSize:X16} alloc=0x{mbi.AllocationProtect:X08} prot=0x{mbi.Protect:X08}");
+		Console.Error.WriteLine($"[LOADER][TRACE] lazy-query: fault=0x{faultAddress:X16} owner={owner} rip=0x{rip:X16} rsp=0x{rsp:X16} state=0x{mbi.State:X08} base=0x{mbi.BaseAddress:X16} size=0x{mbi.RegionSize:X16} alloc=0x{mbi.AllocationProtect:X08} prot=0x{mbi.Protect:X08}");
 
 		bool committed = false;
 		ulong committedBase = 0;

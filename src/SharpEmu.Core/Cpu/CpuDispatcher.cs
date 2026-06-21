@@ -22,6 +22,7 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
     private const ulong StackSize = 0x0020_0000UL;
     private const ulong TlsBaseAddress = 0x7FFE_0000_0000UL;
     private const ulong TlsSize = 0x0001_0000UL;
+    private const ulong TlsPrefixSize = 0x0000_1000UL;
     private const ulong BootstrapStubBaseAddress = 0x7FFD_F000_0000UL;
     private const ulong BootstrapPayloadBaseAddress = 0x7FFD_E000_0000UL;
     private const ulong DynlibFallbackStubBaseAddress = 0x7FFD_D000_0000UL;
@@ -342,11 +343,12 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         for (var i = 0; i < 32; i++)
         {
             var candidateBase = TlsBaseAddress - ((ulong)i * tlsStride);
+            var mappedBase = candidateBase - TlsPrefixSize;
             try
             {
                 _virtualMemory.Map(
-                    candidateBase,
-                    TlsSize,
+                    mappedBase,
+                    TlsSize + TlsPrefixSize,
                     fileOffset: 0,
                     fileData: ReadOnlySpan<byte>.Empty,
                     ProgramHeaderFlags.Read | ProgramHeaderFlags.Write);
@@ -363,9 +365,11 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
 
     private static bool InitializeTls(CpuContext context, ulong tlsBase)
     {
-        return context.TryWriteUInt64(tlsBase + 0x00, tlsBase) &&
+        return context.TryWriteUInt64(tlsBase - 0xF0, 0) &&
+               context.TryWriteUInt64(tlsBase + 0x00, tlsBase) &&
                context.TryWriteUInt64(tlsBase + 0x10, tlsBase) &&
-               context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBABEUL);
+               context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBABEUL) &&
+               context.TryWriteUInt64(tlsBase + 0x60, tlsBase);
     }
 
     private static bool InitializeGuestFrameChainSentinel(CpuContext context)
@@ -420,6 +424,13 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
             return false;
         }
 
+        var entryStackPointer = entryParamsAddress - sizeof(ulong);
+        if (!context.TryWriteUInt64(entryStackPointer, 0))
+        {
+            return false;
+        }
+
+        context[CpuRegister.Rsp] = entryStackPointer;
         context[CpuRegister.Rdi] = entryParamsAddress;
         context[CpuRegister.Rsi] = programExitHandlerAddress;
         context[CpuRegister.Rdx] = 0;
