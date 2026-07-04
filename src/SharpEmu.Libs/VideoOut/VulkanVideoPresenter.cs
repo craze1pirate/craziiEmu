@@ -8,7 +8,9 @@ using SharpEmu.Libs.Agc;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 using Silk.NET.Windowing;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using VkBuffer = Silk.NET.Vulkan.Buffer;
 using VkSemaphore = Silk.NET.Vulkan.Semaphore;
@@ -597,6 +599,24 @@ internal static unsafe class VulkanVideoPresenter
         return true;
     }
 
+    internal static bool IsGuestImageAvailable(
+        ulong address,
+        uint format,
+        uint numberType)
+    {
+        var guestFormat = GetGuestTextureFormat(format, numberType);
+        if (address == 0 || guestFormat == 0)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            return _availableGuestImages.TryGetValue(address, out var availableFormat) &&
+                availableFormat == guestFormat;
+        }
+    }
+
     public static bool TrySubmitGuestImageBlit(
         ulong sourceAddress,
         uint sourceWidth,
@@ -867,7 +887,42 @@ internal static unsafe class VulkanVideoPresenter
         private int _tracedVertexBufferCount;
         private readonly Dictionary<byte[], Pipeline> _computePipelines =
             new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<GraphicsPipelineKey, Pipeline> _graphicsPipelines = new();
+        private readonly Dictionary<VulkanGuestSampler, Sampler> _samplers = new();
+        private readonly Dictionary<byte[], string> _shaderDigests =
+            new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<DescriptorLayoutKey, DescriptorLayoutBundle>
+            _descriptorLayouts = new();
+        private readonly Dictionary<HostBufferPoolKey, Stack<HostBufferAllocation>>
+            _hostBufferPool = new();
+        private readonly Dictionary<ulong, HostBufferAllocation> _hostBufferAllocations = new();
         private readonly Queue<PendingGuestSubmission> _pendingGuestSubmissions = new();
+
+        private readonly record struct GraphicsPipelineKey(
+            string VertexShader,
+            string FragmentShader,
+            ulong RenderPass,
+            PrimitiveTopology Topology,
+            VulkanGuestBlendState Blend,
+            string ResourceLayout,
+            string VertexLayout);
+
+        private readonly record struct HostBufferPoolKey(
+            BufferUsageFlags Usage,
+            ulong Capacity);
+
+        private readonly record struct DescriptorLayoutKey(
+            ShaderStageFlags Stages,
+            string Resources);
+
+        private sealed record DescriptorLayoutBundle(
+            DescriptorSetLayout DescriptorSetLayout,
+            PipelineLayout PipelineLayout);
+
+        private sealed record HostBufferAllocation(
+            VkBuffer Buffer,
+            DeviceMemory Memory,
+            HostBufferPoolKey Key);
 
         private sealed class TranslatedDrawResources
         {
@@ -875,6 +930,7 @@ internal static unsafe class VulkanVideoPresenter
             public PipelineLayout PipelineLayout;
             public Pipeline Pipeline;
             public bool PipelineCached;
+            public bool DescriptorLayoutCached;
             public DescriptorSetLayout DescriptorSetLayout;
             public DescriptorPool DescriptorPool;
             public DescriptorSet DescriptorSet;
@@ -1978,81 +2034,16 @@ internal static unsafe class VulkanVideoPresenter
             var storageImageCount = textureCount - sampledImageCount;
             var globalBufferCount = resources.GlobalMemoryBuffers.Length;
             var bindingCount = textureCount + (globalBufferCount == 0 ? 0 : 1);
+            var layout = GetOrCreateDescriptorLayout(resources, stageFlags, bindingCount);
+            resources.DescriptorSetLayout = layout.DescriptorSetLayout;
+            resources.PipelineLayout = layout.PipelineLayout;
+            resources.DescriptorLayoutCached = true;
             if (bindingCount == 0)
             {
-                var layoutInfo = new PipelineLayoutCreateInfo
-                {
-                    SType = StructureType.PipelineLayoutCreateInfo,
-                };
-                PipelineLayout pipelineLayout;
-                Check(
-                    _vk.CreatePipelineLayout(_device, &layoutInfo, null, out pipelineLayout),
-                    "vkCreatePipelineLayout");
-                resources.PipelineLayout = pipelineLayout;
                 return;
             }
 
-            var bindings = new DescriptorSetLayoutBinding[bindingCount];
-            var bindingOffset = 0;
-            if (globalBufferCount != 0)
-            {
-                bindings[bindingOffset++] = new DescriptorSetLayoutBinding
-                {
-                    Binding = 0,
-                    DescriptorType = DescriptorType.StorageBuffer,
-                    DescriptorCount = (uint)globalBufferCount,
-                    StageFlags = stageFlags,
-                };
-            }
-
-            for (var index = 0; index < textureCount; index++)
-            {
-                bindings[bindingOffset + index] = new DescriptorSetLayoutBinding
-                {
-                    Binding = (uint)(index + 1),
-                    DescriptorType = resources.Textures[index].IsStorage
-                        ? DescriptorType.StorageImage
-                        : DescriptorType.CombinedImageSampler,
-                    DescriptorCount = 1,
-                    StageFlags = stageFlags,
-                };
-            }
-
-            fixed (DescriptorSetLayoutBinding* bindingPointer = bindings)
-            {
-                var layoutInfo = new DescriptorSetLayoutCreateInfo
-                {
-                    SType = StructureType.DescriptorSetLayoutCreateInfo,
-                    BindingCount = (uint)bindings.Length,
-                    PBindings = bindingPointer,
-                };
-                DescriptorSetLayout descriptorSetLayout;
-                Check(
-                    _vk.CreateDescriptorSetLayout(
-                        _device,
-                        &layoutInfo,
-                        null,
-                        out descriptorSetLayout),
-                    "vkCreateDescriptorSetLayout");
-                resources.DescriptorSetLayout = descriptorSetLayout;
-            }
-
-            var setLayout = resources.DescriptorSetLayout;
-            var pipelineLayoutInfo = new PipelineLayoutCreateInfo
-            {
-                SType = StructureType.PipelineLayoutCreateInfo,
-                SetLayoutCount = 1,
-                PSetLayouts = &setLayout,
-            };
-            PipelineLayout translatedPipelineLayout;
-            Check(
-                _vk.CreatePipelineLayout(
-                    _device,
-                    &pipelineLayoutInfo,
-                    null,
-                    out translatedPipelineLayout),
-                "vkCreatePipelineLayout");
-            resources.PipelineLayout = translatedPipelineLayout;
+            var setLayout = layout.DescriptorSetLayout;
 
             var poolSizes = new DescriptorPoolSize[
                 (sampledImageCount == 0 ? 0 : 1) +
@@ -2202,6 +2193,21 @@ internal static unsafe class VulkanVideoPresenter
             RenderPass renderPass,
             Extent2D extent)
         {
+            var pipelineKey = new GraphicsPipelineKey(
+                GetShaderDigest(vertexSpirv),
+                GetShaderDigest(fragmentSpirv),
+                renderPass.Handle,
+                resources.Topology,
+                resources.Blend,
+                GetResourceLayoutKey(resources),
+                GetVertexLayoutKey(resources));
+            if (_graphicsPipelines.TryGetValue(pipelineKey, out var cachedPipeline))
+            {
+                resources.Pipeline = cachedPipeline;
+                resources.PipelineCached = true;
+                return;
+            }
+
             var vertexModule = CreateShaderModule(vertexSpirv);
             var fragmentModule = CreateShaderModule(fragmentSpirv);
             var entryPoint = (byte*)SilkMarshal.StringToPtr("main");
@@ -2353,6 +2359,8 @@ internal static unsafe class VulkanVideoPresenter
                             out pipeline),
                         "vkCreateGraphicsPipelines(translated)");
                     resources.Pipeline = pipeline;
+                    resources.PipelineCached = true;
+                    _graphicsPipelines.Add(pipelineKey, pipeline);
                     SetDebugName(
                         ObjectType.Pipeline,
                         pipeline.Handle,
@@ -2365,6 +2373,129 @@ internal static unsafe class VulkanVideoPresenter
                 _vk.DestroyShaderModule(_device, fragmentModule, null);
                 _vk.DestroyShaderModule(_device, vertexModule, null);
             }
+        }
+
+        private DescriptorLayoutBundle GetOrCreateDescriptorLayout(
+            TranslatedDrawResources resources,
+            ShaderStageFlags stageFlags,
+            int bindingCount)
+        {
+            var key = new DescriptorLayoutKey(stageFlags, GetResourceLayoutKey(resources));
+            if (_descriptorLayouts.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            DescriptorSetLayout descriptorSetLayout = default;
+            if (bindingCount != 0)
+            {
+                var bindings = new DescriptorSetLayoutBinding[bindingCount];
+                var bindingOffset = 0;
+                if (resources.GlobalMemoryBuffers.Length != 0)
+                {
+                    bindings[bindingOffset++] = new DescriptorSetLayoutBinding
+                    {
+                        Binding = 0,
+                        DescriptorType = DescriptorType.StorageBuffer,
+                        DescriptorCount = (uint)resources.GlobalMemoryBuffers.Length,
+                        StageFlags = stageFlags,
+                    };
+                }
+
+                for (var index = 0; index < resources.Textures.Length; index++)
+                {
+                    bindings[bindingOffset + index] = new DescriptorSetLayoutBinding
+                    {
+                        Binding = (uint)(index + 1),
+                        DescriptorType = resources.Textures[index].IsStorage
+                            ? DescriptorType.StorageImage
+                            : DescriptorType.CombinedImageSampler,
+                        DescriptorCount = 1,
+                        StageFlags = stageFlags,
+                    };
+                }
+
+                fixed (DescriptorSetLayoutBinding* bindingPointer = bindings)
+                {
+                    var descriptorInfo = new DescriptorSetLayoutCreateInfo
+                    {
+                        SType = StructureType.DescriptorSetLayoutCreateInfo,
+                        BindingCount = (uint)bindings.Length,
+                        PBindings = bindingPointer,
+                    };
+                    Check(
+                        _vk.CreateDescriptorSetLayout(
+                            _device,
+                            &descriptorInfo,
+                            null,
+                            out descriptorSetLayout),
+                        "vkCreateDescriptorSetLayout");
+                }
+            }
+
+            var pipelineInfo = new PipelineLayoutCreateInfo
+            {
+                SType = StructureType.PipelineLayoutCreateInfo,
+            };
+            if (descriptorSetLayout.Handle != 0)
+            {
+                pipelineInfo.SetLayoutCount = 1;
+                pipelineInfo.PSetLayouts = &descriptorSetLayout;
+            }
+
+            PipelineLayout pipelineLayout;
+            Check(
+                _vk.CreatePipelineLayout(
+                    _device,
+                    &pipelineInfo,
+                    null,
+                    out pipelineLayout),
+                "vkCreatePipelineLayout");
+            var created = new DescriptorLayoutBundle(descriptorSetLayout, pipelineLayout);
+            _descriptorLayouts.Add(key, created);
+            return created;
+        }
+
+        private string GetShaderDigest(byte[] spirv)
+        {
+            if (_shaderDigests.TryGetValue(spirv, out var digest))
+            {
+                return digest;
+            }
+
+            digest = Convert.ToHexString(SHA256.HashData(spirv));
+            _shaderDigests.Add(spirv, digest);
+            return digest;
+        }
+
+        private static string GetResourceLayoutKey(TranslatedDrawResources resources)
+        {
+            var key = new StringBuilder();
+            key.Append(resources.GlobalMemoryBuffers.Length).Append(':');
+            foreach (var texture in resources.Textures)
+            {
+                key.Append(texture.IsStorage ? 'S' : 'T');
+            }
+
+            return key.ToString();
+        }
+
+        private static string GetVertexLayoutKey(TranslatedDrawResources resources)
+        {
+            var key = new StringBuilder();
+            foreach (var buffer in resources.VertexBuffers)
+            {
+                key.Append(buffer.Location).Append(',')
+                    .Append(buffer.ComponentCount).Append(',')
+                    .Append(buffer.DataFormat).Append(',')
+                    .Append(buffer.NumberFormat).Append(',')
+                    .Append(buffer.Stride == 0
+                        ? Math.Max(buffer.ComponentCount, 1) * sizeof(float)
+                        : buffer.Stride)
+                    .Append(';');
+            }
+
+            return key.ToString();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -2779,7 +2910,7 @@ internal static unsafe class VulkanVideoPresenter
             SetDebugName(ObjectType.Buffer, stagingBuffer.Handle, $"{debugName} staging");
             SetDebugName(ObjectType.Image, image.Handle, $"{debugName} image");
             SetDebugName(ObjectType.ImageView, view.Handle, $"{debugName} view");
-            return new TextureResource
+            var resource = new TextureResource
             {
                 Address = texture.Address,
                 StagingBuffer = stagingBuffer,
@@ -2795,6 +2926,38 @@ internal static unsafe class VulkanVideoPresenter
                 OwnsStorage = true,
                 SamplerState = texture.Sampler,
             };
+
+            if (texture.Address != 0 &&
+                !_guestImages.ContainsKey(texture.Address))
+            {
+                var guestImage = new GuestImageResource
+                {
+                    Address = texture.Address,
+                    Width = width,
+                    Height = height,
+                    MipLevels = 1,
+                    Format = vkFormat,
+                    Image = image,
+                    Memory = imageMemory,
+                    View = view,
+                    InitialUploadPending = true,
+                };
+                _guestImages.Add(texture.Address, guestImage);
+                resource.OwnsStorage = false;
+                resource.GuestImage = guestImage;
+                lock (_gate)
+                {
+                    var guestFormat = VulkanVideoPresenter.GetGuestTextureFormat(
+                        texture.Format,
+                        texture.NumberType);
+                    if (guestFormat != 0)
+                    {
+                        _availableGuestImages[texture.Address] = guestFormat;
+                    }
+                }
+            }
+
+            return resource;
         }
 
         private void DumpTextureUpload(
@@ -2895,6 +3058,11 @@ internal static unsafe class VulkanVideoPresenter
 
         private Sampler CreateSampler(VulkanGuestSampler sampler)
         {
+            if (_samplers.TryGetValue(sampler, out var cachedSampler))
+            {
+                return cachedSampler;
+            }
+
             var minLod = DecodeSamplerMipFilter(sampler) == 0
                 ? 0f
                 : DecodeSamplerMinLod(sampler);
@@ -2921,6 +3089,7 @@ internal static unsafe class VulkanVideoPresenter
             Check(
                 _vk.CreateSampler(_device, &samplerInfo, null, out vkSampler),
                 "vkCreateSampler(texture)");
+            _samplers.Add(sampler, vkSampler);
             return vkSampler;
         }
 
@@ -3035,11 +3204,31 @@ internal static unsafe class VulkanVideoPresenter
             out DeviceMemory memory)
         {
             var size = (ulong)Math.Max(data.Length, sizeof(uint));
-            var buffer = CreateBuffer(
-                size,
-                usage,
-                MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-                out memory);
+            var capacity = BitOperations.RoundUpToPowerOf2(size);
+            var key = new HostBufferPoolKey(usage, capacity);
+            if (!_hostBufferPool.TryGetValue(key, out var available))
+            {
+                available = new Stack<HostBufferAllocation>();
+                _hostBufferPool.Add(key, available);
+            }
+
+            HostBufferAllocation allocation;
+            if (available.TryPop(out var pooled))
+            {
+                allocation = pooled;
+            }
+            else
+            {
+                var buffer = CreateBuffer(
+                    capacity,
+                    usage,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                    out var allocatedMemory);
+                allocation = new HostBufferAllocation(buffer, allocatedMemory, key);
+                _hostBufferAllocations.Add(buffer.Handle, allocation);
+            }
+
+            memory = allocation.Memory;
             void* mapped;
             Check(_vk.MapMemory(_device, memory, 0, size, 0, &mapped), "vkMapMemory(host)");
             try
@@ -3058,7 +3247,28 @@ internal static unsafe class VulkanVideoPresenter
                 _vk.UnmapMemory(_device, memory);
             }
 
-            return buffer;
+            return allocation.Buffer;
+        }
+
+        private void RecycleHostBuffer(VkBuffer buffer, DeviceMemory memory)
+        {
+            if (buffer.Handle == 0)
+            {
+                return;
+            }
+
+            if (_hostBufferAllocations.TryGetValue(buffer.Handle, out var allocation) &&
+                allocation.Memory.Handle == memory.Handle)
+            {
+                _hostBufferPool[allocation.Key].Push(allocation);
+                return;
+            }
+
+            _vk.DestroyBuffer(_device, buffer, null);
+            if (memory.Handle != 0)
+            {
+                _vk.FreeMemory(_device, memory, null);
+            }
         }
 
         private static PrimitiveTopology GetPrimitiveTopology(uint primitiveType) =>
@@ -3608,6 +3818,7 @@ internal static unsafe class VulkanVideoPresenter
                     resources,
                     GetTraceImages(resources));
                 submitted = true;
+                MarkSampledImagesInitialized(resources);
                 MarkStorageImagesInitialized(resources, traceContents: false);
                 TraceVulkanShader(
                     $"vk.compute_dispatch groups={work.GroupCountX}x" +
@@ -3796,6 +4007,7 @@ internal static unsafe class VulkanVideoPresenter
                     GetTraceImages(resources, target));
                 submitted = true;
                 target.Initialized = true;
+                MarkSampledImagesInitialized(resources);
                 MarkStorageImagesInitialized(resources, traceContents: false);
 
                 var guestTextureFormat = GetGuestTextureFormat(target.Format);
@@ -4498,6 +4710,7 @@ internal static unsafe class VulkanVideoPresenter
             CheckSwapchainResult(presentResult, "vkQueuePresentKHR");
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             Check(_vk.QueueWaitIdle(_queue), "vkQueueWaitIdle");
+            VideoOutExports.ReportPresentedFrame();
             if (_swapchainReadbackPending)
             {
                 TraceSwapchainReadback();
@@ -4505,6 +4718,7 @@ internal static unsafe class VulkanVideoPresenter
             CollectCompletedGuestSubmissions(waitForOldest: false);
             if (translatedResources is not null)
             {
+                MarkSampledImagesInitialized(translatedResources);
                 MarkStorageImagesInitialized(translatedResources);
                 DestroyTranslatedDrawResources(translatedResources);
             }
@@ -5010,6 +5224,27 @@ internal static unsafe class VulkanVideoPresenter
             }
         }
 
+        private static void MarkSampledImagesInitialized(
+            TranslatedDrawResources resources)
+        {
+            lock (_gate)
+            {
+                foreach (var texture in resources.Textures)
+                {
+                    if (!texture.NeedsUpload ||
+                        texture.IsStorage ||
+                        texture.Address == 0 ||
+                        texture.GuestImage is not { } guestImage)
+                    {
+                        continue;
+                    }
+
+                    guestImage.Initialized = true;
+                    guestImage.InitialUploadPending = false;
+                }
+            }
+        }
+
         private bool ShouldTraceGuestImageContents(GuestImageResource image)
         {
             if (image.Address == 0)
@@ -5248,11 +5483,6 @@ internal static unsafe class VulkanVideoPresenter
                     _vk.FreeMemory(_device, texture.StagingMemory, null);
                 }
 
-                if (texture.Sampler.Handle != 0)
-                {
-                    _vk.DestroySampler(_device, texture.Sampler, null);
-                }
-
                 if (texture.NeedsUpload &&
                     texture.GuestImage is { Initialized: false } guestImage)
                 {
@@ -5267,15 +5497,7 @@ internal static unsafe class VulkanVideoPresenter
                     continue;
                 }
 
-                if (globalBuffer.Buffer.Handle != 0)
-                {
-                    _vk.DestroyBuffer(_device, globalBuffer.Buffer, null);
-                }
-
-                if (globalBuffer.Memory.Handle != 0)
-                {
-                    _vk.FreeMemory(_device, globalBuffer.Memory, null);
-                }
+                RecycleHostBuffer(globalBuffer.Buffer, globalBuffer.Memory);
             }
 
             foreach (var vertexBuffer in resources.VertexBuffers)
@@ -5285,26 +5507,10 @@ internal static unsafe class VulkanVideoPresenter
                     continue;
                 }
 
-                if (vertexBuffer.Buffer.Handle != 0)
-                {
-                    _vk.DestroyBuffer(_device, vertexBuffer.Buffer, null);
-                }
-
-                if (vertexBuffer.Memory.Handle != 0)
-                {
-                    _vk.FreeMemory(_device, vertexBuffer.Memory, null);
-                }
+                RecycleHostBuffer(vertexBuffer.Buffer, vertexBuffer.Memory);
             }
 
-            if (resources.IndexBuffer.Handle != 0)
-            {
-                _vk.DestroyBuffer(_device, resources.IndexBuffer, null);
-            }
-
-            if (resources.IndexMemory.Handle != 0)
-            {
-                _vk.FreeMemory(_device, resources.IndexMemory, null);
-            }
+            RecycleHostBuffer(resources.IndexBuffer, resources.IndexMemory);
 
             if (!resources.PipelineCached && resources.Pipeline.Handle != 0)
             {
@@ -5316,12 +5522,14 @@ internal static unsafe class VulkanVideoPresenter
                 _vk.DestroyDescriptorPool(_device, resources.DescriptorPool, null);
             }
 
-            if (resources.PipelineLayout.Handle != 0)
+            if (!resources.DescriptorLayoutCached &&
+                resources.PipelineLayout.Handle != 0)
             {
                 _vk.DestroyPipelineLayout(_device, resources.PipelineLayout, null);
             }
 
-            if (resources.DescriptorSetLayout.Handle != 0)
+            if (!resources.DescriptorLayoutCached &&
+                resources.DescriptorSetLayout.Handle != 0)
             {
                 _vk.DestroyDescriptorSetLayout(_device, resources.DescriptorSetLayout, null);
             }
@@ -5756,6 +5964,36 @@ internal static unsafe class VulkanVideoPresenter
                 _vk.DestroyPipeline(_device, pipeline, null);
             }
             _computePipelines.Clear();
+            foreach (var pipeline in _graphicsPipelines.Values)
+            {
+                _vk.DestroyPipeline(_device, pipeline, null);
+            }
+            _graphicsPipelines.Clear();
+            foreach (var layout in _descriptorLayouts.Values)
+            {
+                _vk.DestroyPipelineLayout(_device, layout.PipelineLayout, null);
+                if (layout.DescriptorSetLayout.Handle != 0)
+                {
+                    _vk.DestroyDescriptorSetLayout(
+                        _device,
+                        layout.DescriptorSetLayout,
+                        null);
+                }
+            }
+            _descriptorLayouts.Clear();
+            foreach (var sampler in _samplers.Values)
+            {
+                _vk.DestroySampler(_device, sampler, null);
+            }
+            _samplers.Clear();
+            _shaderDigests.Clear();
+            foreach (var allocation in _hostBufferAllocations.Values)
+            {
+                _vk.DestroyBuffer(_device, allocation.Buffer, null);
+                _vk.FreeMemory(_device, allocation.Memory, null);
+            }
+            _hostBufferAllocations.Clear();
+            _hostBufferPool.Clear();
             foreach (var guestImage in _guestImages.Values)
             {
                 DestroyGuestImage(guestImage);

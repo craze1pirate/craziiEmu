@@ -81,7 +81,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterWriteLock();
         try
         {
-            _regions.Add(new MemoryRegion
+            InsertRegionSorted(new MemoryRegion
             {
                 VirtualAddress = actualAddress,
                 Size = alignedSize,
@@ -210,7 +210,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterWriteLock();
         try
         {
-            _regions.Add(new MemoryRegion
+            InsertRegionSorted(new MemoryRegion
             {
                 VirtualAddress = actualAddress,
                 Size = alignedSize,
@@ -473,30 +473,34 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterReadLock();
         try
         {
-            foreach (var region in _regions)
+            var region = FindRegion(virtualAddress, (ulong)destination.Length);
+            if (region is not null &&
+                TryResolveRegionOffset(
+                    virtualAddress,
+                    (ulong)destination.Length,
+                    region,
+                    out var offset))
             {
-                if (TryResolveRegionOffset(virtualAddress, (ulong)destination.Length, region, out var offset))
+                var srcPtr = (void*)(region.VirtualAddress + offset);
+                if (destination.IsEmpty)
                 {
-                    var srcPtr = (void*)(region.VirtualAddress + offset);
-                    if (destination.IsEmpty)
-                    {
-                        return true;
-                    }
+                    return true;
+                }
 
-                    if (region.IsReservedOnly)
+                if (region.IsReservedOnly)
+                {
+                    if (!EnsureRangeCommitted((ulong)srcPtr, (ulong)destination.Length, region))
                     {
-                        if (!EnsureRangeCommitted((ulong)srcPtr, (ulong)destination.Length, region))
-                        {
-                            return false;
-                        }
+                        return false;
                     }
+                }
 
-                    if (!CanReadWithoutProtectionChange((ulong)srcPtr, (ulong)destination.Length, region))
-                    {
-                        requiresExclusiveAccess = true;
-                        break;
-                    }
-
+                if (!CanReadWithoutProtectionChange((ulong)srcPtr, (ulong)destination.Length, region))
+                {
+                    requiresExclusiveAccess = true;
+                }
+                else
+                {
                     fixed (byte* destPtr = destination)
                     {
                         Buffer.MemoryCopy(srcPtr, destPtr, (nuint)destination.Length, (nuint)destination.Length);
@@ -533,30 +537,34 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterReadLock();
         try
         {
-            foreach (var region in _regions)
+            var region = FindRegion(virtualAddress, (ulong)source.Length);
+            if (region is not null &&
+                TryResolveRegionOffset(
+                    virtualAddress,
+                    (ulong)source.Length,
+                    region,
+                    out var offset))
             {
-                if (TryResolveRegionOffset(virtualAddress, (ulong)source.Length, region, out var offset))
+                var destPtr = (void*)(region.VirtualAddress + offset);
+                if (source.IsEmpty)
                 {
-                    var destPtr = (void*)(region.VirtualAddress + offset);
-                    if (source.IsEmpty)
-                    {
-                        return true;
-                    }
+                    return true;
+                }
 
-                    if (region.IsReservedOnly)
+                if (region.IsReservedOnly)
+                {
+                    if (!EnsureRangeCommitted((ulong)destPtr, (ulong)source.Length, region))
                     {
-                        if (!EnsureRangeCommitted((ulong)destPtr, (ulong)source.Length, region))
-                        {
-                            return false;
-                        }
+                        return false;
                     }
+                }
 
-                    if (!CanWriteWithoutProtectionChange((ulong)destPtr, (ulong)source.Length, region))
-                    {
-                        requiresExclusiveAccess = true;
-                        break;
-                    }
-
+                if (!CanWriteWithoutProtectionChange((ulong)destPtr, (ulong)source.Length, region))
+                {
+                    requiresExclusiveAccess = true;
+                }
+                else
+                {
                     fixed (byte* srcPtr = source)
                     {
                         Buffer.MemoryCopy(srcPtr, destPtr, (nuint)source.Length, (nuint)source.Length);
@@ -589,13 +597,14 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
     private bool TryReadExclusive(ulong virtualAddress, Span<byte> destination)
     {
-        foreach (var region in _regions)
+        var region = FindRegion(virtualAddress, (ulong)destination.Length);
+        if (region is not null &&
+            TryResolveRegionOffset(
+                virtualAddress,
+                (ulong)destination.Length,
+                region,
+                out var offset))
         {
-            if (!TryResolveRegionOffset(virtualAddress, (ulong)destination.Length, region, out var offset))
-            {
-                continue;
-            }
-
             var srcPtr = (void*)(region.VirtualAddress + offset);
             if (!EnsureRangeCommitted((ulong)srcPtr, (ulong)destination.Length, region))
             {
@@ -637,13 +646,14 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
     private bool TryWriteExclusive(ulong virtualAddress, ReadOnlySpan<byte> source)
     {
-        foreach (var region in _regions)
+        var region = FindRegion(virtualAddress, (ulong)source.Length);
+        if (region is not null &&
+            TryResolveRegionOffset(
+                virtualAddress,
+                (ulong)source.Length,
+                region,
+                out var offset))
         {
-            if (!TryResolveRegionOffset(virtualAddress, (ulong)source.Length, region, out var offset))
-            {
-                continue;
-            }
-
             var destPtr = (void*)(region.VirtualAddress + offset);
             if (!EnsureRangeCommitted((ulong)destPtr, (ulong)source.Length, region))
             {
@@ -699,15 +709,9 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterReadLock();
         try
         {
-            foreach (var region in _regions)
-            {
-                if (virtualAddress >= region.VirtualAddress &&
-                    virtualAddress < region.VirtualAddress + region.Size)
-                {
-                    return (void*)virtualAddress;
-                }
-            }
-            return null;
+            return FindRegion(virtualAddress, 1) is not null
+                ? (void*)virtualAddress
+                : null;
         }
         finally
         {
@@ -720,14 +724,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterReadLock();
         try
         {
-            foreach (var region in _regions)
-            {
-                if (TryResolveRegionOffset(virtualAddress, size, region, out _))
-                {
-                    return true;
-                }
-            }
-            return false;
+            return FindRegion(virtualAddress, size) is not null;
         }
         finally
         {
@@ -737,14 +734,48 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
     private MemoryRegion? FindRegion(ulong address, ulong size)
     {
-        foreach (var region in _regions)
+        var low = 0;
+        var high = _regions.Count - 1;
+        MemoryRegion? candidate = null;
+        while (low <= high)
         {
-            if (TryResolveRegionOffset(address, size, region, out _))
+            var middle = low + ((high - low) >> 1);
+            var region = _regions[middle];
+            if (region.VirtualAddress <= address)
             {
-                return region;
+                candidate = region;
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
             }
         }
-        return null;
+
+        return candidate is not null &&
+            TryResolveRegionOffset(address, size, candidate, out _)
+                ? candidate
+                : null;
+    }
+
+    private void InsertRegionSorted(MemoryRegion region)
+    {
+        var low = 0;
+        var high = _regions.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) >> 1);
+            if (_regions[middle].VirtualAddress < region.VirtualAddress)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        _regions.Insert(low, region);
     }
 
     private bool TryGetOverlappingRegionEnd(ulong address, ulong size, out ulong overlapEnd)

@@ -155,6 +155,16 @@ public static class AgcExports
         (ulong Cs, ulong State, uint LocalX, uint LocalY, uint LocalZ),
         byte[]> _computeSpirvCache = new();
     private static readonly Dictionary<ulong, ulong> _shaderHeadersByCode = new();
+    private static readonly bool _traceAgc = string.Equals(
+        Environment.GetEnvironmentVariable("SHARPEMU_LOG_AGC"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool _traceAgcShader =
+        _traceAgc ||
+        string.Equals(
+            Environment.GetEnvironmentVariable("SHARPEMU_LOG_AGC_SHADER"),
+            "1",
+            StringComparison.Ordinal);
     private static long _dcbWriteDataTraceCount;
     private static long _dcbWaitRegMemTraceCount;
     private static long _createShaderTraceCount;
@@ -3629,6 +3639,31 @@ public static class AgcExports
             return true;
         }
 
+        if (!isStorage &&
+            descriptor.Address != 0 &&
+            VulkanVideoPresenter.IsGuestImageAvailable(
+                descriptor.Address,
+                descriptor.Format,
+                descriptor.NumberType))
+        {
+            texture = new VulkanGuestDrawTexture(
+                descriptor.Address,
+                descriptor.Width,
+                descriptor.Height,
+                descriptor.Format,
+                descriptor.NumberType,
+                [],
+                IsFallback: false,
+                IsStorage: false,
+                MipLevels: descriptor.MipLevels,
+                MipLevel: mipLevel,
+                Pitch: sourceWidth,
+                TileMode: descriptor.TileMode,
+                DstSelect: descriptor.DstSelect,
+                Sampler: ToVulkanSampler(samplerDescriptor));
+            return true;
+        }
+
         if (isStorage)
         {
             var initialPixels = Array.Empty<byte>();
@@ -5405,7 +5440,7 @@ public static class AgcExports
 
     private static void TraceAgc(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AGC"), "1", StringComparison.Ordinal))
+        if (!_traceAgc)
         {
             return;
         }
@@ -5415,8 +5450,7 @@ public static class AgcExports
 
     private static void TraceAgcShader(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AGC"), "1", StringComparison.Ordinal) &&
-            !string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AGC_SHADER"), "1", StringComparison.Ordinal))
+        if (!_traceAgcShader)
         {
             return;
         }

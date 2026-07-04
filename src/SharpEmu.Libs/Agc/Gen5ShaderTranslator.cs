@@ -4,6 +4,7 @@
 using SharpEmu.HLE;
 using SharpEmu.Libs.VideoOut;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace SharpEmu.Libs.Agc;
@@ -13,6 +14,14 @@ internal static class Gen5ShaderTranslator
     private const int MaxInstructions = 4096;
     private const int MinimumUserDataDwords = 16;
     private const int MaximumUserDataDwords = 256;
+    private static readonly ConditionalWeakTable<object, ShaderDecodeCache> _decodeCaches = new();
+
+    private sealed class ShaderDecodeCache
+    {
+        public object Gate { get; } = new();
+        public Dictionary<ulong, Gen5ShaderProgram> Programs { get; } = new();
+        public Dictionary<ulong, Gen5ShaderMetadata?> Metadata { get; } = new();
+    }
 
     private static readonly uint[] FullscreenBarycentricEs =
     [
@@ -117,16 +126,51 @@ internal static class Gen5ShaderTranslator
         uint userDataScalarRegisterBase = 0)
     {
         state = default!;
-        if (!TryDecodeProgram(ctx, shaderAddress, out var program, out error))
+        error = string.Empty;
+        var cache = _decodeCaches.GetValue(ctx.Memory, static _ => new ShaderDecodeCache());
+        Gen5ShaderProgram? program;
+        lock (cache.Gate)
         {
-            return false;
+            cache.Programs.TryGetValue(shaderAddress, out program);
+        }
+
+        if (program is null)
+        {
+            if (!TryDecodeProgram(ctx, shaderAddress, out program, out error))
+            {
+                return false;
+            }
+
+            lock (cache.Gate)
+            {
+                cache.Programs.TryAdd(shaderAddress, program);
+            }
         }
 
         Gen5ShaderMetadata? metadata = null;
-        if (shaderHeaderAddress != 0 &&
-            Gen5ShaderMetadataReader.TryRead(ctx, shaderHeaderAddress, out var decodedMetadata))
+        if (shaderHeaderAddress != 0)
         {
-            metadata = decodedMetadata;
+            var metadataCached = false;
+            lock (cache.Gate)
+            {
+                metadataCached = cache.Metadata.TryGetValue(shaderHeaderAddress, out metadata);
+            }
+
+            if (!metadataCached)
+            {
+                if (Gen5ShaderMetadataReader.TryRead(
+                        ctx,
+                        shaderHeaderAddress,
+                        out var decodedMetadata))
+                {
+                    metadata = decodedMetadata;
+                }
+
+                lock (cache.Gate)
+                {
+                    cache.Metadata.TryAdd(shaderHeaderAddress, metadata);
+                }
+            }
         }
 
         var userData = new uint[GetUserDataDwordCount(metadata)];

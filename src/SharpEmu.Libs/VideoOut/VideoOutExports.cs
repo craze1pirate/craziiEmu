@@ -4,6 +4,7 @@
 using SharpEmu.HLE;
 using SharpEmu.Libs.Kernel;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
@@ -48,6 +49,13 @@ public static class VideoOutExports
     private static int _frameDumpCount;
     private static long _nextFrameDumpIndex;
     private static string _windowTitle = "SharpEmu VideoOut";
+    private static readonly bool _logFrameRate = string.Equals(
+        Environment.GetEnvironmentVariable("SHARPEMU_LOG_VIDEOOUT_FPS"),
+        "1",
+        StringComparison.Ordinal);
+    private static long _frameRateWindowStart = Stopwatch.GetTimestamp();
+    private static long _submittedFrameCount;
+    private static long _presentedFrameCount;
 
     public static void ConfigureApplicationInfo(string? title, string? titleId, string? version)
     {
@@ -812,7 +820,44 @@ public static class VideoOutExports
         }
 
         TraceVideoOut($"videoout.submit_flip handle={handle} index={bufferIndex} mode={flipMode} arg={flipArg} events={flipEvents.Count}");
+        ReportFrameRate(presented: false);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    internal static void ReportPresentedFrame() =>
+        ReportFrameRate(presented: true);
+
+    private static void ReportFrameRate(bool presented)
+    {
+        if (!_logFrameRate)
+        {
+            return;
+        }
+
+        if (presented)
+        {
+            Interlocked.Increment(ref _presentedFrameCount);
+        }
+        else
+        {
+            Interlocked.Increment(ref _submittedFrameCount);
+        }
+
+        var started = Volatile.Read(ref _frameRateWindowStart);
+        var now = Stopwatch.GetTimestamp();
+        var elapsedTicks = now - started;
+        if (elapsedTicks < Stopwatch.Frequency ||
+            Interlocked.CompareExchange(ref _frameRateWindowStart, now, started) != started)
+        {
+            return;
+        }
+
+        var elapsedSeconds = (double)elapsedTicks / Stopwatch.Frequency;
+        var submitted = Interlocked.Exchange(ref _submittedFrameCount, 0);
+        var presentedCount = Interlocked.Exchange(ref _presentedFrameCount, 0);
+        Console.Error.WriteLine(
+            $"[LOADER][PERF] videoout submitted_fps={submitted / elapsedSeconds:F1} " +
+            $"presented_fps={presentedCount / elapsedSeconds:F1}");
     }
 
     private static int RegisterBufferRange(VideoOutPortState port, int startIndex, ReadOnlySpan<ulong> addresses, BufferAttribute attribute, int requestedGroupIndex = -1)
