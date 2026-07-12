@@ -1,0 +1,300 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CraziiEmu.UI.ConfigWindow"
+        Title="craziiEmu — Configure"
+        Width="820" Height="620"
+        WindowStartupLocation="CenterOwner"
+        Background="#000000"
+        FontFamily="Inter, Segoe UI, sans-serif">
+
+    <Window.Styles>
+        <Style Selector="ListBox.Sidebar">
+            <Setter Property="Background" Value="#000000" />
+            <Setter Property="BorderThickness" Value="0,0,1,0" />
+            <Setter Property="BorderBrush" Value="#1F1F28" />
+            <Setter Property="Padding" Value="0,8" />
+        </Style>
+        <Style Selector="ListBox.Sidebar ListBoxItem">
+            <Setter Property="Padding" Value="20,12" />
+            <Setter Property="Foreground" Value="#888888" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Medium" />
+        </Style>
+        <Style Selector="ListBox.Sidebar ListBoxItem:selected">
+            <Setter Property="Background" Value="#111111" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="BorderThickness" Value="2,0,0,0" />
+            <Setter Property="BorderBrush" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="ListBox.Sidebar ListBoxItem:pointerover">
+            <Setter Property="Background" Value="#0A0A0A" />
+            <Setter Property="Foreground" Value="#CCCCCC" />
+        </Style>
+
+        <Style Selector="TextBlock.SectionHeader">
+            <Setter Property="FontSize" Value="22" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="Margin" Value="0,0,0,20" />
+        </Style>
+
+        <Style Selector="TextBlock.SettingsLabel">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#888888" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+
+        <!-- Controller Button styling -->
+        <Style Selector="Ellipse.CtrlBtn">
+            <Setter Property="Fill" Value="#1A1A1A" />
+            <Setter Property="Stroke" Value="#333333" />
+            <Setter Property="StrokeThickness" Value="1" />
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+        </Style>
+        <Style Selector="Path.CtrlDpad">
+            <Setter Property="Fill" Value="#1A1A1A" />
+            <Setter Property="Stroke" Value="#333333" />
+            <Setter Property="StrokeThickness" Value="1" />
+        </Style>
+    </Window.Styles>
+
+    <Grid ColumnDefinitions="200,*">
+        <!-- Sidebar -->
+        <ListBox x:Name="SidebarList" Classes="Sidebar" SelectedIndex="0">
+            <ListBoxItem Content="General"  Tag="General"  />
+            <ListBoxItem Content="System"   Tag="System"   />
+            <ListBoxItem Content="CPU"      Tag="CPU"      />
+            <ListBoxItem Content="Graphics" Tag="Graphics" />
+            <ListBoxItem Content="Audio"    Tag="Audio"    />
+            <ListBoxItem Content="Controls" Tag="Controls" />
+            <ListBoxItem Content="Visual"   Tag="Visual"   />
+        </ListBox>
+
+        <!-- Content Area -->
+        <Border Grid.Column="1" Background="#000000" BorderBrush="#1F1F28" BorderThickness="1,0,0,0">
+            <ScrollViewer Padding="28" VerticalScrollBarVisibility="Auto">
+                <Grid>
+                    <!-- ── General ── -->
+                    <StackPanel x:Name="PanelGeneral" IsVisible="True" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="General" />
+                        <StackPanel Spacing="12">
+                            <CheckBox x:Name="ChkLimitSpeed" Content="Limit Speed" IsChecked="True" Foreground="#FFFFFF" />
+                            <CheckBox x:Name="ChkMulticore" Content="Enable Multicore CPU" IsChecked="True" Foreground="#FFFFFF" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ── System ── -->
+                    <StackPanel x:Name="PanelSystem" IsVisible="False" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="System" />
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="DECRYPTED FIRMWARE DIRECTORY" />
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Browse…"
+                                        x:Name="BtnBrowseFirmware"
+                                        Padding="14,7" Margin="8,0,0,0"
+                                        Background="#1A1A1A" Foreground="#FFFFFF"
+                                        CornerRadius="4" FontSize="12" BorderBrush="#333333" BorderThickness="1" />
+                                <TextBox x:Name="TxtFirmwarePath"
+                                         PlaceholderText="No directory selected"
+                                         IsReadOnly="True"
+                                         FontSize="12" Background="#0A0A0A" Foreground="#FFFFFF" BorderBrush="#333333" />
+                            </DockPanel>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ── CPU ── -->
+                    <StackPanel x:Name="PanelCPU" IsVisible="False" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="CPU" />
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="ACCURACY" />
+                            <ComboBox x:Name="CmbAccuracy" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="Accurate" />
+                                <ComboBoxItem Content="Fast" />
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ── Graphics ── -->
+                    <StackPanel x:Name="PanelGraphics" IsVisible="False" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="Graphics" />
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="HOST GRAPHICS DEVICE" />
+                            <ComboBox x:Name="CmbGraphicsDevice" SelectedIndex="0" Width="340" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="NVIDIA GeForce RTX 3070" />
+                                <ComboBoxItem Content="Default System GPU" />
+                            </ComboBox>
+                        </StackPanel>
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="GRAPHICS API" />
+                            <ComboBox x:Name="CmbGraphicsApi" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="Vulkan" />
+                                <ComboBoxItem Content="OpenGL" />
+                            </ComboBox>
+                        </StackPanel>
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="RESOLUTION SCALE" />
+                            <ComboBox x:Name="CmbGraphicsScale" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="1× Native (720p)" />
+                                <ComboBoxItem Content="2× (1440p)" />
+                                <ComboBoxItem Content="3× (4K)" />
+                            </ComboBox>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ── Audio ── -->
+                    <StackPanel x:Name="PanelAudio" IsVisible="False" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="Audio" />
+                        <CheckBox x:Name="ChkAudio" Content="Enable Audio Output" IsChecked="True" Foreground="#FFFFFF" />
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="VOLUME" />
+                            <Slider Minimum="0" Maximum="100" Value="80" Width="280" HorizontalAlignment="Left" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- ── Controls ── -->
+                    <DockPanel x:Name="PanelControls" IsVisible="False">
+                        <TextBlock Classes="SectionHeader" DockPanel.Dock="Top" Text="Controls" />
+                        <TextBlock Foreground="#666666" FontSize="12" DockPanel.Dock="Top" Margin="0,0,0,24"
+                                   Text="Click any button below and press a new key to bind it. Conflicting keys swap automatically." />
+
+                        <StackPanel Spacing="16" DockPanel.Dock="Top">
+                            
+                            <!-- Left Stick & Right Stick -->
+                            <Border Background="#0A0A0F" BorderBrush="#1F1F28" BorderThickness="1" CornerRadius="6" Padding="20">
+                                <StackPanel Spacing="12">
+                                    <TextBlock Text="STICKS" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Margin="0,0,0,4" />
+                                    <Grid ColumnDefinitions="120,120,40,120,120" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                                        <TextBlock Text="Left Up" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="0" Grid.Column="0" />
+                                        <Button x:Name="BindLeftStickUp" Grid.Row="0" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                                        
+                                        <TextBlock Text="Right Up" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="0" Grid.Column="3" />
+                                        <Button x:Name="BindRightStickUp" Grid.Row="0" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                        <TextBlock Text="Left Down" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindLeftStickDown" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Right Down" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindRightStickDown" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Left Left" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindLeftStickLeft" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Right Left" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindRightStickLeft" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Left Right" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindLeftStickRight" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Right Right" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindRightStickRight" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="L3" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindL3" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="R3" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindR3" Grid.Row="4" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- D-Pad & Face Buttons -->
+                            <Border Background="#0A0A0F" BorderBrush="#1F1F28" BorderThickness="1" CornerRadius="6" Padding="20">
+                                <StackPanel Spacing="12">
+                                    <Grid ColumnDefinitions="120,120,40,120,120" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                                        <TextBlock Text="D-PAD" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,4" />
+                                        <TextBlock Text="FACE BUTTONS" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Grid.Row="0" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,0,0,4" />
+
+                                        <TextBlock Text="Up" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
+                                        <Button x:Name="BindDpadUp" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                        <TextBlock Text="Cross (✕)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                        <Button x:Name="BindCross" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                        <TextBlock Text="Down" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindDpadDown" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Circle (◯)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindCircle" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Left" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindDpadLeft" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Square (□)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindSquare" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Right" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindDpadRight" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Triangle (△)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindTriangle" Grid.Row="4" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Shoulder Buttons & System -->
+                            <Border Background="#0A0A0F" BorderBrush="#1F1F28" BorderThickness="1" CornerRadius="6" Padding="20">
+                                <StackPanel Spacing="12">
+                                    <Grid ColumnDefinitions="120,120,40,120,120" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                                        <TextBlock Text="SHOULDER BUTTONS" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,4" />
+                                        <TextBlock Text="SYSTEM" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Grid.Row="0" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,0,0,4" />
+
+                                        <TextBlock Text="L1" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
+                                        <Button x:Name="BindL1" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                        <TextBlock Text="R1" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                        <Button x:Name="BindR1" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                        <TextBlock Text="L2" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindL2" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="R2" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindR2" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Options" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindOptions" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="Create" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
+                                        <Button x:Name="BindCreate" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                        <TextBlock Text="PS Button" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
+                                        <Button x:Name="BindPsButton" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <!-- ── Visual ── -->
+                    <StackPanel x:Name="PanelVisual" IsVisible="False" Spacing="20">
+                        <TextBlock Classes="SectionHeader" Text="Visual" />
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="CUSTOM WALLPAPER" />
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Clear"
+                                        x:Name="BtnClearWallpaper"
+                                        Padding="14,7" Margin="8,0,0,0"
+                                        Background="#8B1A1A" Foreground="#FFFFFF"
+                                        CornerRadius="4" FontSize="12" BorderThickness="0" />
+                                <Button DockPanel.Dock="Right" Content="Browse…"
+                                        x:Name="BtnBrowseWallpaper"
+                                        Padding="14,7" Margin="8,0,0,0"
+                                        Background="#1A1A1A" Foreground="#FFFFFF"
+                                        CornerRadius="4" FontSize="12" BorderBrush="#333333" BorderThickness="1" />
+                                <TextBox x:Name="TxtWallpaperPath"
+                                         PlaceholderText="No wallpaper selected"
+                                         IsReadOnly="True"
+                                         FontSize="12" Background="#0A0A0A" Foreground="#FFFFFF" BorderBrush="#333333" />
+                            </DockPanel>
+                        </StackPanel>
+                        
+                        <CheckBox x:Name="ChkConsoleVisible" Content="Show Emulator Console" IsChecked="True" Foreground="#FFFFFF" Margin="0,10,0,0" />
+                    </StackPanel>
+
+                </Grid>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CraziiEmu.UI.SplashWindow"
+        Title="CraziiEmu Splash"
+        Width="600" Height="400"
+        WindowDecorations="None"
+        WindowStartupLocation="CenterScreen"
+        Background="#000000"
+        Topmost="True">
+    
+    <Grid>
+        <!-- The custom black logo, cleanly scaled in the center -->
+        <Image Source="avares://CraziiEmu.UI/Assets/craziiEmu-black.png"
+               Stretch="Uniform"
+               Margin="60"/>
+    </Grid>
+</Window>

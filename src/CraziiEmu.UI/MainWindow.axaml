@@ -1,0 +1,403 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:CraziiEmu.UI"
+        x:Class="CraziiEmu.UI.MainWindow"
+        Title="craziiEmu"
+        Width="1200" Height="740"
+        MinWidth="960" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        Background="#000000"
+        FontFamily="Inter, Segoe UI, sans-serif"
+        WindowDecorations="None"
+        ExtendClientAreaToDecorationsHint="True"
+        Icon="avares://CraziiEmu.UI/Assets/icon.png">
+
+    <Window.Styles>
+
+        <!-- ── Card base style: small by default ── -->
+        <Style Selector="Border.GameCard">
+            <Setter Property="Width"          Value="88"/>
+            <Setter Property="Height"         Value="88"/>
+            <Setter Property="CornerRadius"   Value="16"/>
+            <Setter Property="Opacity"        Value="0.65"/>
+            <Setter Property="BorderBrush"    Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="Transitions">
+                <Transitions>
+                    <DoubleTransition Property="Width"   Duration="0:0:0.45" Easing="CubicEaseOut"/>
+                    <DoubleTransition Property="Height"  Duration="0:0:0.45" Easing="CubicEaseOut"/>
+                    <DoubleTransition Property="Opacity" Duration="0:0:0.30"/>
+                </Transitions>
+            </Setter>
+        </Style>
+
+        <!-- ── Selected card: large ── -->
+        <Style Selector="ListBox.Carousel ListBoxItem:selected Border.GameCard">
+            <Setter Property="Width"          Value="220"/>
+            <Setter Property="Height"         Value="220"/>
+            <Setter Property="Opacity"        Value="1.0"/>
+            <Setter Property="BorderBrush"    Value="White"/>
+        </Style>
+
+        <!-- ── Hover on non-selected ── -->
+        <Style Selector="ListBox.Carousel ListBoxItem:pointerover Border.GameCard">
+            <Setter Property="Opacity"     Value="0.90"/>
+            <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+        </Style>
+
+        <!-- ── Carousel list itself ── -->
+        <Style Selector="ListBox.Carousel">
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="0"/>
+        </Style>
+        <Style Selector="ListBox.Carousel ListBoxItem">
+            <Setter Property="Padding"           Value="0"/>
+            <Setter Property="Margin"            Value="0"/>
+            <Setter Property="Background"        Value="Transparent"/>
+            <Setter Property="VerticalAlignment" Value="Bottom"/>
+        </Style>
+        <Style Selector="ListBox.Carousel ListBoxItem:selected /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+        <Style Selector="ListBox.Carousel ListBoxItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+
+        <!-- ── White pill Play button ── -->
+        <Style Selector="Button.PlayBtn">
+            <Setter Property="Focusable"       Value="False"/>
+            <Setter Property="Background"      Value="White"/>
+            <Setter Property="Foreground"      Value="Black"/>
+            <Setter Property="CornerRadius"    Value="40"/>
+            <Setter Property="Padding"         Value="36,14"/>
+            <Setter Property="FontSize"        Value="15"/>
+            <Setter Property="FontWeight"      Value="Bold"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+        </Style>
+        <Style Selector="Button.PlayBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#E8E8E8"/>
+        </Style>
+
+        <!-- ── Ghost pill Add button ── -->
+        <Style Selector="Button.AddBtn">
+            <Setter Property="Focusable"       Value="False"/>
+            <Setter Property="Background"      Value="#1A1A1A"/>
+            <Setter Property="Foreground"      Value="White"/>
+            <Setter Property="CornerRadius"    Value="40"/>
+            <Setter Property="Padding"         Value="28,14"/>
+            <Setter Property="FontSize"        Value="15"/>
+            <Setter Property="FontWeight"      Value="SemiBold"/>
+            <Setter Property="BorderBrush"     Value="#2E2E2E"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+        </Style>
+        <Style Selector="Button.AddBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#222222"/>
+        </Style>
+
+        <!-- ── Chrome buttons (close / minimize) ── -->
+        <Style Selector="Button.ChromeBtn">
+            <Setter Property="Focusable"       Value="False"/>
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground"      Value="#555555"/>
+            <Setter Property="FontSize"        Value="13"/>
+            <Setter Property="Padding"         Value="10,7"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="CornerRadius"    Value="6"/>
+        </Style>
+        <Style Selector="Button.ChromeBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#1C1C1C"/>
+        </Style>
+        <Style Selector="Button.ChromeBtnClose:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#8B1A1A"/>
+        </Style>
+
+        <Style Selector="Button#BtnSettings, Button#BtnFullscreen">
+            <Setter Property="RenderTransformOrigin" Value="50%,50%"/>
+        </Style>
+
+        <!-- Remove the background box on hover/focus (only remove for hover, keep for gamepad focus) -->
+        <Style Selector="Button#BtnSettings:pointerover /template/ ContentPresenter, Button#BtnFullscreen:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+
+        <!-- Controller focus box -->
+        <Style Selector="Button.HeaderBtnFocused /template/ ContentPresenter">
+            <Setter Property="Background" Value="#1C1C1C"/>
+        </Style>
+
+        <!-- Gear rotation animation -->
+        <Style Selector="Button#BtnSettings:pointerover &gt; Path, Button#BtnSettings.HeaderBtnFocused &gt; Path">
+            <Style.Animations>
+                <Animation Duration="0:0:0.4" Easing="CubicEaseOut">
+                    <KeyFrame Cue="0%"><Setter Property="RotateTransform.Angle" Value="0"/></KeyFrame>
+                    <KeyFrame Cue="100%"><Setter Property="RotateTransform.Angle" Value="180"/></KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Fullscreen shrink animation -->
+        <Style Selector="Button#BtnFullscreen:pointerover &gt; Path, Button#BtnFullscreen.HeaderBtnFocused &gt; Path">
+            <Style.Animations>
+                <Animation Duration="0:0:0.35" Easing="CubicEaseOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="ScaleTransform.ScaleX" Value="1.0"/>
+                        <Setter Property="ScaleTransform.ScaleY" Value="1.0"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="40%">
+                        <Setter Property="ScaleTransform.ScaleX" Value="0.7"/>
+                        <Setter Property="ScaleTransform.ScaleY" Value="0.7"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="ScaleTransform.ScaleX" Value="1.0"/>
+                        <Setter Property="ScaleTransform.ScaleY" Value="1.0"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+    </Window.Styles>
+
+    <!-- ── Root grid: particle layer + UI layer ── -->
+    <Grid>
+
+        <!-- Layer -1: Wallpaper (behind particles) -->
+        <Image x:Name="WallpaperImage" Stretch="UniformToFill" IsHitTestVisible="False" Opacity="0.6"/>
+
+        <!-- Layer 0: Ambient particles -->
+        <local:ParticleControl IsHitTestVisible="False" Opacity="0.45"/>
+
+        <!-- Layer 1: Full UI -->
+        <DockPanel>
+
+            <!-- ════════════ HEADER ════════════ -->
+            <Border x:Name="DragHandle"
+                    DockPanel.Dock="Top"
+                    Padding="40,22,16,0"
+                    Background="Transparent">
+                <Grid ColumnDefinitions="*,Auto">
+
+                    <!-- Left: "Games" tab only -->
+                    <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Left">
+                        <TextBlock Text="Games"
+                                   FontSize="26"
+                                   FontWeight="Bold"
+                                   Foreground="White"
+                                   Opacity="1" />
+                        <!-- Active underline indicator -->
+                        <Border Height="2.5"
+                                Background="White"
+                                CornerRadius="2"
+                                Margin="0,5,0,0"
+                                Width="50"
+                                HorizontalAlignment="Left"/>
+                    </StackPanel>
+
+                    <!-- Right: Clock · Gear · Minimize · Close -->
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Spacing="4">
+
+                        <TextBlock x:Name="TxtClock"
+                                   Foreground="White"
+                                   FontSize="15"
+                                   FontWeight="Medium"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,12,0"/>
+
+                        <!-- Gear icon -->
+                        <Button x:Name="BtnSettings"
+                                Classes="ChromeBtn"
+                                ToolTip.Tip="Configure"
+                                Padding="9,7">
+                            <Path Data="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"
+                                  Fill="White" Width="19" Height="19" Stretch="Uniform"
+                                  RenderTransformOrigin="50%,50%">
+                                <Path.RenderTransform>
+                                    <RotateTransform Angle="0"/>
+                                </Path.RenderTransform>
+                            </Path>
+                        </Button>
+
+                        <!-- Fullscreen toggle -->
+                        <Button x:Name="BtnFullscreen"
+                                Classes="ChromeBtn"
+                                ToolTip.Tip="Fullscreen"
+                                Padding="9,7">
+                            <Path Data="M2,2 L6,6 M6,3 L6,6 L3,6 M12,12 L8,8 M8,11 L8,8 L11,8"
+                                  Stroke="White" StrokeThickness="1.0" StrokeLineCap="Round" StrokeJoin="Round"
+                                  Fill="Transparent" Width="16" Height="16"
+                                  RenderTransformOrigin="50%,50%">
+                                <Path.RenderTransform>
+                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                </Path.RenderTransform>
+                            </Path>
+                        </Button>
+
+                        <Button x:Name="BtnMinimize"
+                                Classes="ChromeBtn"
+                                Content="—"
+                                ToolTip.Tip="Minimize"/>
+                        <Button x:Name="BtnClose"
+                                Classes="ChromeBtn ChromeBtnClose"
+                                Foreground="White"
+                                Content="✕"
+                                ToolTip.Tip="Close"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ════════════ BOTTOM: LOG CONSOLE ════════════ -->
+            <Border x:Name="ConsoleBorder"
+                    DockPanel.Dock="Bottom"
+                    Background="#030303"
+                    BorderBrush="#111111"
+                    BorderThickness="0,1,0,0"
+                    Height="120"
+                    Padding="0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="Console Output"
+                               FontSize="10"
+                               FontWeight="SemiBold"
+                               Foreground="#2A2A2A"
+                               Margin="14,6,0,2"/>
+                    <TextBox x:Name="ConsoleOutput"
+                             Focusable="False"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             FontFamily="Cascadia Mono, Consolas, monospace"
+                             FontSize="11"
+                             Foreground="#0070D1"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Padding="14,4"
+                             PlaceholderText="Emulator log will appear here…"/>
+                </DockPanel>
+            </Border>
+
+            <!-- ════════════ MAIN BODY ════════════ -->
+            <!-- Two rows: carousel (fills space) + game info footer (auto height) -->
+            <Grid RowDefinitions="*,Auto" Margin="0,44,0,20">
+
+                <!-- ── Horizontal Carousel ── -->
+                <ScrollViewer x:Name="MainScrollViewer"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled"
+                              Padding="40,0,40,0">
+                    <ListBox x:Name="GameCarousel"
+                             Classes="Carousel"
+                             SelectedIndex="0"
+                             SelectionMode="Single">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <!-- VerticalAlignment=Bottom so all cards anchor to the bottom edge -->
+                                <StackPanel Orientation="Horizontal"
+                                            Spacing="16"
+                                            VerticalAlignment="Bottom"/>
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="local:GameItem">
+                                <Panel>
+                                    <!-- Add Game Card -->
+                                    <Border Classes="GameCard" Background="#0E0E12" IsVisible="{Binding IsAddCard}">
+                                        <Grid>
+                                            <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                                                  Fill="#2A2A38"
+                                                  Width="32" Height="32"
+                                                  Stretch="Uniform"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Game Card -->
+                                    <Border Classes="GameCard" Background="#111118" IsVisible="{Binding IsGameCard}">
+                                        <Grid>
+                                            <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
+                                                  Fill="#252535"
+                                                  Width="32" Height="32"
+                                                  Stretch="Uniform"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding Title}"
+                                                       Foreground="#AAAACC"
+                                                       FontSize="10"
+                                                       FontWeight="Medium"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Bottom"
+                                                       Margin="6,0,6,12"
+                                                       TextWrapping="Wrap"
+                                                       TextAlignment="Center"/>
+                                        </Grid>
+                                    </Border>
+                                </Panel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+
+                    </ListBox>
+                </ScrollViewer>
+
+                <!-- ── Game info footer (left-aligned, TSX style) ── -->
+                <StackPanel Grid.Row="1"
+                            Margin="40,20,0,0"
+                            Spacing="4"
+                            HorizontalAlignment="Left">
+
+                    <!-- Subtitle (gray, small) -->
+                    <TextBlock x:Name="TxtSelectedSubtitle"
+                               Text=""
+                               Foreground="#888888"
+                               FontSize="13"
+                               FontWeight="Medium"/>
+
+                    <!-- Title (large bold white) -->
+                    <TextBlock x:Name="TxtSelectedTitle"
+                               Text="Add a Game"
+                               Foreground="White"
+                               FontSize="44"
+                               FontWeight="Bold"
+                               Margin="0,0,0,16"/>
+
+                    <!-- Action buttons row -->
+                    <StackPanel Orientation="Horizontal" Spacing="14">
+
+                        <!-- Play (shown for game cards) -->
+                        <Button x:Name="BtnPlay" Classes="PlayBtn" IsVisible="False">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Data="M8,5.14V19.14L19,12.14L8,5.14Z"
+                                      Fill="Black"
+                                      Width="14" Height="14"
+                                      Stretch="Uniform"
+                                      VerticalAlignment="Center"/>
+                                <TextBlock Text="Play" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Add Game (shown for the "+" card) -->
+                        <Button x:Name="BtnAddGame" Classes="AddBtn" IsVisible="True">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                                      Fill="White"
+                                      Width="14" Height="14"
+                                      Stretch="Uniform"
+                                      VerticalAlignment="Center"/>
+                                <TextBlock Text="Add Game" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                    </StackPanel>
+                </StackPanel>
+
+            </Grid>
+            <!-- end main body -->
+
+        </DockPanel>
+    </Grid>
+</Window>
