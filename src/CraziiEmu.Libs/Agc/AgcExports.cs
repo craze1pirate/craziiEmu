@@ -1,4 +1,4 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+﻿// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -58,6 +58,8 @@ public static class AgcExports
     private const uint SpiShaderPgmHiEs = 0xC9;
     private const uint SpiShaderPgmLoLs = 0x148;
     private const uint SpiShaderPgmHiLs = 0x149;
+    private const uint SpiShaderPgmLoGs = 0x8A;
+    private const uint SpiShaderPgmHiGs = 0x8B;
     private const uint SpiPsInputEna = 0x1B3;
     private const uint SpiPsInputAddr = 0x1B4;
     private const uint ComputePgmLo = 0x20C;
@@ -115,6 +117,7 @@ public static class AgcExports
     private const uint RegisterDefaultsVersion7 = 7;
     private const uint RegisterDefaultsVersion8 = 8;
     private const uint RegisterDefaultsVersion10 = 10;
+    private const uint RegisterDefaultsVersion13 = 13;
     private const int RegisterDefaultsSize = 0x40;
     private const int RegisterDefaultBlockSize = 16 * 8;
 
@@ -139,6 +142,7 @@ public static class AgcExports
     private const ulong ShaderSpecialGeUserVgprEnOffset = 0x28;
     private const uint CbSetShRegisterRangeMarker = 0x6875000D;
     private static readonly object _submitTraceGate = new();
+    private static readonly object _textureHashTraceGate = new();
     private static readonly HashSet<uint> _tracedDcbSizes = new();
     private static readonly HashSet<(ulong Es, ulong Ps, GuestDrawKind Kind)> _tracedShaderTranslations = new();
     private static readonly HashSet<(ulong Es, ulong Ps)> _tracedShaderDecodePairs = new();
@@ -146,6 +150,7 @@ public static class AgcExports
     private static readonly HashSet<(ulong Ps, string Error)> _tracedShaderFailures = new();
     private static readonly HashSet<(int Handle, int Index, ulong Address, string Path)> _tracedDisplayBuffers = new();
     private static readonly HashSet<ulong> _tracedComputeShaders = new();
+    private static readonly Dictionary<(ulong Address, uint Width, uint Height), ulong> _tracedTextureHashes = [];
     private static readonly HashSet<uint> _tracedSubmittedDrawOpcodes = new();
     private static readonly Dictionary<(ulong Ps, ulong State, Gen5PixelOutputKind Output), byte[]> _pixelSpirvCache = new();
     private static readonly Dictionary<
@@ -156,21 +161,24 @@ public static class AgcExports
         byte[]> _computeSpirvCache = new();
     private static readonly Dictionary<ulong, ulong> _shaderHeadersByCode = new();
     private static readonly bool _traceAgc = string.Equals(
-        Environment.GetEnvironmentVariable("CraziiEmu_LOG_AGC"),
+        Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC"),
         "1",
         StringComparison.Ordinal);
     private static readonly bool _traceAgcShader =
         _traceAgc ||
         string.Equals(
-            Environment.GetEnvironmentVariable("CraziiEmu_LOG_AGC_SHADER"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC_SHADER"),
             "1",
             StringComparison.Ordinal);
+    private static readonly bool _traceTextureHashes = string.Equals(
+        Environment.GetEnvironmentVariable("CRAZIIEMU_TRACE_TEXTURE_HASHES"),
+        "1",
+        StringComparison.Ordinal);
     private static long _dcbWriteDataTraceCount;
     private static long _dcbWaitRegMemTraceCount;
     private static long _createShaderTraceCount;
     private static long _packetPayloadTraceCount;
     private static bool _tracedMissingPixelShaderBindings;
-    private static long _unsatisfiedWaitTraceCount;
     private static long _shaderTranslationMissTraceCount;
     private static long _translatedDrawTraceCount;
     private static long _standardDmaTraceCount;
@@ -404,11 +412,11 @@ public static class AgcExports
         var version = (uint)ctx[CpuRegister.Rsi];
         if (stateAddress == 0 || !IsSupportedRegisterDefaultsVersion(version))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         TraceAgc($"agc.init state=0x{stateAddress:X16} version={version}");
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -439,19 +447,19 @@ public static class AgcExports
         var codeAddress = ctx[CpuRegister.Rdx];
         if (headerAddress == 0 || codeAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadUInt32(ctx, headerAddress, out var fileHeader) ||
-            !TryReadUInt32(ctx, headerAddress + sizeof(uint), out var version))
+        if (!ctx.TryReadUInt32(headerAddress, out var fileHeader) ||
+            !ctx.TryReadUInt32(headerAddress + sizeof(uint), out var version))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         if (fileHeader != ShaderFileHeader || version != ShaderVersion)
         {
             TraceCreateShader(destinationAddress, headerAddress, codeAddress, $"invalid-header file=0x{fileHeader:X8} version=0x{version:X8}");
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (!RelocatePointerField(ctx, headerAddress + ShaderCxRegistersOffset) ||
@@ -462,12 +470,12 @@ public static class AgcExports
             !RelocatePointerField(ctx, headerAddress + ShaderOutputSemanticsOffset) ||
             !ctx.TryWriteUInt64(headerAddress + ShaderCodeOffset, codeAddress))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
-        if (!TryReadUInt64(ctx, headerAddress + ShaderUserDataOffset, out var userDataAddress))
+        if (!ctx.TryReadUInt64(headerAddress + ShaderUserDataOffset, out var userDataAddress))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         if (userDataAddress != 0 &&
@@ -477,18 +485,18 @@ public static class AgcExports
              !RelocatePointerField(ctx, userDataAddress + 0x18) ||
              !RelocatePointerField(ctx, userDataAddress + 0x20)))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         if (!PatchShaderProgramRegisters(ctx, headerAddress, codeAddress))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (destinationAddress != 0 &&
             !ctx.TryWriteUInt64(destinationAddress, headerAddress))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         lock (_submitTraceGate)
@@ -564,24 +572,24 @@ public static class AgcExports
 
         if (cxRegistersAddress == 0 || ucRegistersAddress == 0 || hullShaderAddress != 0 || geometryShaderAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadByte(ctx, geometryShaderAddress + ShaderTypeOffset, out var shaderType) || !IsEsGeometryShaderType(shaderType) ||
-            !TryReadUInt64(ctx, geometryShaderAddress + ShaderSpecialsOffset, out var specialsAddress) ||
+        if (!ctx.TryReadByte(geometryShaderAddress + ShaderTypeOffset, out var shaderType) || !IsEsGeometryShaderType(shaderType) ||
+            !ctx.TryReadUInt64(geometryShaderAddress + ShaderSpecialsOffset, out var specialsAddress) ||
             specialsAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (!CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtShaderStagesEnOffset, cxRegistersAddress) ||
             !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtGsOutPrimTypeOffset, cxRegistersAddress + 8) ||
             !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeCntlOffset, ucRegistersAddress) ||
             !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeUserVgprEnOffset, ucRegistersAddress + 8) ||
-            !TryWriteUInt32(ctx, ucRegistersAddress + 16, VgtPrimitiveType) ||
-            !TryWriteUInt32(ctx, ucRegistersAddress + 20, primitiveType))
+            !ctx.TryWriteUInt32(ucRegistersAddress + 16, VgtPrimitiveType) ||
+            !ctx.TryWriteUInt32(ucRegistersAddress + 20, primitiveType))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TraceAgc($"agc.create_prim_state cx=0x{cxRegistersAddress:X16} uc=0x{ucRegistersAddress:X16} gs=0x{geometryShaderAddress:X16} type={shaderType} prim=0x{primitiveType:X8}");
@@ -602,21 +610,21 @@ public static class AgcExports
 
         if (registersAddress == 0 || geometryShaderAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadUInt64(ctx, geometryShaderAddress + ShaderOutputSemanticsOffset, out var outputSemanticsAddress) ||
-            !TryReadUInt32(ctx, geometryShaderAddress + ShaderNumOutputSemanticsOffset, out var outputSemanticsCount))
+        if (!ctx.TryReadUInt64(geometryShaderAddress + ShaderOutputSemanticsOffset, out var outputSemanticsAddress) ||
+            !ctx.TryReadUInt32(geometryShaderAddress + ShaderNumOutputSemanticsOffset, out var outputSemanticsCount))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         ulong inputSemanticsAddress = 0;
         if (pixelShaderAddress != 0 &&
-            (!TryReadUInt64(ctx, pixelShaderAddress + ShaderInputSemanticsOffset, out inputSemanticsAddress) ||
-             !TryReadUInt32(ctx, pixelShaderAddress + ShaderNumInputSemanticsOffset, out _)))
+            (!ctx.TryReadUInt64(pixelShaderAddress + ShaderInputSemanticsOffset, out inputSemanticsAddress) ||
+             !ctx.TryReadUInt32(pixelShaderAddress + ShaderNumInputSemanticsOffset, out _)))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         for (uint i = 0; i < 32; i++)
@@ -626,7 +634,7 @@ public static class AgcExports
             {
                 var flat = false;
                 if (pixelShaderAddress != 0 && inputSemanticsAddress != 0 &&
-                    TryReadUInt32(ctx, inputSemanticsAddress + (i * sizeof(uint)), out var inputSemantic))
+                    ctx.TryReadUInt32(inputSemanticsAddress + (i * sizeof(uint)), out var inputSemantic))
                 {
                     flat = ((inputSemantic >> 22) & 0x1) != 0;
                 }
@@ -635,10 +643,10 @@ public static class AgcExports
             }
 
             var destination = registersAddress + (i * 8);
-            if (!TryWriteUInt32(ctx, destination, SpiPsInputCntl0 + i) ||
-                !TryWriteUInt32(ctx, destination + sizeof(uint), value))
+            if (!ctx.TryWriteUInt32(destination, SpiPsInputCntl0 + i) ||
+                !ctx.TryWriteUInt32(destination + sizeof(uint), value))
             {
-                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+                return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
             }
         }
 
@@ -659,15 +667,15 @@ public static class AgcExports
         var type = (int)ctx[CpuRegister.Rdx];
         if (outputAddress == 0 || commandAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         var payloadAddress = commandAddress + 8;
         if (type == 0)
         {
-            if (!TryReadUInt32(ctx, commandAddress, out var header))
+            if (!ctx.TryReadUInt32(commandAddress, out var header))
             {
-                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+                return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
             }
 
             payloadAddress = (header & 0x3FFF_0000u) == 0x3FFF_0000u
@@ -677,7 +685,7 @@ public static class AgcExports
 
         if (!ctx.TryWriteUInt64(outputAddress, payloadAddress))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         if (ShouldTraceHotPath(ref _packetPayloadTraceCount))
@@ -702,20 +710,20 @@ public static class AgcExports
         var dwordCount = (uint)ctx[CpuRegister.Rsi];
         if (commandBufferAddress == 0 || dwordCount < 2 || dwordCount > 0x4001)
         {
-            return ReturnPointer(ctx, 0);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, dwordCount, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(dwordCount, ItNop, RZero)))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(dwordCount, ItNop, RZero)))
         {
-            return ReturnPointer(ctx, 0);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         for (uint index = 1; index < dwordCount; index++)
         {
-            if (!TryWriteUInt32(ctx, commandAddress + ((ulong)index * sizeof(uint)), 0))
+            if (!ctx.TryWriteUInt32(commandAddress + ((ulong)index * sizeof(uint)), 0))
             {
-                return ReturnPointer(ctx, 0);
+                return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
             }
         }
 
@@ -736,11 +744,11 @@ public static class AgcExports
         var modifier = (uint)ctx[CpuRegister.R8];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(5, ItDispatchDirect, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, groupCountX) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, groupCountY) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, groupCountZ) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, (modifier & 0xA038u) | 0x41u))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(5, ItDispatchDirect, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, groupCountX) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, groupCountY) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, groupCountZ) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, (modifier & 0xA038u) | 0x41u))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -772,8 +780,8 @@ public static class AgcExports
         for (uint index = 0; index < registerCount; index++)
         {
             var entryAddress = registersAddress + ((ulong)index * 8);
-            if (!TryReadUInt32(ctx, entryAddress, out var offset) ||
-                !TryReadUInt32(ctx, entryAddress + sizeof(uint), out var value))
+            if (!ctx.TryReadUInt32(entryAddress, out var offset) ||
+                !ctx.TryReadUInt32(entryAddress + sizeof(uint), out var value))
             {
                 return ReturnPointer(ctx, 0);
             }
@@ -796,8 +804,8 @@ public static class AgcExports
             var valueCount = (uint)(endIndex - startIndex);
             var packetDwords = valueCount + 2;
             if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
-                !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItSetShReg, 0)) ||
-                !TryWriteUInt32(ctx, commandAddress + 4, registers[startIndex].Offset & 0xFFFFu))
+                !ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItSetShReg, 0)) ||
+                !ctx.TryWriteUInt32(commandAddress + 4, registers[startIndex].Offset & 0xFFFFu))
             {
                 return ReturnPointer(ctx, 0);
             }
@@ -805,8 +813,7 @@ public static class AgcExports
             firstCommandAddress = firstCommandAddress == 0 ? commandAddress : firstCommandAddress;
             for (var index = startIndex; index < endIndex; index++)
             {
-                if (!TryWriteUInt32(
-                        ctx,
+                if (!ctx.TryWriteUInt32(
                         commandAddress + 8 + ((ulong)(index - startIndex) * sizeof(uint)),
                         registers[index].Value))
                 {
@@ -830,8 +837,8 @@ public static class AgcExports
         var commandBufferAddress = ctx[CpuRegister.Rdi];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNop, RAcbReset)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 0))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItNop, RAcbReset)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -857,15 +864,15 @@ public static class AgcExports
         var hasAddress = (eventType & ~1u) == 0x38;
         var packetDwords = hasAddress ? 4u : 2u;
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItEventWrite, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, hasAddress ? eventType | 0x100u : eventType & 0x3Fu))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItEventWrite, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, hasAddress ? eventType | 0x100u : eventType & 0x3Fu))
         {
             return ReturnPointer(ctx, 0);
         }
 
         if (hasAddress &&
-            (!TryWriteUInt32(ctx, commandAddress + 8, (uint)eventAddress & ~7u) ||
-             !TryWriteUInt32(ctx, commandAddress + 12, (uint)(eventAddress >> 32))))
+            (!ctx.TryWriteUInt32(commandAddress + 8, (uint)eventAddress & ~7u) ||
+             !ctx.TryWriteUInt32(commandAddress + 12, (uint)(eventAddress >> 32))))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -896,14 +903,14 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 8, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(8, ItNop, RAcquireMem)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 0x8000_0000u) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, noSize ? 0 : (uint)(sizeBytes >> 8)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, (uint)(baseAddress >> 8)) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, pollCycles / 40) ||
-            !TryWriteUInt32(ctx, commandAddress + 28, gcrControl))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(8, ItNop, RAcquireMem)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, 0x8000_0000u) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, noSize ? 0 : (uint)(sizeBytes >> 8)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, (uint)(baseAddress >> 8)) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 24, pollCycles / 40) ||
+            !ctx.TryWriteUInt32(commandAddress + 28, gcrControl))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -925,8 +932,8 @@ public static class AgcExports
         var address = ctx[CpuRegister.R8];
         var reference = ctx[CpuRegister.R9];
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + sizeof(ulong), out var mask) ||
-            !TryReadUInt32(ctx, stackAddress + (2 * sizeof(ulong)), out var pollCycles) ||
+        if (!ctx.TryReadUInt64(stackAddress + sizeof(ulong), out var mask) ||
+            !ctx.TryReadUInt32(stackAddress + (2 * sizeof(ulong)), out var pollCycles) ||
             commandBufferAddress == 0 ||
             size > 1 ||
             compareFunction > 7 ||
@@ -938,27 +945,27 @@ public static class AgcExports
         var packetDwords = size == 0 ? 6u : 9u;
         var packetRegister = size == 0 ? RWaitMem32 : RWaitMem64;
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItNop, packetRegister)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, (uint)address) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(address >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)mask))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItNop, packetRegister)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, (uint)address) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)(address >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)mask))
         {
             return ReturnPointer(ctx, 0);
         }
 
         if (size == 0)
         {
-            if (!TryWriteUInt32(ctx, commandAddress + 16, compareFunction) ||
-                !TryWriteUInt32(ctx, commandAddress + 20, (uint)reference))
+            if (!ctx.TryWriteUInt32(commandAddress + 16, compareFunction) ||
+                !ctx.TryWriteUInt32(commandAddress + 20, (uint)reference))
             {
                 return ReturnPointer(ctx, 0);
             }
         }
-        else if (!TryWriteUInt32(ctx, commandAddress + 16, (uint)(mask >> 32)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 20, (uint)reference) ||
-                 !TryWriteUInt32(ctx, commandAddress + 24, (uint)(reference >> 32)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 28, compareFunction) ||
-                 !TryWriteUInt32(ctx, commandAddress + 32, pollCycles / 40))
+        else if (!ctx.TryWriteUInt32(commandAddress + 16, (uint)(mask >> 32)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 20, (uint)reference) ||
+                 !ctx.TryWriteUInt32(commandAddress + 24, (uint)(reference >> 32)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 28, compareFunction) ||
+                 !ctx.TryWriteUInt32(commandAddress + 32, pollCycles / 40))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -986,10 +993,10 @@ public static class AgcExports
         var modifier = (uint)ctx[CpuRegister.Rdx];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 4, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(4, ItDispatchIndirect, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, (uint)argumentsAddress) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(argumentsAddress >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (modifier & 0xA038u) | 0x41u))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(4, ItDispatchIndirect, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, (uint)argumentsAddress) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)(argumentsAddress >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (modifier & 0xA038u) | 0x41u))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1014,11 +1021,11 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var markerAddress) ||
-            !TryWriteUInt32(ctx, markerAddress, Pm4(2, ItNop, RZero)) ||
-            !TryWriteUInt32(ctx, markerAddress + 4, CbSetShRegisterRangeMarker) ||
+            !ctx.TryWriteUInt32(markerAddress, Pm4(2, ItNop, RZero)) ||
+            !ctx.TryWriteUInt32(markerAddress + 4, CbSetShRegisterRangeMarker) ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, valueCount + 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(valueCount + 2, ItSetShReg, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, offset))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(valueCount + 2, ItSetShReg, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, offset))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1027,12 +1034,12 @@ public static class AgcExports
         {
             var value = 0u;
             if (valuesAddress != 0 &&
-                !TryReadUInt32(ctx, valuesAddress + (i * sizeof(uint)), out value))
+                !ctx.TryReadUInt32(valuesAddress + (i * sizeof(uint)), out value))
             {
                 return ReturnPointer(ctx, 0);
             }
 
-            if (!TryWriteUInt32(ctx, commandAddress + 8 + (i * sizeof(uint)), value))
+            if (!ctx.TryWriteUInt32(commandAddress + 8 + (i * sizeof(uint)), value))
             {
                 return ReturnPointer(ctx, 0);
             }
@@ -1056,12 +1063,12 @@ public static class AgcExports
         var cachePolicy = (uint)(ctx[CpuRegister.R8] & 0xFF);
         var destinationAddress = ctx[CpuRegister.R9];
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + 8, out var dataSelectionRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 16, out var data) ||
-            !TryReadUInt64(ctx, stackAddress + 24, out var gdsOffsetRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 32, out var gdsSizeRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 40, out var interruptRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 48, out var interruptContextIdRaw))
+        if (!ctx.TryReadUInt64(stackAddress + 8, out var dataSelectionRaw) ||
+            !ctx.TryReadUInt64(stackAddress + 16, out var data) ||
+            !ctx.TryReadUInt64(stackAddress + 24, out var gdsOffsetRaw) ||
+            !ctx.TryReadUInt64(stackAddress + 32, out var gdsSizeRaw) ||
+            !ctx.TryReadUInt64(stackAddress + 40, out var interruptRaw) ||
+            !ctx.TryReadUInt64(stackAddress + 48, out var interruptContextIdRaw))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1082,17 +1089,16 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 8, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(8, ItNop, RReleaseMem)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, action | (cachePolicy << 8)) ||
-            !TryWriteUInt32(
-                ctx,
+            !ctx.TryWriteUInt32(commandAddress, Pm4(8, ItNop, RReleaseMem)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, action | (cachePolicy << 8)) ||
+            !ctx.TryWriteUInt32(
                 commandAddress + 8,
                 gcrControl | (dataSelection << 16) | (interrupt << 24)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)destinationAddress) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, (uint)(destinationAddress >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, (uint)data) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, (uint)(data >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 28, interruptContextId))
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)destinationAddress) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, (uint)(destinationAddress >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, (uint)data) ||
+            !ctx.TryWriteUInt32(commandAddress + 24, (uint)(data >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 28, interruptContextId))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1119,8 +1125,8 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNop, RDrawReset)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 0))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItNop, RDrawReset)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1169,8 +1175,8 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItIndexType, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, indexSize))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItIndexType, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, indexSize))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1194,14 +1200,59 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNumInstances, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, instanceCount))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItNumInstances, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, instanceCount))
         {
             return ReturnPointer(ctx, 0);
         }
 
         TraceAgc($"agc.dcb_set_num_instances buf=0x{commandBufferAddress:X16} cmd=0x{commandAddress:X16} count={instanceCount}");
         return ReturnPointer(ctx, commandAddress);
+    }
+
+    [SysAbiExport(
+        Nid = "q88lQ+GP5Yk",
+        ExportName = "sceAgcDcbDrawIndex",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbDrawIndex(CpuContext ctx)
+    {
+        var commandBufferAddress = ctx[CpuRegister.Rdi];
+        var indexCount = (uint)ctx[CpuRegister.Rsi];
+        var indexAddress = ctx[CpuRegister.Rdx];
+        var modifier = (uint)ctx[CpuRegister.Rcx];
+
+        if (commandBufferAddress == 0 || modifier != 0x4000_0000)
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var baseCommand) ||
+            !ctx.TryWriteUInt32(baseCommand, Pm4(3, ItIndexBase, 0)) ||
+            !ctx.TryWriteUInt32(baseCommand + 4, (uint)indexAddress) ||
+            !ctx.TryWriteUInt32(baseCommand + 8, (uint)(indexAddress >> 32)) ||
+            !ctx.TryWriteUInt32(baseCommand + 12, Pm4(2, ItIndexBufferSize, 0)) ||
+            !ctx.TryWriteUInt32(baseCommand + 16, indexCount))
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var drawCommand) ||
+            !ctx.TryWriteUInt32(drawCommand, Pm4(5, ItDrawIndex2, 0)) ||
+            !ctx.TryWriteUInt32(drawCommand + 4, indexCount) ||
+            !ctx.TryWriteUInt32(drawCommand + 8, 0) ||
+            !ctx.TryWriteUInt32(drawCommand + 12, 0) ||
+            !ctx.TryWriteUInt32(drawCommand + 16, 0))
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        TraceAgc(
+            $"agc.dcb_draw_index buf=0x{commandBufferAddress:X16} " +
+            $"base=0x{baseCommand:X16} draw=0x{drawCommand:X16} " +
+            $"count={indexCount} index=0x{indexAddress:X16}");
+
+        return ReturnPointer(ctx, drawCommand);
     }
 
     [SysAbiExport(
@@ -1220,13 +1271,13 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 7, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(7, ItNop, RDrawIndexAuto)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, indexCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, 0))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(7, ItNop, RDrawIndexAuto)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, indexCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 24, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1260,8 +1311,8 @@ public static class AgcExports
         var control = (uint)ctx[CpuRegister.Rcx];
         var counterMask = (uint)ctx[CpuRegister.R8] & 0xFFu;
         var resetCounters = (uint)ctx[CpuRegister.R9] & 0x1u;
-        if (!TryReadUInt64(ctx, ctx[CpuRegister.Rsp] + sizeof(ulong), out var enableRaw) ||
-            !TryReadUInt64(ctx, ctx[CpuRegister.Rsp] + (2 * sizeof(ulong)), out var counterSelectRaw) ||
+        if (!ctx.TryReadUInt64(ctx[CpuRegister.Rsp] + sizeof(ulong), out var enableRaw) ||
+            !ctx.TryReadUInt64(ctx[CpuRegister.Rsp] + (2 * sizeof(ulong)), out var counterSelectRaw) ||
             commandBufferAddress == 0)
         {
             return ReturnPointer(ctx, 0);
@@ -1276,11 +1327,11 @@ public static class AgcExports
             (counterMask << 10) |
             (counterSelect << 2);
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(5, ItGetLodStats, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, control) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)destinationAddress & ~0x3Fu) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(destinationAddress >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, packetControl))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(5, ItGetLodStats, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, control) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)destinationAddress & ~0x3Fu) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)(destinationAddress >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, packetControl))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1307,8 +1358,8 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItEventWrite, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, eventType))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItEventWrite, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, eventType))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1330,7 +1381,7 @@ public static class AgcExports
         var gcrControl = (uint)ctx[CpuRegister.Rcx];
         var baseAddress = ctx[CpuRegister.R8];
         var sizeBytes = ctx[CpuRegister.R9];
-        if (!TryReadUInt32(ctx, ctx[CpuRegister.Rsp] + sizeof(ulong), out var pollCycles))
+        if (!ctx.TryReadUInt32(ctx[CpuRegister.Rsp] + sizeof(ulong), out var pollCycles))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1347,14 +1398,14 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 8, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(8, ItNop, RAcquireMem)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, (engine << 31) | cbDbOp) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, noSize ? 0 : (uint)(sizeBytes >> 8)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, (uint)(baseAddress >> 8)) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, pollCycles / 40) ||
-            !TryWriteUInt32(ctx, commandAddress + 28, gcrControl))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(8, ItNop, RAcquireMem)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, (engine << 31) | cbDbOp) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, noSize ? 0 : (uint)(sizeBytes >> 8)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, (uint)(baseAddress >> 8)) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 24, pollCycles / 40) ||
+            !ctx.TryWriteUInt32(commandAddress + 28, gcrControl))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1379,8 +1430,8 @@ public static class AgcExports
         var dataAddress = ctx[CpuRegister.R8];
         var dwordCount = (uint)ctx[CpuRegister.R9];
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + sizeof(ulong), out var incrementRaw) ||
-            !TryReadUInt64(ctx, stackAddress + (2 * sizeof(ulong)), out var writeConfirmRaw))
+        if (!ctx.TryReadUInt64(stackAddress + sizeof(ulong), out var incrementRaw) ||
+            !ctx.TryReadUInt64(stackAddress + (2 * sizeof(ulong)), out var writeConfirmRaw))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1397,21 +1448,20 @@ public static class AgcExports
 
         var packetDwords = dwordCount + 4;
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItNop, RWriteData)) ||
-            !TryWriteUInt32(
-                ctx,
+            !ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItNop, RWriteData)) ||
+            !ctx.TryWriteUInt32(
                 commandAddress + 4,
                 destination | (cachePolicy << 8) | (increment << 16) | (writeConfirm << 24)) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)destinationAddress) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(destinationAddress >> 32)))
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)destinationAddress) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)(destinationAddress >> 32)))
         {
             return ReturnPointer(ctx, 0);
         }
 
         for (uint index = 0; index < dwordCount; index++)
         {
-            if (!TryReadUInt32(ctx, dataAddress + ((ulong)index * sizeof(uint)), out var value) ||
-                !TryWriteUInt32(ctx, commandAddress + 16 + ((ulong)index * sizeof(uint)), value))
+            if (!ctx.TryReadUInt32(dataAddress + ((ulong)index * sizeof(uint)), out var value) ||
+                !ctx.TryWriteUInt32(commandAddress + 16 + ((ulong)index * sizeof(uint)), value))
             {
                 return ReturnPointer(ctx, 0);
             }
@@ -1442,9 +1492,9 @@ public static class AgcExports
         var cachePolicy = (uint)(ctx[CpuRegister.R8] & 0xFF);
         var address = ctx[CpuRegister.R9];
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + sizeof(ulong), out var reference) ||
-            !TryReadUInt64(ctx, stackAddress + (2 * sizeof(ulong)), out var mask) ||
-            !TryReadUInt32(ctx, stackAddress + (3 * sizeof(ulong)), out var pollCycles))
+        if (!ctx.TryReadUInt64(stackAddress + sizeof(ulong), out var reference) ||
+            !ctx.TryReadUInt64(stackAddress + (2 * sizeof(ulong)), out var mask) ||
+            !ctx.TryReadUInt32(stackAddress + (3 * sizeof(ulong)), out var pollCycles))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1468,37 +1518,37 @@ public static class AgcExports
 
         if (standardWait)
         {
-            if (!TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItWaitRegMem, 0)) ||
-                !TryWriteUInt32(ctx, commandAddress + 4, compareFunction | ((operation & 1) << 8)) ||
-                !TryWriteUInt32(ctx, commandAddress + 8, (uint)address) ||
-                !TryWriteUInt32(ctx, commandAddress + 12, (uint)(address >> 32)) ||
-                !TryWriteUInt32(ctx, commandAddress + 16, (uint)reference) ||
-                !TryWriteUInt32(ctx, commandAddress + 20, (uint)mask) ||
-                !TryWriteUInt32(ctx, commandAddress + 24, pollCycles / 40))
+            if (!ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItWaitRegMem, 0)) ||
+                !ctx.TryWriteUInt32(commandAddress + 4, compareFunction | ((operation & 1) << 8)) ||
+                !ctx.TryWriteUInt32(commandAddress + 8, (uint)address) ||
+                !ctx.TryWriteUInt32(commandAddress + 12, (uint)(address >> 32)) ||
+                !ctx.TryWriteUInt32(commandAddress + 16, (uint)reference) ||
+                !ctx.TryWriteUInt32(commandAddress + 20, (uint)mask) ||
+                !ctx.TryWriteUInt32(commandAddress + 24, pollCycles / 40))
             {
                 return ReturnPointer(ctx, 0);
             }
         }
-        else if (!TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItNop, packetRegister)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 4, (uint)address) ||
-                 !TryWriteUInt32(ctx, commandAddress + 8, (uint)(address >> 32)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 12, (uint)mask))
+        else if (!ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItNop, packetRegister)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 4, (uint)address) ||
+                 !ctx.TryWriteUInt32(commandAddress + 8, (uint)(address >> 32)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 12, (uint)mask))
         {
             return ReturnPointer(ctx, 0);
         }
         else if (size == 0)
         {
-            if (!TryWriteUInt32(ctx, commandAddress + 16, compareFunction | (operation << 8)) ||
-                !TryWriteUInt32(ctx, commandAddress + 20, (uint)reference))
+            if (!ctx.TryWriteUInt32(commandAddress + 16, compareFunction | (operation << 8)) ||
+                !ctx.TryWriteUInt32(commandAddress + 20, (uint)reference))
             {
                 return ReturnPointer(ctx, 0);
             }
         }
-        else if (!TryWriteUInt32(ctx, commandAddress + 16, (uint)(mask >> 32)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 20, (uint)reference) ||
-                 !TryWriteUInt32(ctx, commandAddress + 24, (uint)(reference >> 32)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 28, compareFunction | (operation << 8)) ||
-                 !TryWriteUInt32(ctx, commandAddress + 32, pollCycles / 40))
+        else if (!ctx.TryWriteUInt32(commandAddress + 16, (uint)(mask >> 32)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 20, (uint)reference) ||
+                 !ctx.TryWriteUInt32(commandAddress + 24, (uint)(reference >> 32)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 28, compareFunction | (operation << 8)) ||
+                 !ctx.TryWriteUInt32(commandAddress + 32, pollCycles / 40))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1528,12 +1578,12 @@ public static class AgcExports
         var destinationAddress = ctx[CpuRegister.R8];
         var sourceCachePolicy = (uint)(ctx[CpuRegister.R9] & 0xFF);
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + sizeof(ulong), out var control4Raw) ||
-            !TryReadUInt64(ctx, stackAddress + (2 * sizeof(ulong)), out var sourceAddress) ||
-            !TryReadUInt32(ctx, stackAddress + (3 * sizeof(ulong)), out var byteCount) ||
-            !TryReadUInt64(ctx, stackAddress + (4 * sizeof(ulong)), out var control7Raw) ||
-            !TryReadUInt64(ctx, stackAddress + (5 * sizeof(ulong)), out var control8Raw) ||
-            !TryReadUInt64(ctx, stackAddress + (6 * sizeof(ulong)), out var control9Raw))
+        if (!ctx.TryReadUInt64(stackAddress + sizeof(ulong), out var control4Raw) ||
+            !ctx.TryReadUInt64(stackAddress + (2 * sizeof(ulong)), out var sourceAddress) ||
+            !ctx.TryReadUInt32(stackAddress + (3 * sizeof(ulong)), out var byteCount) ||
+            !ctx.TryReadUInt64(stackAddress + (4 * sizeof(ulong)), out var control7Raw) ||
+            !ctx.TryReadUInt64(stackAddress + (5 * sizeof(ulong)), out var control8Raw) ||
+            !ctx.TryReadUInt64(stackAddress + (6 * sizeof(ulong)), out var control9Raw))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1548,19 +1598,17 @@ public static class AgcExports
         var control8 = (uint)(control8Raw & 0xFF);
         var control9 = (uint)(control9Raw & 0xFF);
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 8, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(8, ItNop, RDmaData)) ||
-            !TryWriteUInt32(
-                ctx,
+            !ctx.TryWriteUInt32(commandAddress, Pm4(8, ItNop, RDmaData)) ||
+            !ctx.TryWriteUInt32(
                 commandAddress + 4,
                 destination |
                 (destinationCachePolicy << 8) |
                 (source << 16) |
                 (sourceCachePolicy << 24)) ||
-            !TryWriteUInt32(
-                ctx,
+            !ctx.TryWriteUInt32(
                 commandAddress + 8,
                 control4 | (control7 << 8) | (control8 << 16) | (control9 << 24)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, byteCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, byteCount) ||
             !ctx.TryWriteUInt64(commandAddress + 16, destinationAddress) ||
             !ctx.TryWriteUInt64(commandAddress + 24, sourceAddress))
         {
@@ -1586,10 +1634,10 @@ public static class AgcExports
         var address = ctx[CpuRegister.Rdx];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 4, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(4, ItSetBase, 0) | (baseIndex << 1)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 1) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)address & ~7u) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(address >> 32)))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(4, ItSetBase, 0) | (baseIndex << 1)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, 1) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)address & ~7u) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)(address >> 32)))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1609,9 +1657,9 @@ public static class AgcExports
         var modifier = (uint)ctx[CpuRegister.Rdx];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 3, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(3, ItDispatchIndirect, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, dataOffset) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (modifier & 0xA038u) | 0x41u))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(3, ItDispatchIndirect, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, dataOffset) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (modifier & 0xA038u) | 0x41u))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1637,7 +1685,7 @@ public static class AgcExports
         var payloadDwords = Math.Max(((uint)marker.Length + 4) / 4, 1);
         var packetDwords = payloadDwords + 1;
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItNop, RPushMarker)))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(packetDwords, ItNop, RPushMarker)))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1654,7 +1702,7 @@ public static class AgcExports
                 }
             }
 
-            if (!TryWriteUInt32(ctx, commandAddress + 4 + ((ulong)index * sizeof(uint)), value))
+            if (!ctx.TryWriteUInt32(commandAddress + 4 + ((ulong)index * sizeof(uint)), value))
             {
                 return ReturnPointer(ctx, 0);
             }
@@ -1673,8 +1721,8 @@ public static class AgcExports
         var commandBufferAddress = ctx[CpuRegister.Rdi];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNop, RPopMarker)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 0))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(2, ItNop, RPopMarker)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1695,12 +1743,12 @@ public static class AgcExports
             op != ItNop ||
             register != RDmaData)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         return ctx.TryWriteUInt64(commandAddress + 16, destinationAddress)
-            ? SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK)
-            : SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK)
+            : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
     [SysAbiExport(
@@ -1714,7 +1762,7 @@ public static class AgcExports
         var address = ctx[CpuRegister.Rsi];
         if (!TryGetPacketIdentity(ctx, commandAddress, out var op, out var register))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         var fieldOffset = op == ItWaitRegMem
@@ -1724,12 +1772,12 @@ public static class AgcExports
                 : 0;
         if (fieldOffset == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         return ctx.TryWriteUInt64(commandAddress + fieldOffset, address)
-            ? SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK)
-            : SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK)
+            : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
     [SysAbiExport(
@@ -1745,12 +1793,12 @@ public static class AgcExports
             op != ItNop ||
             register != RReleaseMem)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         return ctx.TryWriteUInt64(commandAddress + 12, address)
-            ? SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK)
-            : SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK)
+            : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
     [SysAbiExport(
@@ -1769,11 +1817,11 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(3, ItIndexBase, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, (uint)(indexBufferAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(indexBufferAddress >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, Pm4(2, ItIndexBufferSize, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, indexCount))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(3, ItIndexBase, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, (uint)(indexBufferAddress & 0xFFFF_FFFFUL)) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)(indexBufferAddress >> 32)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, Pm4(2, ItIndexBufferSize, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, indexCount))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1799,11 +1847,11 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(5, ItDrawIndexOffset2, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, indexCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, indexOffset) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, indexCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, flags & 0xE000_0001u))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(5, ItDrawIndexOffset2, 0)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, indexCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, indexOffset) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, indexCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, flags & 0xE000_0001u))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1828,13 +1876,13 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 7, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(7, ItNop, RWaitFlipDone)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, videoOutHandle) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, displayBufferIndex) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, 0))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(7, ItNop, RWaitFlipDone)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, videoOutHandle) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, displayBufferIndex) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, 0) ||
+            !ctx.TryWriteUInt32(commandAddress + 24, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1861,12 +1909,12 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 6, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(6, ItNop, RFlip)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, videoOutHandle) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, unchecked((uint)displayBufferIndex)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, flipMode) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, (uint)(flipArg & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, (uint)(flipArg >> 32)))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(6, ItNop, RFlip)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, videoOutHandle) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, unchecked((uint)displayBufferIndex)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, flipMode) ||
+            !ctx.TryWriteUInt32(commandAddress + 16, (uint)(flipArg & 0xFFFF_FFFFUL)) ||
+            !ctx.TryWriteUInt32(commandAddress + 20, (uint)(flipArg >> 32)))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -1891,11 +1939,11 @@ public static class AgcExports
                 KernelEventQueueCompatExports.KernelEventFilterGraphics,
                 userData))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
         }
 
         TraceAgc($"agc.driver_add_eq_event eq=0x{equeue:X16} id=0x{eventId:X16} udata=0x{userData:X16}");
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -1912,11 +1960,11 @@ public static class AgcExports
                 eventId,
                 KernelEventQueueCompatExports.KernelEventFilterGraphics))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
         }
 
         TraceAgc($"agc.driver_delete_eq_event eq=0x{equeue:X16} id=0x{eventId:X16}");
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -1928,14 +1976,14 @@ public static class AgcExports
     {
         var packetAddress = ctx[CpuRegister.Rdi];
         if (packetAddress == 0 ||
-            !TryReadUInt64(ctx, packetAddress, out var commandAddress) ||
-            !TryReadUInt32(ctx, packetAddress + 8, out var dwordCount))
+            !ctx.TryReadUInt64(packetAddress, out var commandAddress) ||
+            !ctx.TryReadUInt32(packetAddress + 8, out var dwordCount))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         var tracePackets = false;
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AGC"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC"), "1", StringComparison.Ordinal))
         {
             lock (_submitTraceGate)
             {
@@ -1952,6 +2000,57 @@ public static class AgcExports
         lock (gpuState.Gate)
         {
             ParseSubmittedDcb(ctx, gpuState, gpuState.Graphics, commandAddress, dwordCount, tracePackets);
+            DrainResumableDcbs(ctx, gpuState, tracePackets);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    // ABI (reversed from Quake): rdi = array of DCB base addresses (u64 each),
+    // rsi = array of DCB sizes in dwords (u32 each), rdx = buffer count.
+    [SysAbiExport(
+        Nid = "6UzEidRZwkg",
+        ExportName = "sceAgcDriverSubmitMultiDcbs",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgcDriver")]
+    public static int DriverSubmitMultiDcbs(CpuContext ctx)
+    {
+        var addressArray = ctx[CpuRegister.Rdi];
+        var sizeArray = ctx[CpuRegister.Rsi];
+        var bufferCount = (uint)ctx[CpuRegister.Rdx];
+        if (addressArray == 0 || sizeArray == 0 || bufferCount == 0 || bufferCount > 4096)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        var tracePackets = string.Equals(
+            Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC"), "1", StringComparison.Ordinal);
+
+        var gpuState = _submittedGpuStates.GetValue(ctx.Memory, static _ => new SubmittedGpuState());
+        lock (gpuState.Gate)
+        {
+            for (uint i = 0; i < bufferCount; i++)
+            {
+                if (!ctx.TryReadUInt64(addressArray + i * 8, out var commandAddress) ||
+                    commandAddress == 0 ||
+                    !ctx.TryReadUInt32(sizeArray + i * 4, out var dwordCount) ||
+                    dwordCount == 0)
+                {
+                    continue;
+                }
+
+                if (tracePackets)
+                {
+                    TraceAgc(
+                        $"agc.driver_submit_multi_dcbs index={i}/{bufferCount} " +
+                        $"addr=0x{commandAddress:X16} dwords={dwordCount}");
+                }
+
+                ParseSubmittedDcb(ctx, gpuState, gpuState.Graphics, commandAddress, dwordCount, tracePackets);
+            }
+
+            DrainResumableDcbs(ctx, gpuState, tracePackets);
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -1968,14 +2067,14 @@ public static class AgcExports
         var ownerHandle = (uint)ctx[CpuRegister.Rdi];
         var packetAddress = ctx[CpuRegister.Rsi];
         if (packetAddress == 0 ||
-            !TryReadUInt64(ctx, packetAddress, out var commandAddress) ||
-            !TryReadUInt32(ctx, packetAddress + 8, out var dwordCount))
+            !ctx.TryReadUInt64(packetAddress, out var commandAddress) ||
+            !ctx.TryReadUInt32(packetAddress + 8, out var dwordCount))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         var tracePackets = false;
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AGC"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC"), "1", StringComparison.Ordinal))
         {
             lock (_submitTraceGate)
             {
@@ -2000,10 +2099,93 @@ public static class AgcExports
             }
 
             ParseSubmittedDcb(ctx, gpuState, queueState, commandAddress, dwordCount, tracePackets);
+            DrainResumableDcbs(ctx, gpuState, tracePackets);
         }
 
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+    Nid = "uJziRsODk1c",
+    ExportName = "sceAgcDriverGetResourceRegistrationMaxNameLength",
+    Target = Generation.Gen5,
+    LibraryName = "libSceAgc")]
+    public static int DriverGetResourceRegistrationMaxNameLength(CpuContext ctx)
+    {
+        var outAddress = ctx[CpuRegister.Rdi];
+
+        if (outAddress == 0)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (!ctx.TryWriteUInt32(outAddress, 256))
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAgc($"agc.driver_get_resource_registration_max_name_length out=0x{outAddress:X16} value=256");
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    private const uint DefaultAgcOwner = 1;
+    [SysAbiExport(
+        Nid = "F0ZXt5q0ZTA",
+        ExportName = "sceAgcDriverGetDefaultOwner",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DriverGetDefaultOwner(CpuContext ctx)
+    {
+        var ownerAddress = ctx[CpuRegister.Rdi];
+
+        if (ownerAddress == 0)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (!ctx.TryWriteUInt32(ownerAddress, DefaultAgcOwner))
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAgc($"agc.driver_get_default_owner out=0x{ownerAddress:X16} owner={DefaultAgcOwner}");
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+    Nid = "W5z4eZrjEas",
+    ExportName = "sceAgcDriverRegisterResource",
+    Target = Generation.Gen5,
+    LibraryName = "libSceAgc")]
+    public static int DriverRegisterResource(CpuContext ctx)
+    {
+        var resourceAddress = ctx[CpuRegister.Rdi];
+        var owner = (uint)ctx[CpuRegister.Rsi];
+        var nameAddress = ctx[CpuRegister.Rdx];
+        var type = (uint)ctx[CpuRegister.R8];
+        var flags = (uint)ctx[CpuRegister.R9];
+
+        TraceAgc(
+            $"agc.driver_register_resource resource=0x{resourceAddress:X16} owner={owner} " +
+            $"name=0x{nameAddress:X16} type={type} flags={flags}");
+
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+    Nid = "-KRzWekV120",
+    ExportName = "sceAgcDriverUnknown_KRzWekV120",
+    Target = Generation.Gen5,
+    LibraryName = "libSceAgc")]
+    public static int DriverUnknownKRzWekV120(CpuContext ctx)
+    {
+        TraceAgc(
+            $"agc.driver_unknown_krz rdi=0x{ctx[CpuRegister.Rdi]:X16} " +
+            $"rsi=0x{ctx[CpuRegister.Rsi]:X16} rdx=0x{ctx[CpuRegister.Rdx]:X16} " +
+            $"rcx=0x{ctx[CpuRegister.Rcx]:X16} r8=0x{ctx[CpuRegister.R8]:X16} r9=0x{ctx[CpuRegister.R9]:X16}");
+
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -2028,7 +2210,7 @@ public static class AgcExports
         var commandBufferAddress = ctx[CpuRegister.Rdi];
         if (commandBufferAddress == 0 ||
             !TryAllocateCommandDwords(ctx, commandBufferAddress, 1, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, 0x8000_0000))
+            !ctx.TryWriteUInt32(commandAddress, 0x8000_0000))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -2037,6 +2219,63 @@ public static class AgcExports
             $"agc.unknown_qj7 buf=0x{commandBufferAddress:X16} cmd=0x{commandAddress:X16} " +
             $"arg1=0x{ctx[CpuRegister.Rsi]:X16} arg2=0x{ctx[CpuRegister.Rdx]:X16}");
         return ReturnPointer(ctx, commandAddress);
+    }
+
+    // WAIT_REG_MEM packets whose condition is not met suspend their DCB into
+    // GpuWaitRegistry. Each submit re-checks every suspended DCB against current guest
+    // memory (labels are advanced by ReleaseMem/WriteData/DmaData packets or by direct
+    // CPU writes) and resumes the ones whose condition is now satisfied. A resumed DCB
+    // can itself write labels that unblock others, so loop until a fixed point.
+    private static void DrainResumableDcbs(
+        CpuContext ctx,
+        SubmittedGpuState gpuState,
+        bool tracePackets)
+    {
+        for (var pass = 0; pass < 256; pass++)
+        {
+            var woken = GpuWaitRegistry.CollectSatisfied((address, is64Bit) =>
+            {
+                if (is64Bit)
+                {
+                    return ctx.TryReadUInt64(address, out var value64)
+                        ? value64
+                        : (ulong?)null;
+                }
+
+                return ctx.TryReadUInt32(address, out var value32)
+                    ? value32
+                    : (ulong?)null;
+            });
+            if (woken is null)
+            {
+                return;
+            }
+
+            foreach (var waiter in woken)
+            {
+                var remainingDwords = waiter.TotalDwords - waiter.ResumeOffset;
+                if (remainingDwords == 0)
+                {
+                    continue;
+                }
+
+                if (tracePackets)
+                {
+                    TraceAgc(
+                        $"agc.dcb.resumed addr=0x{waiter.WaitAddress:X16} " +
+                        $"resume=0x{waiter.ResumeAddress:X16} dwords={remainingDwords}");
+                }
+
+                var state = waiter.State as SubmittedDcbState ?? gpuState.Graphics;
+                ParseSubmittedDcb(
+                    ctx,
+                    gpuState,
+                    state,
+                    waiter.ResumeAddress,
+                    remainingDwords,
+                    tracePackets);
+            }
+        }
     }
 
     private static void ParseSubmittedDcb(
@@ -2056,7 +2295,7 @@ public static class AgcExports
         while (offset < dwordCount)
         {
             var currentAddress = commandAddress + ((ulong)offset * sizeof(uint));
-            if (!TryReadUInt32(ctx, currentAddress, out var header))
+            if (!ctx.TryReadUInt32(currentAddress, out var header))
             {
                 return;
             }
@@ -2070,7 +2309,6 @@ public static class AgcExports
                         $"agc.dcb.packet dw={offset} addr=0x{currentAddress:X16} " +
                         $"header=0x{header:X8} len=1 type=2");
                 }
-
                 offset++;
                 continue;
             }
@@ -2103,16 +2341,16 @@ public static class AgcExports
 
             if (op == ItSetBase &&
                 length >= 4 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var baseSelector) &&
+                ctx.TryReadUInt32(currentAddress + 4, out var baseSelector) &&
                 baseSelector == 1 &&
-                TryReadUInt64(ctx, currentAddress + 8, out var indirectArgsAddress))
+                ctx.TryReadUInt64(currentAddress + 8, out var indirectArgsAddress))
             {
                 state.IndirectArgsAddress = indirectArgsAddress;
             }
 
             if (op == ItEventWrite &&
                 length >= 2 &&
-                TryReadUInt32(ctx, currentAddress + sizeof(uint), out var eventTypeRaw))
+                ctx.TryReadUInt32(currentAddress + sizeof(uint), out var eventTypeRaw))
             {
                 var eventType = eventTypeRaw & 0x3Fu;
                 var triggered = KernelEventQueueCompatExports.TriggerRegisteredEvents(
@@ -2152,8 +2390,8 @@ public static class AgcExports
 
             if (op == ItIndexBase &&
                 length >= 3 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var indexBaseLo) &&
-                TryReadUInt32(ctx, currentAddress + 8, out var indexBaseHi))
+                ctx.TryReadUInt32(currentAddress + 4, out var indexBaseLo) &&
+                ctx.TryReadUInt32(currentAddress + 8, out var indexBaseHi))
             {
                 state.IndexBufferAddress =
                     indexBaseLo | ((ulong)indexBaseHi << 32);
@@ -2161,35 +2399,110 @@ public static class AgcExports
 
             if (op == ItIndexBufferSize &&
                 length >= 2 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var indexBufferCount))
+                ctx.TryReadUInt32(currentAddress + 4, out var indexBufferCount))
             {
                 state.IndexBufferCount = indexBufferCount;
             }
 
             if (op == ItIndexType &&
                 length >= 2 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var indexSize))
+                ctx.TryReadUInt32(currentAddress + 4, out var indexSize))
             {
                 state.IndexSize = indexSize & 0x3;
             }
 
             if (op == ItNumInstances &&
                 length >= 2 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var instanceCount))
+                ctx.TryReadUInt32(currentAddress + 4, out var instanceCount))
             {
                 state.InstanceCount = Math.Max(instanceCount, 1);
             }
 
-            if (op == ItNop &&
-                register is RWaitMem32 or RWaitMem64 &&
+            // WAIT_REG_MEM (AGC NOP-encapsulated 32/64-bit variants): when the condition is
+            // not yet satisfied, suspend this DCB; DrainResumableDcbs resumes it once the
+            // watched memory advances.
+            if (op == ItNop && register is RWaitMem32 or RWaitMem64 &&
                 length >= (register == RWaitMem32 ? 6u : 9u))
             {
-                ObserveSubmittedWaitRegMem(ctx, currentAddress, register == RWaitMem64, tracePackets);
+                if (TryParseWaitRegMem(ctx, currentAddress, register == RWaitMem64,
+                        out var waitAddr, out var refVal, out var waitMask, out var cmpFunc))
+                {
+                    ulong curVal = 0;
+                    bool hasCurVal;
+                    if (register == RWaitMem64)
+                    {
+                        hasCurVal = ctx.TryReadUInt64(waitAddr, out curVal);
+                    }
+                    else if (ctx.TryReadUInt32(waitAddr, out var curVal32))
+                    {
+                        curVal = curVal32;
+                        hasCurVal = true;
+                    }
+                    else
+                    {
+                        hasCurVal = false;
+                    }
+
+                    var waiter = new GpuWaitRegistry.WaitingDcb
+                    {
+                        CommandBufferAddress = commandAddress,
+                        ResumeAddress = currentAddress + ((ulong)length * sizeof(uint)),
+                        TotalDwords = dwordCount,
+                        ResumeOffset = offset + length,
+                        ReferenceValue = refVal,
+                        Mask = waitMask,
+                        CompareFunction = cmpFunc,
+                        Is64Bit = register == RWaitMem64,
+                        State = state,
+                    };
+                    if (hasCurVal && !GpuWaitRegistry.Compare(waiter, curVal))
+                    {
+                        GpuWaitRegistry.Register(waitAddr, waiter);
+
+                        if (tracePackets)
+                        {
+                            TraceAgc(
+                                $"agc.dcb.suspended addr=0x{waitAddr:X16} ref=0x{refVal:X16} " +
+                                $"mask=0x{waitMask:X16} cur=0x{curVal:X16} cmp={cmpFunc}");
+                        }
+
+                        return; // suspend parsing of this DCB
+                    }
+                }
             }
 
             if (op == ItWaitRegMem && length >= 7)
             {
-                ObserveSubmittedStandardWaitRegMem(ctx, currentAddress, tracePackets);
+                if (TryParseStandardWaitRegMem(ctx, currentAddress,
+                        out var waitAddr, out var refVal, out var waitMask, out var cmpFunc) &&
+                    ctx.TryReadUInt32(waitAddr, out var curVal))
+                {
+                    var waiter = new GpuWaitRegistry.WaitingDcb
+                    {
+                        CommandBufferAddress = commandAddress,
+                        ResumeAddress = currentAddress + ((ulong)length * sizeof(uint)),
+                        TotalDwords = dwordCount,
+                        ResumeOffset = offset + length,
+                        ReferenceValue = refVal,
+                        Mask = waitMask,
+                        CompareFunction = cmpFunc,
+                        Is64Bit = false,
+                        State = state,
+                    };
+                    if (!GpuWaitRegistry.Compare(waiter, curVal))
+                    {
+                        GpuWaitRegistry.Register(waitAddr, waiter);
+
+                        if (tracePackets)
+                        {
+                            TraceAgc(
+                                $"agc.dcb.suspended_std addr=0x{waitAddr:X16} ref=0x{refVal:X16} " +
+                                $"mask=0x{waitMask:X16} cur=0x{curVal:X16} cmp={cmpFunc}");
+                        }
+
+                        return;
+                    }
+                }
             }
 
             if (TryReadSubmittedDrawCount(
@@ -2221,7 +2534,7 @@ public static class AgcExports
             if (op == ItNop &&
                 register == RDrawIndexAuto &&
                 length >= 2 &&
-                TryReadUInt32(ctx, currentAddress + 4, out var autoIndexCount) &&
+                ctx.TryReadUInt32(currentAddress + 4, out var autoIndexCount) &&
                 autoIndexCount != 0)
             {
                 TryTranslateGuestDraw(
@@ -2246,11 +2559,11 @@ public static class AgcExports
 
             if (op == ItNop && register == RFlip && length >= 6)
             {
-                if (!TryReadUInt32(ctx, currentAddress + 4, out var videoOutHandle) ||
-                    !TryReadUInt32(ctx, currentAddress + 8, out var displayBufferIndexRaw) ||
-                    !TryReadUInt32(ctx, currentAddress + 12, out var flipMode) ||
-                    !TryReadUInt32(ctx, currentAddress + 16, out var flipArgLo) ||
-                    !TryReadUInt32(ctx, currentAddress + 20, out var flipArgHi))
+                if (!ctx.TryReadUInt32(currentAddress + 4, out var videoOutHandle) ||
+                    !ctx.TryReadUInt32(currentAddress + 8, out var displayBufferIndexRaw) ||
+                    !ctx.TryReadUInt32(currentAddress + 12, out var flipMode) ||
+                    !ctx.TryReadUInt32(currentAddress + 16, out var flipArgLo) ||
+                    !ctx.TryReadUInt32(currentAddress + 20, out var flipArgHi))
                 {
                     return;
                 }
@@ -2375,9 +2688,9 @@ public static class AgcExports
         ulong packetAddress,
         bool tracePacket)
     {
-        if (!TryReadUInt32(ctx, packetAddress + 12, out var byteCount) ||
-            !TryReadUInt64(ctx, packetAddress + 16, out var destinationAddress) ||
-            !TryReadUInt64(ctx, packetAddress + 24, out var sourceAddress))
+        if (!ctx.TryReadUInt32(packetAddress + 12, out var byteCount) ||
+            !ctx.TryReadUInt64(packetAddress + 16, out var destinationAddress) ||
+            !ctx.TryReadUInt64(packetAddress + 24, out var sourceAddress))
         {
             return;
         }
@@ -2400,12 +2713,12 @@ public static class AgcExports
         CpuContext ctx,
         ulong packetAddress)
     {
-        if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
-            !TryReadUInt32(ctx, packetAddress + 8, out var sourceLow) ||
-            !TryReadUInt32(ctx, packetAddress + 12, out var sourceHigh) ||
-            !TryReadUInt32(ctx, packetAddress + 16, out var destinationLow) ||
-            !TryReadUInt32(ctx, packetAddress + 20, out var destinationHigh) ||
-            !TryReadUInt32(ctx, packetAddress + 24, out var command))
+        if (!ctx.TryReadUInt32(packetAddress + 4, out var control) ||
+            !ctx.TryReadUInt32(packetAddress + 8, out var sourceLow) ||
+            !ctx.TryReadUInt32(packetAddress + 12, out var sourceHigh) ||
+            !ctx.TryReadUInt32(packetAddress + 16, out var destinationLow) ||
+            !ctx.TryReadUInt32(packetAddress + 20, out var destinationHigh) ||
+            !ctx.TryReadUInt32(packetAddress + 24, out var command))
         {
             return;
         }
@@ -2436,7 +2749,7 @@ public static class AgcExports
             if (sourceAddressIncrement != 0)
             {
                 copied =
-                    TryReadUInt32(ctx, sourceAddress, out var fillValue) &&
+                    ctx.TryReadUInt32(sourceAddress, out var fillValue) &&
                     TryFillGuestMemory(
                         ctx,
                         fillValue,
@@ -2482,8 +2795,8 @@ public static class AgcExports
         uint packetLength,
         bool tracePacket)
     {
-        if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
-            !TryReadUInt64(ctx, packetAddress + 8, out var destinationAddress))
+        if (!ctx.TryReadUInt32(packetAddress + 4, out var control) ||
+            !ctx.TryReadUInt64(packetAddress + 8, out var destinationAddress))
         {
             return;
         }
@@ -2498,8 +2811,8 @@ public static class AgcExports
             var targetAddress = destinationAddress +
                 (increment == 0 ? (ulong)index * sizeof(uint) : 0);
             wroteData =
-                TryReadUInt32(ctx, sourceAddress, out var value) &&
-                TryWriteUInt32(ctx, targetAddress, value);
+                ctx.TryReadUInt32(sourceAddress, out var value) &&
+                ctx.TryWriteUInt32(targetAddress, value);
         }
 
         if (tracePacket)
@@ -2510,114 +2823,16 @@ public static class AgcExports
         }
     }
 
-    private static void ObserveSubmittedWaitRegMem(
-        CpuContext ctx,
-        ulong packetAddress,
-        bool is64Bit,
-        bool tracePacket)
-    {
-        if (!TryReadUInt64(ctx, packetAddress + 4, out var address) ||
-            !TryReadUInt32(ctx, packetAddress + (is64Bit ? 28u : 16u), out var control))
-        {
-            return;
-        }
-
-        ulong mask;
-        ulong reference;
-        ulong value;
-        if (is64Bit)
-        {
-            if (!TryReadUInt64(ctx, packetAddress + 12, out mask) ||
-                !TryReadUInt64(ctx, packetAddress + 20, out reference) ||
-                !TryReadUInt64(ctx, address, out value))
-            {
-                return;
-            }
-        }
-        else
-        {
-            if (!TryReadUInt32(ctx, packetAddress + 12, out var mask32) ||
-                !TryReadUInt32(ctx, packetAddress + 20, out var reference32) ||
-                !TryReadUInt32(ctx, address, out var value32))
-            {
-                return;
-            }
-
-            mask = mask32;
-            reference = reference32;
-            value = value32;
-        }
-
-        var compareFunction = control & 0xFFu;
-        TraceSubmittedWait(
-            address,
-            value,
-            mask,
-            reference,
-            compareFunction,
-            is64Bit ? 64 : 32,
-            tracePacket);
-    }
-
-    private static void ObserveSubmittedStandardWaitRegMem(
-        CpuContext ctx,
-        ulong packetAddress,
-        bool tracePacket)
-    {
-        if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
-            !TryReadUInt64(ctx, packetAddress + 8, out var address) ||
-            !TryReadUInt32(ctx, packetAddress + 16, out var reference) ||
-            !TryReadUInt32(ctx, packetAddress + 20, out var mask) ||
-            !TryReadUInt32(ctx, address, out var value))
-        {
-            return;
-        }
-
-        TraceSubmittedWait(address, value, mask, reference, control & 0x7u, 32, tracePacket);
-    }
-
-    private static void TraceSubmittedWait(
-        ulong address,
-        ulong value,
-        ulong mask,
-        ulong reference,
-        uint compareFunction,
-        int bits,
-        bool tracePacket)
-    {
-        var maskedValue = value & mask;
-        var satisfied = compareFunction switch
-        {
-            0 => false,
-            1 => maskedValue < reference,
-            2 => maskedValue <= reference,
-            3 => maskedValue == reference,
-            4 => maskedValue != reference,
-            5 => maskedValue >= reference,
-            6 => maskedValue > reference,
-            _ => true,
-        };
-        if (!tracePacket && (satisfied || !ShouldTraceHotPath(ref _unsatisfiedWaitTraceCount)))
-        {
-            return;
-        }
-
-        TraceAgc(
-            $"agc.dcb.wait_reg_mem bits={bits} addr=0x{address:X16} " +
-            $"value=0x{value:X16} mask=0x{mask:X16} ref=0x{reference:X16} " +
-            $"compare={compareFunction} satisfied={satisfied}");
-    }
-
     private static void ApplySubmittedReleaseMem(
         CpuContext ctx,
         ulong packetAddress,
         bool tracePacket)
     {
-        if (!TryReadUInt32(ctx, packetAddress + 8, out var control) ||
-            !TryReadUInt32(ctx, packetAddress + 12, out var destinationLo) ||
-            !TryReadUInt32(ctx, packetAddress + 16, out var destinationHi) ||
-            !TryReadUInt32(ctx, packetAddress + 20, out var dataLo) ||
-            !TryReadUInt32(ctx, packetAddress + 24, out var dataHi))
+        if (!ctx.TryReadUInt32(packetAddress + 8, out var control) ||
+            !ctx.TryReadUInt32(packetAddress + 12, out var destinationLo) ||
+            !ctx.TryReadUInt32(packetAddress + 16, out var destinationHi) ||
+            !ctx.TryReadUInt32(packetAddress + 20, out var dataLo) ||
+            !ctx.TryReadUInt32(packetAddress + 24, out var dataHi))
         {
             return;
         }
@@ -2625,10 +2840,11 @@ public static class AgcExports
         var dataSelection = (control >> 16) & 0xFFu;
         var destinationAddress = ((ulong)destinationHi << 32) | destinationLo;
         var data = ((ulong)dataHi << 32) | dataLo;
+
         var wroteData = dataSelection switch
         {
-            1 or 2 => TryWriteUInt32(ctx, destinationAddress, dataLo),
-            3 => ctx.TryWriteUInt64(destinationAddress, data),
+            1 => ctx.TryWriteUInt32(destinationAddress, dataLo),
+            2 or 3 => ctx.TryWriteUInt64(destinationAddress, data),
             _ => false,
         };
 
@@ -2651,7 +2867,7 @@ public static class AgcExports
         if (op is ItSetShReg or ItSetContextReg or ItSetUconfigReg)
         {
             if (packetLength < 3 ||
-                !TryReadUInt32(ctx, packetAddress + sizeof(uint), out var startRegister))
+                !ctx.TryReadUInt32(packetAddress + sizeof(uint), out var startRegister))
             {
                 return;
             }
@@ -2664,8 +2880,7 @@ public static class AgcExports
             };
             for (uint index = 0; index < packetLength - 2; index++)
             {
-                if (!TryReadUInt32(
-                        ctx,
+                if (!ctx.TryReadUInt32(
                         packetAddress + 8 + ((ulong)index * sizeof(uint)),
                         out var value))
                 {
@@ -2681,8 +2896,8 @@ public static class AgcExports
         if (op != ItNop ||
             register is not (RCxRegsIndirect or RShRegsIndirect or RUcRegsIndirect) ||
             packetLength < 4 ||
-            !TryReadUInt32(ctx, packetAddress + sizeof(uint), out var registerCount) ||
-            !TryReadUInt64(ctx, packetAddress + 8, out var registersAddress))
+            !ctx.TryReadUInt32(packetAddress + sizeof(uint), out var registerCount) ||
+            !ctx.TryReadUInt64(packetAddress + 8, out var registersAddress))
         {
             return;
         }
@@ -2696,8 +2911,8 @@ public static class AgcExports
         for (uint index = 0; index < registerCount; index++)
         {
             var entryAddress = registersAddress + ((ulong)index * 8);
-            if (!TryReadUInt32(ctx, entryAddress, out var registerOffset) ||
-                !TryReadUInt32(ctx, entryAddress + sizeof(uint), out var value))
+            if (!ctx.TryReadUInt32(entryAddress, out var registerOffset) ||
+                !ctx.TryReadUInt32(entryAddress + sizeof(uint), out var value))
             {
                 return;
             }
@@ -2721,20 +2936,25 @@ public static class AgcExports
         switch (op)
         {
             case ItDrawIndexAuto when packetLength >= 3:
-                return TryReadUInt32(ctx, packetAddress + 4, out drawCount);
+                return ctx.TryReadUInt32(packetAddress + 4, out drawCount);
             case ItDrawIndex2 when packetLength >= 6:
                 state.DrawIndexOffset = 0;
-                return TryReadUInt32(ctx, packetAddress + 16, out drawCount);
+                return ctx.TryReadUInt32(packetAddress + 16, out drawCount);
+            // 5-dword form emitted by DcbDrawIndex (count at +4, ItIndexBase/
+            // ItIndexBufferSize carried by separate preceding packets).
+            case ItDrawIndex2 when packetLength >= 5:
+                state.DrawIndexOffset = 0;
+                return ctx.TryReadUInt32(packetAddress + 4, out drawCount);
             case ItDrawIndexOffset2 when packetLength >= 5:
-                if (!TryReadUInt32(ctx, packetAddress + 8, out var indexOffset))
+                if (!ctx.TryReadUInt32(packetAddress + 8, out var indexOffset))
                 {
                     return false;
                 }
 
                 state.DrawIndexOffset = indexOffset;
-                return TryReadUInt32(ctx, packetAddress + 12, out drawCount);
+                return ctx.TryReadUInt32(packetAddress + 12, out drawCount);
             case ItDrawIndexMultiAuto when packetLength >= 4:
-                if (!TryReadUInt32(ctx, packetAddress + 12, out var control))
+                if (!ctx.TryReadUInt32(packetAddress + 12, out var control))
                 {
                     return false;
                 }
@@ -2743,13 +2963,12 @@ public static class AgcExports
                 return true;
             case ItDrawIndirect or ItDrawIndexIndirect
                 when packetLength >= 5 && state.IndirectArgsAddress != 0:
-                if (!TryReadUInt32(ctx, packetAddress + 4, out var dataOffset))
+                if (!ctx.TryReadUInt32(packetAddress + 4, out var dataOffset))
                 {
                     return false;
                 }
 
-                return TryReadUInt32(
-                    ctx,
+                return ctx.TryReadUInt32(
                     state.IndirectArgsAddress + dataOffset,
                     out drawCount);
             default:
@@ -3077,8 +3296,58 @@ public static class AgcExports
             globalMemoryBindings,
             vertexInputs,
             renderTargets,
-            CreateRenderState(state.CxRegisters, renderTargets.FirstOrDefault()));
+            ApplyTransparentPremultipliedFillClear(
+                CreateRenderState(state.CxRegisters, renderTargets.FirstOrDefault()),
+                textures,
+                vertexInputs,
+                pixelEvaluation.InitialScalarRegisters));
         return true;
+    }
+
+    private static readonly bool _transparentFillClearEnabled = !string.Equals(
+        Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_TRANSPARENT_FILL_CLEAR"),
+        "1",
+        StringComparison.Ordinal);
+
+    /// <summary>
+    /// Chowdren resets its effect layers with an untextured transparent-black
+    /// fill using premultiplied blending. With One/OneMinusSrcAlpha that draw
+    /// is otherwise a no-op, causing fog and vignette layers to accumulate.
+    /// Treat precisely that draw shape as an overwrite.
+    /// </summary>
+    private static VulkanGuestRenderState ApplyTransparentPremultipliedFillClear(
+        VulkanGuestRenderState renderState,
+        IReadOnlyList<TranslatedImageBinding> textures,
+        IReadOnlyList<Gen5VertexInputBinding> vertexInputs,
+        IReadOnlyList<uint> pixelUserData)
+    {
+        if (!_transparentFillClearEnabled ||
+            textures.Count != 0 ||
+            vertexInputs.Count != 0 ||
+            pixelUserData.Count < 4 ||
+            renderState.Blend is not
+            {
+                Enable: true,
+                ColorSrcFactor: 1,
+                ColorDstFactor: 5,
+                ColorFunc: 0,
+            })
+        {
+            return renderState;
+        }
+
+        for (var index = 0; index < 4; index++)
+        {
+            if ((pixelUserData[index] & 0x7FFF_FFFFu) != 0)
+            {
+                return renderState;
+            }
+        }
+
+        return renderState with
+        {
+            Blend = renderState.Blend with { Enable = false },
+        };
     }
 
     private static VulkanGuestIndexBuffer? CreateVulkanIndexBuffer(
@@ -3482,7 +3751,7 @@ public static class AgcExports
             ',',
             draw.GlobalMemoryBindings.Select((binding, index) =>
                 $"{index}:0x{binding.BaseAddress:X16}:{binding.Data.Length}:" +
-                Convert.ToHexString(binding.Data.AsSpan(0, Math.Min(binding.Data.Length, 32)))));
+                Convert.ToHexString(binding.Data.AsSpan(0, Math.Min(binding.Data.Length, 256)))));
         var indices = draw.IndexBuffer is { } indexBuffer
             ? $"{(indexBuffer.Is32Bit ? 32 : 16)}:" +
               Convert.ToHexString(indexBuffer.Data.AsSpan(0, Math.Min(indexBuffer.Data.Length, 32)))
@@ -3617,14 +3886,13 @@ public static class AgcExports
             descriptor.Width > 8192 ||
             descriptor.Height > 8192)
         {
-            texture = CreateFallbackGuestDrawTexture(isStorage);
+            texture = CreateFallbackGuestDrawTexture(isStorage, descriptor.Format, descriptor.NumberType);
             return true;
         }
 
         var sourceWidth = descriptor.TileMode == 0
             ? GetLinearTexturePitch(
                 Math.Max(descriptor.Width, descriptor.Pitch),
-                descriptor.Height,
                 descriptor.Format)
             : descriptor.Width;
         var sourceByteCount = GetTextureByteCount(
@@ -3635,13 +3903,13 @@ public static class AgcExports
             sourceByteCount > MaxPresentedTextureBytes ||
             sourceByteCount > int.MaxValue)
         {
-            texture = CreateFallbackGuestDrawTexture(isStorage);
+            texture = CreateFallbackGuestDrawTexture(isStorage, descriptor.Format, descriptor.NumberType);
             return true;
         }
 
         if (!isStorage &&
             descriptor.Address != 0 &&
-            VulkanVideoPresenter.IsGuestImageAvailable(
+            VulkanVideoPresenter.IsGpuGuestImageAvailable(
                 descriptor.Address,
                 descriptor.Format,
                 descriptor.NumberType))
@@ -3698,9 +3966,11 @@ public static class AgcExports
         var source = new byte[(int)sourceByteCount];
         if (!ctx.Memory.TryRead(descriptor.Address, source))
         {
-            texture = CreateFallbackGuestDrawTexture(isStorage);
+            texture = CreateFallbackGuestDrawTexture(isStorage, descriptor.Format, descriptor.NumberType);
             return true;
         }
+
+        TraceTextureHash(descriptor, source);
 
         var nonZero = 0;
         for (var i = 0; i < source.Length; i++)
@@ -3741,18 +4011,53 @@ public static class AgcExports
         return true;
     }
 
-    private static VulkanGuestDrawTexture CreateFallbackGuestDrawTexture(bool isStorage = false) =>
-        new(
+    private static VulkanGuestDrawTexture CreateFallbackGuestDrawTexture(
+        bool isStorage,
+        uint format,
+        uint numberType)
+    {
+        var fallbackFormat = format == 0 ? 10u : format;
+        var fallbackNumberType = numberType;
+        return new(
             0,
             1,
             1,
-            56,
-            NumberType: 0,
+            fallbackFormat,
+            fallbackNumberType,
             [0, 0, 0, 255],
             IsFallback: true,
             IsStorage: isStorage,
             MipLevels: 1,
             MipLevel: 0);
+    }
+
+    private static void TraceTextureHash(TextureDescriptor descriptor, ReadOnlySpan<byte> source)
+    {
+        if (!_traceTextureHashes ||
+            descriptor.Address == 0 ||
+            descriptor.Width > 256 ||
+            descriptor.Height > 256)
+        {
+            return;
+        }
+
+        var hash = ComputeFingerprint(source);
+        var key = (descriptor.Address, descriptor.Width, descriptor.Height);
+        lock (_textureHashTraceGate)
+        {
+            if (_tracedTextureHashes.TryGetValue(key, out var previousHash) &&
+                previousHash == hash)
+            {
+                return;
+            }
+
+            _tracedTextureHashes[key] = hash;
+        }
+
+        Console.Error.WriteLine(
+            $"[LOADER][TRACE] agc.texture_hash addr=0x{descriptor.Address:X16} " +
+            $"size={descriptor.Width}x{descriptor.Height} bytes={source.Length} hash=0x{hash:X16}");
+    }
 
     private static VulkanGuestSampler ToVulkanSampler(IReadOnlyList<uint> descriptor) =>
         descriptor.Count >= 4
@@ -3805,7 +4110,7 @@ public static class AgcExports
         if (opcode == ItDispatchDirect)
         {
             if (packetLength < 5 ||
-                !TryReadUInt32(ctx, packetAddress + 16, out initiator))
+                !ctx.TryReadUInt32(packetAddress + 16, out initiator))
             {
                 return false;
             }
@@ -3814,8 +4119,8 @@ public static class AgcExports
         }
         else if (packetLength >= 4)
         {
-            if (!TryReadUInt64(ctx, packetAddress + 4, out dimensionsAddress) ||
-                !TryReadUInt32(ctx, packetAddress + 12, out initiator))
+            if (!ctx.TryReadUInt64(packetAddress + 4, out dimensionsAddress) ||
+                !ctx.TryReadUInt32(packetAddress + 12, out initiator))
             {
                 return false;
             }
@@ -3824,8 +4129,8 @@ public static class AgcExports
         {
             if (packetLength < 3 ||
                 state.IndirectArgsAddress == 0 ||
-                !TryReadUInt32(ctx, packetAddress + 4, out var dataOffset) ||
-                !TryReadUInt32(ctx, packetAddress + 8, out initiator))
+                !ctx.TryReadUInt32(packetAddress + 4, out var dataOffset) ||
+                !ctx.TryReadUInt32(packetAddress + 8, out initiator))
             {
                 return false;
             }
@@ -3834,9 +4139,9 @@ public static class AgcExports
         }
 
         if ((initiator & 1) == 0 ||
-            !TryReadUInt32(ctx, dimensionsAddress, out var groupCountX) ||
-            !TryReadUInt32(ctx, dimensionsAddress + 4, out var groupCountY) ||
-            !TryReadUInt32(ctx, dimensionsAddress + 8, out var groupCountZ) ||
+            !ctx.TryReadUInt32(dimensionsAddress, out var groupCountX) ||
+            !ctx.TryReadUInt32(dimensionsAddress + 4, out var groupCountY) ||
+            !ctx.TryReadUInt32(dimensionsAddress + 8, out var groupCountZ) ||
             groupCountX == 0 ||
             groupCountY == 0 ||
             groupCountZ == 0)
@@ -4397,23 +4702,17 @@ public static class AgcExports
             : checked(((ulong)width + 3) / 4 * (((ulong)height + 3) / 4) * blockBytes);
     }
 
-    private static uint GetLinearTexturePitch(uint pitch, uint height, uint format)
+    private static uint GetLinearTexturePitch(uint pitch, uint format)
     {
         var bytesPerTexel = GetTextureBytesPerTexel(format);
-        if (bytesPerTexel == 0 || height == 0)
+        if (bytesPerTexel == 0)
         {
             return pitch;
         }
 
-        var pitchAlignment = Math.Max(8UL, 64UL / bytesPerTexel);
-        var alignedPitch = AlignUp(pitch, pitchAlignment);
-        var sliceAlignment = Math.Max(64UL, 256UL / bytesPerTexel);
-        while ((alignedPitch * height) % sliceAlignment != 0)
-        {
-            alignedPitch += pitchAlignment;
-        }
-
-        return checked((uint)alignedPitch);
+        // GFX10 ADDR_SW_LINEAR aligns each row to 256 bytes.
+        var pitchAlignment = Math.Max(1UL, 256UL / bytesPerTexel);
+        return checked((uint)AlignUp(pitch, pitchAlignment));
     }
 
     private static ulong AlignUp(ulong value, ulong alignment) =>
@@ -4612,8 +4911,7 @@ public static class AgcExports
                 .Take(16)
                 .Select(candidate =>
                 {
-                    var type = TryReadByte(
-                        ctx,
+                    var type = ctx.TryReadByte(
                         candidate.Header + ShaderTypeOffset,
                         out var shaderType)
                         ? shaderType.ToString()
@@ -4649,7 +4947,7 @@ public static class AgcExports
     {
         descriptor = default;
         if (packetLength < 10 ||
-            !TryReadUInt32(ctx, packetAddress + 4, out var startRegister))
+            !ctx.TryReadUInt32(packetAddress + 4, out var startRegister))
         {
             return false;
         }
@@ -4668,7 +4966,7 @@ public static class AgcExports
         Span<uint> fields = stackalloc uint[4];
         for (var i = 0; i < fields.Length; i++)
         {
-            if (!TryReadUInt32(ctx, descriptorAddress + ((ulong)i * sizeof(uint)), out fields[i]))
+            if (!ctx.TryReadUInt32(descriptorAddress + ((ulong)i * sizeof(uint)), out fields[i]))
             {
                 return false;
             }
@@ -4704,9 +5002,13 @@ public static class AgcExports
         var type = (fields[3] >> 28) & 0xFu;
         var baseLevel = (fields[3] >> 12) & 0xFu;
         var lastLevel = (fields[3] >> 16) & 0xFu;
-        var pitch = fields.Count >= 5
-            ? ((fields[4] >> 13) & 0x3FFFu) + 1
-            : width;
+        // The 128-bit RDNA2 2D resource derives pitch[12:0] from width;
+        // the optional extension word only supplies pitch[13].
+        var pitch = width;
+        if (fields.Count >= 5)
+        {
+            pitch = ((((width - 1) & 0x1FFFu) | (((fields[4] >> 13) & 1u) << 13)) + 1);
+        }
         var dstSelect = fields[3] & 0xFFFu;
         if (address == 0 || width == 0 || height == 0)
         {
@@ -4891,7 +5193,7 @@ public static class AgcExports
         var payloadCount = Math.Min(length - 1, 32u);
         for (uint i = 0; i < payloadCount; i++)
         {
-            if (!TryReadUInt32(ctx, packetAddress + ((ulong)(i + 1) * sizeof(uint)), out var value))
+            if (!ctx.TryReadUInt32(packetAddress + ((ulong)(i + 1) * sizeof(uint)), out var value))
             {
                 return;
             }
@@ -4902,8 +5204,8 @@ public static class AgcExports
         if (op != ItNop ||
             register is not (RCxRegsIndirect or RShRegsIndirect or RUcRegsIndirect) ||
             length < 4 ||
-            !TryReadUInt32(ctx, packetAddress + 4, out var registerCount) ||
-            !TryReadUInt64(ctx, packetAddress + 8, out var registersAddress))
+            !ctx.TryReadUInt32(packetAddress + 4, out var registerCount) ||
+            !ctx.TryReadUInt64(packetAddress + 8, out var registersAddress))
         {
             return;
         }
@@ -4914,8 +5216,8 @@ public static class AgcExports
         for (uint i = 0; i < tracedCount; i++)
         {
             var entryAddress = registersAddress + ((ulong)i * 8);
-            if (!TryReadUInt32(ctx, entryAddress, out var registerOffset) ||
-                !TryReadUInt32(ctx, entryAddress + 4, out var value))
+            if (!ctx.TryReadUInt32(entryAddress, out var registerOffset) ||
+                !ctx.TryReadUInt32(entryAddress + 4, out var value))
             {
                 TraceAgc($"agc.dcb.indirect_read_failed space={registerSpace} index={i} addr=0x{entryAddress:X16}");
                 return;
@@ -4932,9 +5234,9 @@ public static class AgcExports
 
     private static bool PatchShaderProgramRegisters(CpuContext ctx, ulong headerAddress, ulong codeAddress)
     {
-        if (!TryReadUInt64(ctx, headerAddress + ShaderShRegistersOffset, out var shRegistersAddress) ||
-            !TryReadByte(ctx, headerAddress + ShaderTypeOffset, out var shaderType) ||
-            !TryReadByte(ctx, headerAddress + ShaderNumShRegistersOffset, out var registerCount))
+        if (!ctx.TryReadUInt64(headerAddress + ShaderShRegistersOffset, out var shRegistersAddress) ||
+            !ctx.TryReadByte(headerAddress + ShaderTypeOffset, out var shaderType) ||
+            !ctx.TryReadByte(headerAddress + ShaderNumShRegistersOffset, out var registerCount))
         {
             return false;
         }
@@ -4944,8 +5246,8 @@ public static class AgcExports
             return false;
         }
 
-        if (!TryReadUInt32(ctx, shRegistersAddress, out var loRegister) ||
-            !TryReadUInt32(ctx, shRegistersAddress + 8, out var hiRegister))
+        if (!ctx.TryReadUInt32(shRegistersAddress, out var loRegister) ||
+            !ctx.TryReadUInt32(shRegistersAddress + 8, out var hiRegister))
         {
             return false;
         }
@@ -4955,6 +5257,7 @@ public static class AgcExports
             0 => ComputePgmLo,
             1 => SpiShaderPgmLoPs,
             2 or 6 => SpiShaderPgmLoEs,
+            4 => SpiShaderPgmLoGs,
             7 => SpiShaderPgmLoLs,
             _ => 0u,
         };
@@ -4963,6 +5266,7 @@ public static class AgcExports
             0 => ComputePgmHi,
             1 => SpiShaderPgmHiPs,
             2 or 6 => SpiShaderPgmHiEs,
+            4 => SpiShaderPgmHiGs,
             7 => SpiShaderPgmHiLs,
             _ => 0u,
         };
@@ -4974,12 +5278,12 @@ public static class AgcExports
 
         var loValue = (uint)((codeAddress >> 8) & 0xFFFF_FFFFUL);
         var hiValue = (uint)((codeAddress >> 40) & 0xFFUL);
-        return TryWriteUInt32(ctx, shRegistersAddress + sizeof(uint), loValue) &&
-               TryWriteUInt32(ctx, shRegistersAddress + 8 + sizeof(uint), hiValue);
+        return ctx.TryWriteUInt32(shRegistersAddress + sizeof(uint), loValue) &&
+               ctx.TryWriteUInt32(shRegistersAddress + 8 + sizeof(uint), hiValue);
     }
 
     private static bool IsEsGeometryShaderType(byte shaderType) =>
-        shaderType is 2 or 6;
+        shaderType is 2 or 4 or 6;
 
     private static int SetIndirectPatchAddress(CpuContext ctx, string registerSpace)
     {
@@ -4987,13 +5291,13 @@ public static class AgcExports
         var registersAddress = ctx[CpuRegister.Rsi];
         if (commandAddress == 0 || registersAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(registersAddress >> 32)))
+        if (!ctx.TryWriteUInt32(commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)(registersAddress >> 32)))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TraceAgc($"agc.patch_{registerSpace}_addr cmd=0x{commandAddress:X16} regs=0x{registersAddress:X16}");
@@ -5007,13 +5311,13 @@ public static class AgcExports
         var registerCount = (uint)ctx[CpuRegister.Rsi];
         if (commandAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadUInt32(ctx, commandAddress + 4, out var currentCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, currentCount + registerCount))
+        if (!ctx.TryReadUInt32(commandAddress + 4, out var currentCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, currentCount + registerCount))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TraceAgc($"agc.patch_{registerSpace}_add cmd=0x{commandAddress:X16} add={registerCount} total={currentCount + registerCount}");
@@ -5032,10 +5336,10 @@ public static class AgcExports
         }
 
         if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 4, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(4, ItNop, packetRegister)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, registerCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(registersAddress >> 32)))
+            !ctx.TryWriteUInt32(commandAddress, Pm4(4, ItNop, packetRegister)) ||
+            !ctx.TryWriteUInt32(commandAddress + 4, registerCount) ||
+            !ctx.TryWriteUInt32(commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
+            !ctx.TryWriteUInt32(commandAddress + 12, (uint)(registersAddress >> 32)))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -5048,10 +5352,10 @@ public static class AgcExports
     {
         commandAddress = 0;
         if (sizeDwords == 0 ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCursorUpOffset, out var cursorUp) ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCursorDownOffset, out var cursorDown) ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCallbackOffset, out var callback) ||
-            !TryReadUInt32(ctx, commandBufferAddress + CommandBufferReservedDwOffset, out var reservedDwords))
+            !ctx.TryReadUInt64(commandBufferAddress + CommandBufferCursorUpOffset, out var cursorUp) ||
+            !ctx.TryReadUInt64(commandBufferAddress + CommandBufferCursorDownOffset, out var cursorDown) ||
+            !ctx.TryReadUInt64(commandBufferAddress + CommandBufferCallbackOffset, out var callback) ||
+            !ctx.TryReadUInt32(commandBufferAddress + CommandBufferReservedDwOffset, out var reservedDwords))
         {
             return false;
         }
@@ -5078,19 +5382,19 @@ public static class AgcExports
 
     private static bool CopyShaderRegister(CpuContext ctx, ulong sourceAddress, ulong destinationAddress)
     {
-        if (!TryReadUInt32(ctx, sourceAddress, out var offset) ||
-            !TryReadUInt32(ctx, sourceAddress + sizeof(uint), out var value))
+        if (!ctx.TryReadUInt32(sourceAddress, out var offset) ||
+            !ctx.TryReadUInt32(sourceAddress + sizeof(uint), out var value))
         {
             return false;
         }
 
-        return TryWriteUInt32(ctx, destinationAddress, offset) &&
-               TryWriteUInt32(ctx, destinationAddress + sizeof(uint), value);
+        return ctx.TryWriteUInt32(destinationAddress, offset) &&
+               ctx.TryWriteUInt32(destinationAddress + sizeof(uint), value);
     }
 
     private static bool RelocatePointerField(CpuContext ctx, ulong fieldAddress)
     {
-        if (!TryReadUInt64(ctx, fieldAddress, out var relativeAddress))
+        if (!ctx.TryReadUInt64(fieldAddress, out var relativeAddress))
         {
             return false;
         }
@@ -5126,7 +5430,8 @@ public static class AgcExports
         return version is
             RegisterDefaultsVersion7 or
             RegisterDefaultsVersion8 or
-            RegisterDefaultsVersion10;
+            RegisterDefaultsVersion10 or
+            RegisterDefaultsVersion13;
     }
 
     private static bool TryGetRegisterDefaultsAllocation(
@@ -5256,12 +5561,6 @@ public static class AgcExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    private static int SetReturn(CpuContext ctx, OrbisGen2Result result)
-    {
-        ctx[CpuRegister.Rax] = unchecked((ulong)(int)result);
-        return (int)result;
-    }
-
     private static uint Pm4(uint lengthDwords, uint op, uint register) =>
         0xC0000000u |
         ((((ushort)lengthDwords - 2u) & 0x3FFFu) << 16) |
@@ -5270,52 +5569,6 @@ public static class AgcExports
 
     private static uint Pm4Length(uint header) =>
         ((header >> 16) & 0x3FFFu) + 2u;
-
-    private static bool TryReadByte(CpuContext ctx, ulong address, out byte value)
-    {
-        Span<byte> buffer = stackalloc byte[1];
-        if (!ctx.Memory.TryRead(address, buffer))
-        {
-            value = 0;
-            return false;
-        }
-
-        value = buffer[0];
-        return true;
-    }
-
-    private static bool TryReadUInt32(CpuContext ctx, ulong address, out uint value)
-    {
-        Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        if (!ctx.Memory.TryRead(address, buffer))
-        {
-            value = 0;
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt32LittleEndian(buffer);
-        return true;
-    }
-
-    private static bool TryWriteUInt32(CpuContext ctx, ulong address, uint value)
-    {
-        Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer, value);
-        return ctx.Memory.TryWrite(address, buffer);
-    }
-
-    private static bool TryReadUInt64(CpuContext ctx, ulong address, out ulong value)
-    {
-        Span<byte> buffer = stackalloc byte[sizeof(ulong)];
-        if (!ctx.Memory.TryRead(address, buffer))
-        {
-            value = 0;
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt64LittleEndian(buffer);
-        return true;
-    }
 
     private static bool TryReadGuestCString(
         CpuContext ctx,
@@ -5332,7 +5585,7 @@ public static class AgcExports
         var values = new List<byte>(Math.Min(maximumLength, 128));
         for (var index = 0; index < maximumLength; index++)
         {
-            if (!TryReadByte(ctx, address + (ulong)index, out var value))
+            if (!ctx.TryReadByte(address + (ulong)index, out var value))
             {
                 bytes = [];
                 return false;
@@ -5359,7 +5612,7 @@ public static class AgcExports
     {
         op = 0;
         register = 0;
-        if (commandAddress == 0 || !TryReadUInt32(ctx, commandAddress, out var header))
+        if (commandAddress == 0 || !ctx.TryReadUInt32(commandAddress, out var header))
         {
             return false;
         }
@@ -5478,7 +5731,7 @@ public static class AgcExports
     {
         if (spirv.Length == 0 ||
             !string.Equals(
-                Environment.GetEnvironmentVariable("CraziiEmu_DUMP_SPIRV"),
+                Environment.GetEnvironmentVariable("CRAZIIEMU_DUMP_SPIRV"),
                 "1",
                 StringComparison.Ordinal))
         {
@@ -5513,7 +5766,7 @@ public static class AgcExports
     {
         var isOk = string.Equals(detail, "ok", StringComparison.Ordinal);
         if (isOk &&
-            (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AGC"), "1", StringComparison.Ordinal) ||
+            (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AGC"), "1", StringComparison.Ordinal) ||
              !ShouldTraceHotPath(ref _createShaderTraceCount)))
         {
             return;
@@ -5521,5 +5774,87 @@ public static class AgcExports
 
         Console.Error.WriteLine(
             $"[LOADER][TRACE] agc.create_shader dst=0x{destinationAddress:X16} header=0x{headerAddress:X16} code=0x{codeAddress:X16} {detail}");
+    }
+
+    // Packet layouts mirror what DcbWaitRegMem emits.
+    // 32-bit (ItNop/RWaitMem32): +4 addrLo, +8 addrHi, +12 mask, +16 cmp|op<<8, +20 ref.
+    // 64-bit (ItNop/RWaitMem64): +4 addrLo, +8 addrHi, +12 maskLo, +16 maskHi,
+    //                            +20 refLo, +24 refHi, +28 cmp|op<<8, +32 poll.
+    private static bool TryParseWaitRegMem(
+        CpuContext ctx,
+        ulong addr,
+        bool is64,
+        out ulong waitAddr,
+        out ulong refVal,
+        out ulong mask,
+        out uint cmpFunc)
+    {
+        waitAddr = refVal = mask = 0;
+        cmpFunc = 0;
+
+        if (!ctx.TryReadUInt32(addr + 4, out var lo) ||
+            !ctx.TryReadUInt32(addr + 8, out var hi))
+        {
+            return false;
+        }
+
+        waitAddr = ((ulong)hi << 32) | lo;
+        if (!is64)
+        {
+            if (!ctx.TryReadUInt32(addr + 12, out var mask32) ||
+                !ctx.TryReadUInt32(addr + 16, out var cmpRaw) ||
+                !ctx.TryReadUInt32(addr + 20, out var refVal32))
+            {
+                return false;
+            }
+
+            mask = mask32;
+            refVal = refVal32;
+            cmpFunc = cmpRaw & 0x7;
+            return true;
+        }
+
+        if (!ctx.TryReadUInt32(addr + 12, out var maskLo) ||
+            !ctx.TryReadUInt32(addr + 16, out var maskHi) ||
+            !ctx.TryReadUInt32(addr + 20, out var refLo) ||
+            !ctx.TryReadUInt32(addr + 24, out var refHi) ||
+            !ctx.TryReadUInt32(addr + 28, out var cmpRaw64))
+        {
+            return false;
+        }
+
+        mask = ((ulong)maskHi << 32) | maskLo;
+        refVal = ((ulong)refHi << 32) | refLo;
+        cmpFunc = cmpRaw64 & 0x7;
+        return true;
+    }
+
+    // Standard ItWaitRegMem (7 dwords, 32-bit compare):
+    // +4 cmp|(op&1)<<8, +8 addrLo, +12 addrHi, +16 ref, +20 mask, +24 poll.
+    private static bool TryParseStandardWaitRegMem(
+        CpuContext ctx,
+        ulong addr,
+        out ulong waitAddr,
+        out ulong refVal,
+        out ulong mask,
+        out uint cmpFunc)
+    {
+        waitAddr = refVal = mask = 0;
+        cmpFunc = 0;
+
+        if (!ctx.TryReadUInt32(addr + 4, out var cmpRaw) ||
+            !ctx.TryReadUInt32(addr + 8, out var lo) ||
+            !ctx.TryReadUInt32(addr + 12, out var hi) ||
+            !ctx.TryReadUInt32(addr + 16, out var reference) ||
+            !ctx.TryReadUInt32(addr + 20, out var mask32))
+        {
+            return false;
+        }
+
+        cmpFunc = cmpRaw & 0x7;
+        waitAddr = ((ulong)hi << 32) | lo;
+        refVal = reference;
+        mask = mask32;
+        return true;
     }
 }
