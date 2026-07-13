@@ -8,6 +8,7 @@ using CraziiEmu.Libs.Agc;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.KHR;
 using Silk.NET.Windowing;
+using Silk.NET.Input;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -1134,6 +1135,19 @@ internal static unsafe class VulkanVideoPresenter
 
         private void Initialize()
         {
+            var input = _window.CreateInput();
+            foreach (var keyboard in input.Keyboards)
+            {
+                keyboard.KeyDown += (kb, key, arg3) =>
+                {
+                    if (key == Silk.NET.Input.Key.F11)
+                    {
+                        _window.WindowState = _window.WindowState == WindowState.Fullscreen 
+                            ? WindowState.Normal : WindowState.Fullscreen;
+                    }
+                };
+            }
+
             WaitForRenderDocAttachIfRequested();
             _vk = Vk.GetApi();
             CreateInstance();
