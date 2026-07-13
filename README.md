@@ -14,7 +14,7 @@
 > **ANTI-PIRACY & INTELLECTUAL PROPERTY DISCLAIMER**  
 > *   **Project craziiEmu strictly condemns the use of software piracy, copyrighted hacks, and unauthorized game distribution.** 
 > *   The use of pirated software, leaked keys, or copyrighted assets is strictly not entertained, supported, or tolerated by this project.
-> *   This is an independent, non-profit research and educational framework built from scratch for the sole purpose of studying microarchitecture and systems virtualization.
+> *   This is an independent, non-profit research and educational project built on top of sharpemu, focused on studying microarchitecture and systems virtualization.
 > *   This repository does **not** contain or distribute any copyrighted Sony system firmware, proprietary BIOS, cryptographic keys, or official PlayStation assets. Users must provide their own legally obtained, decrypted system files and game dumps extracted from hardware they physically own.
 
 > [!WARNING]  
