@@ -1,4 +1,4 @@
-# Copyright (C) 2026 SharpEmu Emulator Project
+# Copyright (C) 2026 CraziiEmu Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 name: Build and Release
@@ -46,10 +46,10 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           safe_ref="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
-          archive_name="sharpemu-win64-${short_sha}.zip"
-          artifact_name="sharpemu-win64-${short_sha}"
+          archive_name="CraziiEmu-win64-${short_sha}.zip"
+          artifact_name="CraziiEmu-win64-${short_sha}"
           release_tag="win64-${safe_ref}-${short_sha}"
-          release_name="SharpEmu win64 ${short_sha}"
+          release_name="CraziiEmu win64 ${short_sha}"
 
           {
             echo "short-sha=${short_sha}"
@@ -83,13 +83,13 @@ jobs:
             src/**/packages.lock.json
 
       - name: Restore solution
-        run: dotnet restore SharpEmu.slnx --locked-mode
+        run: dotnet restore CraziiEmu.slnx --locked-mode
 
       - name: Build solution
-        run: dotnet build SharpEmu.slnx -c Release --no-restore
+        run: dotnet build CraziiEmu.slnx -c Release --no-restore
 
       - name: Publish win-x64 CLI
-        run: dotnet publish src/SharpEmu.CLI/SharpEmu.CLI.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishDir="${env:PUBLISH_DIR}"
+        run: dotnet publish src/CraziiEmu.CLI/CraziiEmu.CLI.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishDir="${env:PUBLISH_DIR}"
 
       - name: Create release archive
         run: |
