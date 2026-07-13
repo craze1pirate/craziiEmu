@@ -43,6 +43,88 @@ hardware/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+# .NET Build Artifacts
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+*.user
+*.userosscache
+*.sln.docstates
+
+# NuGet
+.packages/
+project.assets.json
+packages.lock.json
+
+# Log and trace files
+*.log
+*.txt
+trace*.txt
+dump*.txt
+
+# Python scripts
+*.py
+
+# C source and compiled files
+*.c
+*.o
+*.elf
+*.so
+*.sprx
+*.prx
+*.pup
+*.dec
+
+# Temp dev files
+temp_*
+diff*.txt
+reverse_diff.txt
+patch*
+
+# Test scratch files
+test.cs
+test_*.cs
+find_attr.cs
+vk_mapper.cs
+
+# Scratch projects
+SnakeElf/
+TestCrash/
+scratch/
+obj_dir/
+hardware/
+
+# Personal/dev docs
+*.pdf
+plan.md
+AGENTS.md
+ai-conv.txt
+
+# Root images not needed
+craziiEmu-black.png
+craziiEmublacknotext.png
+
+# Config files
+config.json
+global.json
+global\ control\ map.txt
+
+# IDE
+.idea/
+.vs/
+.vscode/
+.antigravity/
+.gemini/
+*.suo
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# SharpEmu leftover
+src/SharpEmu.Libs/
+SharpEmu.slnx
 
 # IDE
 .idea/
