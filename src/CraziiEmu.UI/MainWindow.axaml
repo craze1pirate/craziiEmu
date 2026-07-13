@@ -10,7 +10,7 @@
         FontFamily="Inter, Segoe UI, sans-serif"
         WindowDecorations="None"
         ExtendClientAreaToDecorationsHint="True"
-        Icon="avares://CraziiEmu.UI/Assets/icon.png">
+        Icon="avares://CraziiEmu.UI/Assets/CraziiEmu.ico">
 
     <Window.Styles>
 
