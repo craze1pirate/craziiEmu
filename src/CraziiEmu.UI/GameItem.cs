@@ -29,7 +29,13 @@ public class GameItem
     public string ExecutablePath { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the path to the game's boxart image.
+    /// </summary>
+    public string BoxartPath { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets the game's cover art (e.g., from sce_sys/icon0.png).
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public Avalonia.Media.Imaging.Bitmap? CoverArt { get; set; }
 }

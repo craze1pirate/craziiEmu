@@ -87,9 +87,10 @@ public partial class MainWindow : Window
         // ── Game carousel ──────────────────────────────────────────────
         GameCarousel.ItemsSource = Games;
         Games.Add(new GameItem { IsAddCard = true, Title = "Add a Game" });
+        LoadLibrary();
         
         GameCarousel.SelectionChanged += OnCarouselSelectionChanged;
-        GameCarousel.SelectedIndex = 0;
+        GameCarousel.SelectedIndex = Games.Count > 1 ? 1 : 0;
 
         // ── Action buttons ─────────────────────────────────────────────
         BtnPlay.Click    += OnBtnPlay;
@@ -556,8 +557,58 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SaveLibrary()
+    {
+        try
+        {
+            var libraryPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CraziiEmu", "library.json");
+            var dir = System.IO.Path.GetDirectoryName(libraryPath);
+            if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+            {
+                System.IO.Directory.CreateDirectory(dir);
+            }
+
+            var gamesToSave = Games.Where(g => !g.IsAddCard).ToList();
+            var json = System.Text.Json.JsonSerializer.Serialize(gamesToSave, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            System.IO.File.WriteAllText(libraryPath, json);
+        }
+        catch (Exception ex)
+        {
+            AppendConsole($"[Library] Failed to save library: {ex.Message}");
+        }
+    }
+
+    private void LoadLibrary()
+    {
+        try
+        {
+            var libraryPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CraziiEmu", "library.json");
+            if (System.IO.File.Exists(libraryPath))
+            {
+                var json = System.IO.File.ReadAllText(libraryPath);
+                var loadedGames = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<GameItem>>(json);
+                if (loadedGames != null)
+                {
+                    foreach (var g in loadedGames)
+                    {
+                        if (!string.IsNullOrEmpty(g.BoxartPath) && System.IO.File.Exists(g.BoxartPath))
+                        {
+                            try { g.CoverArt = new Avalonia.Media.Imaging.Bitmap(g.BoxartPath); }
+                            catch { }
+                        }
+                        Games.Add(g);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendConsole($"[Library] Failed to load library: {ex.Message}");
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════
-    //  Action Buttons
+    //  Emulation Execution
     // ══════════════════════════════════════════════════════════════
 
     /// <summary>
@@ -630,12 +681,15 @@ public partial class MainWindow : Window
                 IsAddCard = false, 
                 Title = !string.IsNullOrEmpty(version) ? $"{title} [{titleId}] v{version}" : title, 
                 ExecutablePath = path,
+                BoxartPath = coverPath ?? string.Empty,
                 CoverArt = coverArt
             };
             
             Games.Add(newGame);
             AppendConsole($"[Library] Added: {path}");
             
+            SaveLibrary();
+
             // Auto-select the newly added game
             GameCarousel.SelectedIndex = Games.Count - 1;
         }

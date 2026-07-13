@@ -421,7 +421,7 @@
                     <StackPanel Orientation="Horizontal" Spacing="14">
 
                         <!-- Play (shown for game cards) -->
-                        <Button x:Name="BtnPlay" Classes="PlayBtn" IsVisible="False">
+                        <Button x:Name="BtnPlay" Classes="PlayBtn" IsVisible="False" ToolTip.Tip="F11 — Toggle Fullscreen">
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <Path Data="M8,5.14V19.14L19,12.14L8,5.14Z"
                                       Fill="Black"
