@@ -212,8 +212,7 @@
     <!-- ── Root grid: particle layer + UI layer ── -->
     <Grid>
 
-        <!-- Layer -1: Wallpaper (behind particles) -->
-        <Image x:Name="WallpaperImage" Stretch="UniformToFill" IsHitTestVisible="False" Opacity="0.6"/>
+        <!-- Layer -1: Wallpaper (behind particles) removed -->
 
         <!-- Layer 0: Ambient particles -->
         <local:ParticleControl IsHitTestVisible="False" Opacity="0.45"/>

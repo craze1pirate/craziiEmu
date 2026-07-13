@@ -114,8 +114,6 @@ public partial class MainWindow : Window
 
         SidebarList.SelectionChanged += OnSidebarSelectionChanged;
         BtnBrowseFirmware.Click      += OnBtnBrowseFirmware;
-        BtnBrowseWallpaper.Click     += OnBtnBrowseWallpaper;
-        BtnClearWallpaper.Click      += OnBtnClearWallpaper;
 
         ChkConsoleVisible.PropertyChanged += (s, e) => 
         {
@@ -432,22 +430,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnBtnBrowseWallpaper(object? sender, RoutedEventArgs e)
-    {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Select Custom Wallpaper", AllowMultiple = false });
-        if (files.Count > 0) 
-        { 
-            var path = files[0].Path.LocalPath; 
-            TxtWallpaperPath.Text = path; 
-            SetWallpaper(path);
-        }
-    }
 
-    private void OnBtnClearWallpaper(object? sender, RoutedEventArgs e)
-    {
-        TxtWallpaperPath.Text = string.Empty;
-        SetWallpaper(string.Empty);
-    }
 
     private void OnGlobalKeyDown(object? sender, KeyEventArgs e)
     {
@@ -495,42 +478,6 @@ public partial class MainWindow : Window
         {
             _selectedExecutablePath = selected.ExecutablePath;
             UpdateCarouselFooter(selected.Title);
-
-            string? picPath = null;
-            if (!string.IsNullOrEmpty(selected.ExecutablePath))
-            {
-                var directory = System.IO.Path.GetDirectoryName(selected.ExecutablePath);
-                if (!string.IsNullOrEmpty(directory))
-                {
-                    picPath = System.IO.Path.Combine(directory, "sce_sys", "pic0.png");
-                    if (!System.IO.File.Exists(picPath))
-                        picPath = null;
-                }
-            }
-
-            if (picPath != null)
-            {
-                try { WallpaperImage.Source = new Bitmap(picPath); }
-                catch { RestoreCustomWallpaper(); }
-            }
-            else
-            {
-                RestoreCustomWallpaper();
-            }
-        }
-    }
-
-    private void RestoreCustomWallpaper()
-    {
-        var customPath = TxtWallpaperPath?.Text;
-        if (!string.IsNullOrEmpty(customPath) && System.IO.File.Exists(customPath))
-        {
-            try { WallpaperImage.Source = new Bitmap(customPath); }
-            catch { WallpaperImage.Source = null; }
-        }
-        else
-        {
-            if (WallpaperImage != null) WallpaperImage.Source = null;
         }
     }
 
@@ -830,31 +777,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Sets the wallpaper image shown beneath the particles.
-    /// </summary>
-    public void SetWallpaper(string path)
-    {
-        if (string.IsNullOrEmpty(path))
-        {
-            WallpaperImage.Source = null;
-            AppendConsole("[UI] Wallpaper cleared");
-            return;
-        }
 
-        if (System.IO.File.Exists(path))
-        {
-            try
-            {
-                WallpaperImage.Source = new Bitmap(path);
-                AppendConsole($"[UI] Wallpaper set to {path}");
-            }
-            catch (Exception ex)
-            {
-                AppendConsole($"[UI] Failed to load wallpaper: {ex.Message}");
-            }
-        }
-    }
 
     protected override void OnClosed(EventArgs e)
     {

@@ -23,7 +23,6 @@ public partial class ConfigWindow : Window
     private readonly ControllerConfig _controllerConfig;
 
     public Action<string>? OnFirmwareDirectoryChanged;
-    public Action<string>? OnWallpaperChanged;
     public Action<bool>? OnConsoleVisibilityChanged;
 
     public ConfigWindow()
@@ -35,8 +34,6 @@ public partial class ConfigWindow : Window
 
         SidebarList.SelectionChanged += OnSidebarSelectionChanged;
         BtnBrowseFirmware.Click      += OnBtnBrowseFirmware;
-        BtnBrowseWallpaper.Click     += OnBtnBrowseWallpaper;
-        BtnClearWallpaper.Click      += OnBtnClearWallpaper;
 
         ChkConsoleVisible.PropertyChanged += (s, e) => 
         {
@@ -47,6 +44,73 @@ public partial class ConfigWindow : Window
         AddHandler(KeyDownEvent, OnGlobalKeyDown, RoutingStrategies.Tunnel);
 
         InitializeBindings();
+
+        var gamepadTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+        gamepadTimer.Tick += OnGamepadTick;
+        gamepadTimer.Start();
+    }
+
+    private ushort _lastGamepadButtons;
+    private ushort _gamepadRepeatButton;
+    private int _gamepadRepeatDelay;
+
+    private void OnGamepadTick(object? sender, EventArgs e)
+    {
+        if (!IsActive) return;
+
+        ushort buttons = CraziiEmu.HLE.Input.GamepadHandler.GetButtons();
+        ushort pressed = (ushort)(buttons & ~_lastGamepadButtons);
+        _lastGamepadButtons = buttons;
+
+        ushort activeNavButton = 0;
+        if (pressed != 0)
+        {
+            _gamepadRepeatButton = pressed;
+            _gamepadRepeatDelay = 25; 
+            activeNavButton = pressed;
+        }
+        else if (buttons == _gamepadRepeatButton && buttons != 0)
+        {
+            if (_gamepadRepeatDelay > 0)
+            {
+                _gamepadRepeatDelay--;
+            }
+            else
+            {
+                activeNavButton = buttons;
+                _gamepadRepeatDelay = 4;
+            }
+        }
+        else
+        {
+            _gamepadRepeatButton = 0;
+        }
+
+        if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.BTN_B) != 0)
+        {
+            Close();
+            return;
+        }
+
+        if (_bindingButton != null) return;
+
+        if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.BTN_A) != 0) SimulateKey(Avalonia.Input.Key.Enter);
+        else if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.DPAD_UP) != 0) SimulateKey(Avalonia.Input.Key.Up);
+        else if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.DPAD_DOWN) != 0) SimulateKey(Avalonia.Input.Key.Down);
+        else if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.DPAD_LEFT) != 0) SimulateKey(Avalonia.Input.Key.Left);
+        else if ((activeNavButton & CraziiEmu.HLE.Input.GamepadHandler.DPAD_RIGHT) != 0) SimulateKey(Avalonia.Input.Key.Right);
+    }
+
+    private void SimulateKey(Avalonia.Input.Key key)
+    {
+        var focused = Avalonia.Controls.TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() as Avalonia.Controls.Control ?? this;
+        var ev = new Avalonia.Input.KeyEventArgs
+        {
+            RoutedEvent = Avalonia.Input.InputElement.KeyDownEvent,
+            Key = key,
+            Source = focused,
+        };
+        focused.RaiseEvent(ev);
     }
 
     private void InitializeBindings()
@@ -133,22 +197,10 @@ public partial class ConfigWindow : Window
         PanelVisual.IsVisible   = tag == "Visual";
     }
 
-    private async void OnBtnBrowseFirmware(object? sender, RoutedEventArgs e)
+    private async void OnBtnBrowseFirmware(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Select Decrypted Firmware Directory", AllowMultiple = false });
+        var folders = await StorageProvider.OpenFolderPickerAsync(new Avalonia.Platform.Storage.FolderPickerOpenOptions { Title = "Select Decrypted Firmware Directory", AllowMultiple = false });
         if (folders.Count > 0) { var path = folders[0].Path.LocalPath; TxtFirmwarePath.Text = path; OnFirmwareDirectoryChanged?.Invoke(path); }
-    }
-
-    private async void OnBtnBrowseWallpaper(object? sender, RoutedEventArgs e)
-    {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Select Custom Wallpaper", AllowMultiple = false });
-        if (files.Count > 0) { var path = files[0].Path.LocalPath; TxtWallpaperPath.Text = path; OnWallpaperChanged?.Invoke(path); }
-    }
-
-    private void OnBtnClearWallpaper(object? sender, RoutedEventArgs e)
-    {
-        TxtWallpaperPath.Text = string.Empty;
-        OnWallpaperChanged?.Invoke(string.Empty);
     }
 
     private void OnGlobalKeyDown(object? sender, KeyEventArgs e)
