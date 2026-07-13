@@ -21,7 +21,6 @@ project.assets.json
 *.prx
 *.pup
 *.dec
-plan.md
 
 # Dev session temp files
 temp_*.cs
@@ -54,12 +53,3 @@ Desktop.ini
 *.suo
 *.ntvs*
 *.njsproj
-
-# Legal exclusions
-*.pdf
-ps5fw/
-keys/
-schematics.pdf
-AGENTS.md
-ai-conv.txt
-"@ | Set-Content .gitignore
