@@ -10,16 +10,6 @@ namespace CraziiEmu.UI;
 public class GameItem
 {
     /// <summary>
-    /// Gets or sets a value indicating whether this item is the placeholder card used to add new games.
-    /// </summary>
-    public bool IsAddCard { get; set; }
-
-    /// <summary>
-    /// Gets a value indicating whether this item is a standard playable game.
-    /// </summary>
-    public bool IsGameCard => !IsAddCard;
-
-    /// <summary>
     /// Gets or sets the display title of the game.
     /// </summary>
     public string Title { get; set; } = string.Empty;

@@ -257,6 +257,17 @@
                                    VerticalAlignment="Center"
                                    Margin="0,0,12,0"/>
 
+                        <!-- Add Game top icon -->
+                        <Button x:Name="BtnAddGameTop"
+                                Classes="ChromeBtn"
+                                ToolTip.Tip="Add Game"
+                                Padding="9,7">
+                            <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                                  Fill="White" Width="17" Height="17" Stretch="Uniform"
+                                  RenderTransformOrigin="50%,50%">
+                            </Path>
+                        </Button>
+
                         <!-- Gear icon -->
                         <Button x:Name="BtnSettings"
                                 Classes="ChromeBtn"
@@ -361,20 +372,8 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate x:DataType="local:GameItem">
                                 <Panel>
-                                    <!-- Add Game Card -->
-                                    <Border Classes="GameCard" Background="#0E0E12" IsVisible="{Binding IsAddCard}">
-                                        <Grid>
-                                            <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
-                                                  Fill="#2A2A38"
-                                                  Width="32" Height="32"
-                                                  Stretch="Uniform"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"/>
-                                        </Grid>
-                                    </Border>
-
                                     <!-- Game Card -->
-                                    <Border Classes="GameCard" Background="#111118" IsVisible="{Binding IsGameCard}">
+                                    <Border Classes="GameCard" Background="#111118">
                                         <Panel>
                                             <Border CornerRadius="14" ClipToBounds="True" ZIndex="1">
                                                 <Image Source="{Binding CoverArt}" Stretch="UniformToFill" />
@@ -395,6 +394,34 @@
 
                     </ListBox>
                 </ScrollViewer>
+
+                <!-- ═✦ Empty State Prompt ✦═ -->
+                <StackPanel x:Name="EmptyStatePrompt"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Spacing="20"
+                            IsVisible="False"
+                            Grid.Row="0" Grid.RowSpan="2">
+                    <TextBlock Text="No games in your library"
+                               Foreground="White"
+                               FontSize="32"
+                               FontWeight="Bold"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="Add a PS5 executable to get started."
+                               Foreground="#888888"
+                               FontSize="16"
+                               HorizontalAlignment="Center"/>
+                    <Button x:Name="BtnAddGameEmpty" Classes="AddBtn" HorizontalAlignment="Center" Margin="0,10,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
+                                  Fill="White"
+                                  Width="14" Height="14"
+                                  Stretch="Uniform"
+                                  VerticalAlignment="Center"/>
+                            <TextBlock Text="Add Game" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
 
                 <!-- ── Game info footer (left-aligned, TSX style) ── -->
                 <StackPanel Grid.Row="1"
@@ -429,18 +456,6 @@
                                       Stretch="Uniform"
                                       VerticalAlignment="Center"/>
                                 <TextBlock Text="Play" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-
-                        <!-- Add Game (shown for the "+" card) -->
-                        <Button x:Name="BtnAddGame" Classes="AddBtn" IsVisible="True">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <Path Data="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z"
-                                      Fill="White"
-                                      Width="14" Height="14"
-                                      Stretch="Uniform"
-                                      VerticalAlignment="Center"/>
-                                <TextBlock Text="Add Game" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
 

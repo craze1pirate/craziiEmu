@@ -87,15 +87,15 @@ public partial class MainWindow : Window
 
         // ── Game carousel ──────────────────────────────────────────────
         GameCarousel.ItemsSource = Games;
-        Games.Add(new GameItem { IsAddCard = true, Title = "Add a Game" });
         LoadLibrary();
         
         GameCarousel.SelectionChanged += OnCarouselSelectionChanged;
-        GameCarousel.SelectedIndex = Games.Count > 1 ? 1 : 0;
+        GameCarousel.SelectedIndex = Games.Count > 0 ? 0 : -1;
 
         // ── Action buttons ─────────────────────────────────────────────
-        BtnPlay.Click    += OnBtnPlay;
-        BtnAddGame.Click += OnBtnAddGame;
+        BtnPlay.Click += OnBtnPlay;
+        BtnAddGameTop.Click += OnBtnAddGame;
+        BtnAddGameEmpty.Click += OnBtnAddGame;
 
         // ── Real-time clock ────────────────────────────────────────────
         var clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -127,8 +127,7 @@ public partial class MainWindow : Window
 
         InitializeBindings();
 
-        // Set initial footer state for the "+" card
-        UpdateCarouselFooter(isAddCard: true, title: null);
+        UpdateEmptyState();
 
         AppendConsole("[CraziiEmu] UI initialized. Ready.");
     }
@@ -303,7 +302,7 @@ public partial class MainWindow : Window
                 if (_headerFocusIndex == 0) OnOpenConfig(this, new RoutedEventArgs());
                 else OnBtnFullscreenClick(this, new RoutedEventArgs());
             }
-            else if (GameCarousel.SelectedIndex == 0)
+            else if (Games.Count == 0)
             {
                 OnBtnAddGame(this, new RoutedEventArgs());
             }
@@ -495,10 +494,10 @@ public partial class MainWindow : Window
         if (GameCarousel.SelectedItem is GameItem selected)
         {
             _selectedExecutablePath = selected.ExecutablePath;
-            UpdateCarouselFooter(selected.IsAddCard, selected.IsAddCard ? null : selected.Title);
+            UpdateCarouselFooter(selected.Title);
 
             string? picPath = null;
-            if (!selected.IsAddCard && !string.IsNullOrEmpty(selected.ExecutablePath))
+            if (!string.IsNullOrEmpty(selected.ExecutablePath))
             {
                 var directory = System.IO.Path.GetDirectoryName(selected.ExecutablePath);
                 if (!string.IsNullOrEmpty(directory))
@@ -539,22 +538,26 @@ public partial class MainWindow : Window
     /// Updates the game-info footer (subtitle, title, action buttons) to match the
     /// currently selected carousel card.
     /// </summary>
-    /// <param name="isAddCard"><c>true</c> if the "+" Add Game card is selected.</param>
-    /// <param name="title">Game title to display, or <c>null</c> when <paramref name="isAddCard"/> is true.</param>
-    private void UpdateCarouselFooter(bool isAddCard, string? title)
+    /// <param name="title">Game title to display.</param>
+    private void UpdateCarouselFooter(string? title)
     {
-        BtnPlay.IsVisible    = !isAddCard;
-        BtnAddGame.IsVisible =  isAddCard;
+        BtnPlay.IsVisible = true;
+        TxtSelectedSubtitle.Text = "PS5 · ELF Executable";
+        TxtSelectedTitle.Text    = title ?? "Unknown Title";
+    }
 
-        if (isAddCard)
+    private void UpdateEmptyState()
+    {
+        bool isEmpty = Games.Count == 0;
+        EmptyStatePrompt.IsVisible = isEmpty;
+        MainScrollViewer.IsVisible = !isEmpty;
+        
+        // Hide footer if empty
+        if (isEmpty)
         {
-            TxtSelectedSubtitle.Text = string.Empty;
-            TxtSelectedTitle.Text    = "Add a Game";
-        }
-        else
-        {
-            TxtSelectedSubtitle.Text = "PS5 · ELF Executable";
-            TxtSelectedTitle.Text    = title ?? "Unknown Title";
+            TxtSelectedTitle.Text = "";
+            TxtSelectedSubtitle.Text = "";
+            BtnPlay.IsVisible = false;
         }
     }
 
@@ -569,7 +572,7 @@ public partial class MainWindow : Window
                 System.IO.Directory.CreateDirectory(dir);
             }
 
-            var gamesToSave = Games.Where(g => !g.IsAddCard).ToList();
+            var gamesToSave = Games.ToList();
             var json = System.Text.Json.JsonSerializer.Serialize(gamesToSave, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             System.IO.File.WriteAllText(libraryPath, json);
         }
@@ -679,7 +682,6 @@ public partial class MainWindow : Window
 
             var newGame = new GameItem 
             { 
-                IsAddCard = false, 
                 Title = !string.IsNullOrEmpty(version) ? $"{title} [{titleId}] v{version}" : title, 
                 ExecutablePath = path,
                 BoxartPath = coverPath ?? string.Empty,
@@ -690,6 +692,7 @@ public partial class MainWindow : Window
             AppendConsole($"[Library] Added: {path}");
             
             SaveLibrary();
+            UpdateEmptyState();
 
             // Auto-select the newly added game
             GameCarousel.SelectedIndex = Games.Count - 1;
