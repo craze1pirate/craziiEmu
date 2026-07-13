@@ -563,7 +563,18 @@ public static class VideoOutExports
             bgraFrame[offset + 3] = rgbaFrame[offset + 3];
         }
 
-        VulkanVideoPresenter.Submit(bgraFrame, width, height);
+        var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+        uint scaledWidth = (uint)(width * config.ResolutionScale);
+        uint scaledHeight = (uint)(height * config.ResolutionScale);
+
+        if (config.GraphicsApi == "OpenGL")
+        {
+            OpenGLVideoPresenter.Submit(bgraFrame, scaledWidth, scaledHeight);
+        }
+        else
+        {
+            VulkanVideoPresenter.Submit(bgraFrame, scaledWidth, scaledHeight);
+        }
     }
 
     internal static bool TryGetDisplayBufferInfo(int handle, int bufferIndex, out DisplayBufferInfo info)
@@ -1042,7 +1053,17 @@ public static class VideoOutExports
 
             TraceVideoOut(
                 $"videoout.register_buffers handle={port.Handle} group={groupIndex} start={startIndex} count={addresses.Length} fmt=0x{attribute.PixelFormat:X} tile={attribute.TilingMode} {attribute.Width}x{attribute.Height} pitch={attribute.PitchInPixel}");
-            VulkanVideoPresenter.EnsureStarted(attribute.Width, attribute.Height);
+            var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+            uint scaledWidth = (uint)(attribute.Width * config.ResolutionScale);
+            uint scaledHeight = (uint)(attribute.Height * config.ResolutionScale);
+            if (config.GraphicsApi == "OpenGL")
+            {
+                OpenGLVideoPresenter.EnsureStarted(scaledWidth, scaledHeight);
+            }
+            else
+            {
+                VulkanVideoPresenter.EnsureStarted(scaledWidth, scaledHeight);
+            }
 
             var guestFormat = MapPixelFormatToGuestTextureFormat(attribute.PixelFormat);
             if (guestFormat != 0)

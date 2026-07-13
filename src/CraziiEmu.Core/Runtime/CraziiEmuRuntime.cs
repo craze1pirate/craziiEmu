@@ -540,14 +540,17 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return loadedImages;
         }
 
-        var moduleDirectories = new[]
+        var configFirmware = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.DecryptedFirmwarePath;
+        var moduleDirectoriesList = new System.Collections.Generic.List<string>()
         {
             Path.Combine(ebootDirectory, "sce_module"),
-            Path.Combine(ebootDirectory, "sce_modules"),
+            Path.Combine(ebootDirectory, "sce_modules")
+        };
+        if (!string.IsNullOrWhiteSpace(configFirmware))
+        {
+            moduleDirectoriesList.Add(configFirmware);
         }
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Where(Directory.Exists)
-        .ToArray();
+        var moduleDirectories = moduleDirectoriesList.Distinct(StringComparer.OrdinalIgnoreCase).Where(Directory.Exists).ToArray();
 
         if (moduleDirectories.Length == 0)
         {

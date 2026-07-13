@@ -114,13 +114,25 @@ public sealed class SelfLoader : ISelfLoader
     public SelfImage Load(ReadOnlySpan<byte> imageData, IVirtualMemory virtualMemory, IModuleManager moduleManager, IFileSystem? fs, string? mountRoot)
     {
         _moduleManager = moduleManager;
-        return LoadCore(
+        var mainImage = LoadCore(
             imageData,
             virtualMemory,
             fs,
             mountRoot,
             clearVirtualMemory: true,
             readParamJson: true);
+
+        var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+        if (!string.IsNullOrEmpty(config.DecryptedFirmwarePath) && System.IO.Directory.Exists(config.DecryptedFirmwarePath))
+        {
+            foreach (var prxFile in System.IO.Directory.GetFiles(config.DecryptedFirmwarePath, "*.prx"))
+            {
+                var prxData = System.IO.File.ReadAllBytes(prxFile);
+                LoadAdditional(prxData, virtualMemory, moduleManager, fs, mountRoot);
+            }
+        }
+
+        return mainImage;
     }
 
     public SelfImage LoadAdditional(ReadOnlySpan<byte> imageData, IVirtualMemory virtualMemory, IModuleManager moduleManager, IFileSystem? fs, string? mountRoot)

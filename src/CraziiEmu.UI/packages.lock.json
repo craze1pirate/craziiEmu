@@ -60,6 +60,15 @@
         "resolved": "2.17.3",
         "contentHash": "BFKpnrs3yKH/jo1yewQdvLKMkEaxE6Wj3Lu5LHRNJfcAdOQ9YiY4dfQ5+5kz6ji1E/Xcxy5ta+qqKGA6KiVQMw=="
       },
+      "System.Management": {
+        "type": "Direct",
+        "requested": "[10.0.9, )",
+        "resolved": "10.0.9",
+        "contentHash": "8mfTzHLlMHCqFE1+iFGzxRCeCb2gDqvRQtZthuksYB+z546QZaFCiagbJ2KXHe7dy5ZpCUg/usaIqc2DxiemPw==",
+        "dependencies": {
+          "System.CodeDom": "10.0.9"
+        }
+      },
       "Avalonia.Angle.Windows.Natives": {
         "type": "Transitive",
         "resolved": "2.1.27548.20260419",
@@ -275,6 +284,11 @@
         "type": "Transitive",
         "resolved": "3.119.4",
         "contentHash": "XOpbx/4CReO2wYsq2s6rbvdauc6dntG4Zv499sHGTJ87bwZaFXszFkwql3+FIZMc8kUPeaj3Mx2ezIJmo8a1Kg=="
+      },
+      "System.CodeDom": {
+        "type": "Transitive",
+        "resolved": "10.0.9",
+        "contentHash": "scH7O8oAuOMyZKOEiOQB3ZVz6x9XkrZNKNeWVCxdvkJHSy4SYXyinGK0o2Rn5LiGh+ovezziT2WCdqWKa7WMKA=="
       },
       "Tmds.DBus.Protocol": {
         "type": "Transitive",

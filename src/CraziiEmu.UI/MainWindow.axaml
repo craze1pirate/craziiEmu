@@ -539,8 +539,6 @@
                                         <StackPanel Spacing="4">
                                             <TextBlock Classes="SettingsLabel" Text="HOST GRAPHICS DEVICE" />
                                             <ComboBox x:Name="CmbGraphicsDevice" SelectedIndex="0" Width="340" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
-                                                <ComboBoxItem Content="NVIDIA GeForce RTX 3070" />
-                                                <ComboBoxItem Content="Default System GPU" />
                                             </ComboBox>
                                         </StackPanel>
                                         <StackPanel Spacing="4">
@@ -566,7 +564,7 @@
                                         <CheckBox x:Name="ChkAudio" Content="Enable Audio Output" IsChecked="True" Foreground="#FFFFFF" />
                                         <StackPanel Spacing="4">
                                             <TextBlock Classes="SettingsLabel" Text="VOLUME" />
-                                            <Slider Minimum="0" Maximum="100" Value="80" Width="280" HorizontalAlignment="Left" />
+                                            <Slider x:Name="SldVolume" Minimum="0" Maximum="100" Value="80" Width="280" HorizontalAlignment="Left" />
                                         </StackPanel>
                                     </StackPanel>
                 
@@ -685,25 +683,6 @@
                                     <!-- ── Visual ── -->
                                     <StackPanel x:Name="PanelVisual" IsVisible="False" Spacing="20">
                                         <TextBlock Classes="SectionHeader" Text="Visual" />
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Classes="SettingsLabel" Text="CUSTOM WALLPAPER" />
-                                            <DockPanel>
-                                                <Button DockPanel.Dock="Right" Content="Clear"
-                                                        x:Name="BtnClearWallpaper"
-                                                        Padding="14,7" Margin="8,0,0,0"
-                                                        Background="#8B1A1A" Foreground="#FFFFFF"
-                                                        CornerRadius="4" FontSize="12" BorderThickness="0" />
-                                                <Button DockPanel.Dock="Right" Content="Browse…"
-                                                        x:Name="BtnBrowseWallpaper"
-                                                        Padding="14,7" Margin="8,0,0,0"
-                                                        Background="#1A1A1A" Foreground="#FFFFFF"
-                                                        CornerRadius="4" FontSize="12" BorderBrush="#333333" BorderThickness="1" />
-                                                <TextBox x:Name="TxtWallpaperPath"
-                                                         PlaceholderText="No wallpaper selected"
-                                                         IsReadOnly="True"
-                                                         FontSize="12" Background="#0A0A0A" Foreground="#FFFFFF" BorderBrush="#333333" />
-                                            </DockPanel>
-                                        </StackPanel>
                                         
                                         <CheckBox x:Name="ChkConsoleVisible" Content="Show Emulator Console" IsChecked="False" Foreground="#FFFFFF" Margin="0,10,0,0" />
                                     </StackPanel>

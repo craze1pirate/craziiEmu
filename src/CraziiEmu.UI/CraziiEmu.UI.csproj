@@ -23,6 +23,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.Controls.DataGrid" />
     <PackageReference Include="ELFSharp" />
+    <PackageReference Include="System.Management" />
   </ItemGroup>
 
   <ItemGroup>

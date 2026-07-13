@@ -4,6 +4,7 @@
 
 using System;
 using System.Linq;
+using System.Management;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -23,7 +24,6 @@ public partial class ConfigWindow : Window
     private readonly ControllerConfig _controllerConfig;
 
     public Action<string>? OnFirmwareDirectoryChanged;
-    public Action<string>? OnWallpaperChanged;
     public Action<bool>? OnConsoleVisibilityChanged;
 
     public ConfigWindow()
@@ -35,8 +35,6 @@ public partial class ConfigWindow : Window
 
         SidebarList.SelectionChanged += OnSidebarSelectionChanged;
         BtnBrowseFirmware.Click      += OnBtnBrowseFirmware;
-        BtnBrowseWallpaper.Click     += OnBtnBrowseWallpaper;
-        BtnClearWallpaper.Click      += OnBtnClearWallpaper;
 
         ChkConsoleVisible.PropertyChanged += (s, e) => 
         {
@@ -47,6 +45,70 @@ public partial class ConfigWindow : Window
         AddHandler(KeyDownEvent, OnGlobalKeyDown, RoutingStrategies.Tunnel);
 
         InitializeBindings();
+        InitializeConfigBindings();
+    }
+
+    private void InitializeConfigBindings()
+    {
+        var config = CraziiEmuConfig.Instance;
+        
+        ChkLimitSpeed.IsChecked = config.LimitSpeed;
+        ChkLimitSpeed.IsCheckedChanged += (s, e) => { config.LimitSpeed = ChkLimitSpeed.IsChecked == true; config.Save(); };
+
+        ChkMulticore.IsChecked = config.EnableMulticore;
+        ChkMulticore.IsCheckedChanged += (s, e) => { config.EnableMulticore = ChkMulticore.IsChecked == true; config.Save(); };
+
+        TxtFirmwarePath.Text = config.DecryptedFirmwarePath;
+
+        string gpuName = "Default System GPU";
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("select * from Win32_VideoController");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    if (obj["Name"] != null)
+                    {
+                        gpuName = obj["Name"].ToString() ?? "Default System GPU";
+                        break;
+                    }
+                }
+            }
+            catch { }
+        }
+        
+        CmbGraphicsDevice.ItemsSource = new[] { gpuName };
+        CmbGraphicsDevice.SelectedIndex = 0;
+
+        CmbGraphicsApi.SelectedIndex = config.GraphicsApi == "OpenGL" ? 1 : 0;
+        CmbGraphicsApi.SelectionChanged += (s, e) => 
+        {
+            config.GraphicsApi = CmbGraphicsApi.SelectedIndex == 1 ? "OpenGL" : "Vulkan";
+            config.Save();
+        };
+
+        if (config.ResolutionScale <= 1.0f) CmbGraphicsScale.SelectedIndex = 0;
+        else if (config.ResolutionScale <= 2.0f) CmbGraphicsScale.SelectedIndex = 1;
+        else CmbGraphicsScale.SelectedIndex = 2;
+        
+        CmbGraphicsScale.SelectionChanged += (s, e) =>
+        {
+            config.ResolutionScale = CmbGraphicsScale.SelectedIndex switch
+            {
+                0 => 1.0f,
+                1 => 2.0f,
+                2 => 3.0f,
+                _ => 1.0f
+            };
+            config.Save();
+        };
+
+        ChkAudio.IsChecked = config.EnableAudio;
+        ChkAudio.IsCheckedChanged += (s, e) => { config.EnableAudio = ChkAudio.IsChecked == true; config.Save(); };
+        
+        SldVolume.Value = config.MasterVolume;
+        SldVolume.ValueChanged += (s, e) => { config.MasterVolume = (float)SldVolume.Value; config.Save(); };
     }
 
     private void InitializeBindings()
@@ -136,19 +198,14 @@ public partial class ConfigWindow : Window
     private async void OnBtnBrowseFirmware(object? sender, RoutedEventArgs e)
     {
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Select Decrypted Firmware Directory", AllowMultiple = false });
-        if (folders.Count > 0) { var path = folders[0].Path.LocalPath; TxtFirmwarePath.Text = path; OnFirmwareDirectoryChanged?.Invoke(path); }
-    }
-
-    private async void OnBtnBrowseWallpaper(object? sender, RoutedEventArgs e)
-    {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Select Custom Wallpaper", AllowMultiple = false });
-        if (files.Count > 0) { var path = files[0].Path.LocalPath; TxtWallpaperPath.Text = path; OnWallpaperChanged?.Invoke(path); }
-    }
-
-    private void OnBtnClearWallpaper(object? sender, RoutedEventArgs e)
-    {
-        TxtWallpaperPath.Text = string.Empty;
-        OnWallpaperChanged?.Invoke(string.Empty);
+        if (folders.Count > 0) 
+        { 
+            var path = folders[0].Path.LocalPath; 
+            TxtFirmwarePath.Text = path; 
+            CraziiEmuConfig.Instance.DecryptedFirmwarePath = path;
+            CraziiEmuConfig.Instance.Save();
+            OnFirmwareDirectoryChanged?.Invoke(path); 
+        }
     }
 
     private void OnGlobalKeyDown(object? sender, KeyEventArgs e)

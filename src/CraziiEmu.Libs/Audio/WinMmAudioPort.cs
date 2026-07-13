@@ -220,14 +220,16 @@ internal sealed class WinMmAudioPort : IDisposable
         int bytesPerSample,
         bool isFloat)
     {
+        var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+        float masterGain = config.EnableAudio ? (config.MasterVolume / 100f) : 0f;
         var sourceFrameSize = checked(channels * bytesPerSample);
         for (var frame = 0; frame < frames; frame++)
         {
             var sourceFrame = source.Slice(frame * sourceFrameSize, sourceFrameSize);
-            var left = ReadSample(sourceFrame, 0, bytesPerSample, isFloat);
+            var left = ReadSample(sourceFrame, 0, bytesPerSample, isFloat, masterGain);
             var right = channels == 1
                 ? left
-                : ReadSample(sourceFrame, 1, bytesPerSample, isFloat);
+                : ReadSample(sourceFrame, 1, bytesPerSample, isFloat, masterGain);
             BinaryPrimitives.WriteInt16LittleEndian(destination[(frame * 4)..], left);
             BinaryPrimitives.WriteInt16LittleEndian(destination[((frame * 4) + 2)..], right);
         }
@@ -237,17 +239,18 @@ internal sealed class WinMmAudioPort : IDisposable
         ReadOnlySpan<byte> frame,
         int channel,
         int bytesPerSample,
-        bool isFloat)
+        bool isFloat,
+        float masterGain)
     {
         var sample = frame.Slice(channel * bytesPerSample, bytesPerSample);
         if (!isFloat)
         {
-            return BinaryPrimitives.ReadInt16LittleEndian(sample);
+            return (short)(BinaryPrimitives.ReadInt16LittleEndian(sample) * masterGain);
         }
 
         var bits = BinaryPrimitives.ReadInt32LittleEndian(sample);
         var value = Math.Clamp(BitConverter.Int32BitsToSingle(bits), -1.0f, 1.0f);
-        return checked((short)MathF.Round(value * short.MaxValue));
+        return checked((short)MathF.Round(value * masterGain * short.MaxValue));
     }
 
     private readonly record struct NativeBuffer(IntPtr Data, IntPtr Header, int Length);

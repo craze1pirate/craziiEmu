@@ -30,6 +30,14 @@ public class CraziiEmuConfig
 
     public InputMap Input { get; set; } = new InputMap();
 
+    public bool EnableAudio { get; set; } = true;
+    public float MasterVolume { get; set; } = 100f;
+    public bool LimitSpeed { get; set; } = false;
+    public bool EnableMulticore { get; set; } = false;
+    public string GraphicsApi { get; set; } = "Vulkan";
+    public float ResolutionScale { get; set; } = 1.0f;
+    public string DecryptedFirmwarePath { get; set; } = "";
+
     public static void Load()
     {
         try

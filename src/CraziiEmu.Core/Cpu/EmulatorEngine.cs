@@ -95,6 +95,53 @@ public class EmulatorEngine
     private int _instructionCount = 0;
 
     /// <summary>
+    /// Runs the execution loop either on the current thread or across parallel tasks.
+    /// </summary>
+    public void Run()
+    {
+        var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+        bool limitSpeed = config.LimitSpeed;
+        bool multicore = config.EnableMulticore;
+
+        if (multicore)
+        {
+            int coreCount = Environment.ProcessorCount > 1 ? Environment.ProcessorCount / 2 : 2;
+            System.Threading.Tasks.Task[] tasks = new System.Threading.Tasks.Task[coreCount];
+            for (int i = 0; i < coreCount; i++)
+            {
+                tasks[i] = System.Threading.Tasks.Task.Run(() => ExecutionLoop(limitSpeed));
+            }
+            System.Threading.Tasks.Task.WaitAll(tasks);
+        }
+        else
+        {
+            ExecutionLoop(limitSpeed);
+        }
+    }
+
+    private void ExecutionLoop(bool limitSpeed)
+    {
+        long targetTicksPerStep = System.Diagnostics.Stopwatch.Frequency / 3_000_000; // e.g. 3 MHz limit
+        long nextTick = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        while (!_context.IsTerminated)
+        {
+            if (limitSpeed)
+            {
+                long currentTick = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (currentTick < nextTick)
+                {
+                    System.Threading.Thread.SpinWait(10);
+                    continue;
+                }
+                nextTick = currentTick + targetTicksPerStep;
+            }
+
+            Step();
+        }
+    }
+
+    /// <summary>
     /// Executes exactly one instruction step.
     /// </summary>
     public void Step()

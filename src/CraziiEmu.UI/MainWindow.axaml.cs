@@ -4,6 +4,7 @@
 
 using System;
 using System.Linq;
+using System.Management;
 using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -114,8 +115,9 @@ public partial class MainWindow : Window
 
         SidebarList.SelectionChanged += OnSidebarSelectionChanged;
         BtnBrowseFirmware.Click      += OnBtnBrowseFirmware;
-        BtnBrowseWallpaper.Click     += OnBtnBrowseWallpaper;
-        BtnClearWallpaper.Click      += OnBtnClearWallpaper;
+
+        InitializeConfigBindings();
+        InitializeGpuName();
 
         ChkConsoleVisible.PropertyChanged += (s, e) => 
         {
@@ -432,22 +434,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnBtnBrowseWallpaper(object? sender, RoutedEventArgs e)
-    {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Select Custom Wallpaper", AllowMultiple = false });
-        if (files.Count > 0) 
-        { 
-            var path = files[0].Path.LocalPath; 
-            TxtWallpaperPath.Text = path; 
-            SetWallpaper(path);
-        }
-    }
-
-    private void OnBtnClearWallpaper(object? sender, RoutedEventArgs e)
-    {
-        TxtWallpaperPath.Text = string.Empty;
-        SetWallpaper(string.Empty);
-    }
+    // Removed wallpaper methods
 
     private void OnGlobalKeyDown(object? sender, KeyEventArgs e)
     {
@@ -510,27 +497,13 @@ public partial class MainWindow : Window
 
             if (picPath != null)
             {
-                try { WallpaperImage.Source = new Bitmap(picPath); }
-                catch { RestoreCustomWallpaper(); }
+                try { WallpaperImage.Source = new Avalonia.Media.Imaging.Bitmap(picPath); }
+                catch { WallpaperImage.Source = null; }
             }
             else
             {
-                RestoreCustomWallpaper();
+                WallpaperImage.Source = null;
             }
-        }
-    }
-
-    private void RestoreCustomWallpaper()
-    {
-        var customPath = TxtWallpaperPath?.Text;
-        if (!string.IsNullOrEmpty(customPath) && System.IO.File.Exists(customPath))
-        {
-            try { WallpaperImage.Source = new Bitmap(customPath); }
-            catch { WallpaperImage.Source = null; }
-        }
-        else
-        {
-            if (WallpaperImage != null) WallpaperImage.Source = null;
         }
     }
 
@@ -542,8 +515,16 @@ public partial class MainWindow : Window
     private void UpdateCarouselFooter(string? title)
     {
         BtnPlay.IsVisible = true;
-        TxtSelectedSubtitle.Text = "PS5 · ELF Executable";
-        TxtSelectedTitle.Text    = title ?? "Unknown Title";
+        TxtSelectedSubtitle.Text = "PS5";
+
+        string displayTitle = title ?? "Unknown Title";
+        int bracketIndex = displayTitle.IndexOf(" [");
+        if (bracketIndex > 0)
+        {
+            displayTitle = displayTitle.Substring(0, bracketIndex);
+        }
+
+        TxtSelectedTitle.Text = displayTitle;
     }
 
     private void UpdateEmptyState()
@@ -830,30 +811,70 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Sets the wallpaper image shown beneath the particles.
-    /// </summary>
-    public void SetWallpaper(string path)
-    {
-        if (string.IsNullOrEmpty(path))
-        {
-            WallpaperImage.Source = null;
-            AppendConsole("[UI] Wallpaper cleared");
-            return;
-        }
+    // Removed SetWallpaper
 
-        if (System.IO.File.Exists(path))
+    private void InitializeConfigBindings()
+    {
+        var config = CraziiEmuConfig.Instance;
+        
+        ChkLimitSpeed.IsChecked = config.LimitSpeed;
+        ChkLimitSpeed.IsCheckedChanged += (s, e) => { config.LimitSpeed = ChkLimitSpeed.IsChecked == true; config.Save(); };
+
+        ChkMulticore.IsChecked = config.EnableMulticore;
+        ChkMulticore.IsCheckedChanged += (s, e) => { config.EnableMulticore = ChkMulticore.IsChecked == true; config.Save(); };
+
+        CmbGraphicsApi.SelectedIndex = config.GraphicsApi == "OpenGL" ? 1 : 0;
+        CmbGraphicsApi.SelectionChanged += (s, e) => 
+        {
+            config.GraphicsApi = CmbGraphicsApi.SelectedIndex == 1 ? "OpenGL" : "Vulkan";
+            config.Save();
+        };
+
+        if (config.ResolutionScale <= 1.0f) CmbGraphicsScale.SelectedIndex = 0;
+        else if (config.ResolutionScale <= 2.0f) CmbGraphicsScale.SelectedIndex = 1;
+        else CmbGraphicsScale.SelectedIndex = 2;
+        
+        CmbGraphicsScale.SelectionChanged += (s, e) =>
+        {
+            config.ResolutionScale = CmbGraphicsScale.SelectedIndex switch
+            {
+                0 => 1.0f,
+                1 => 2.0f,
+                2 => 3.0f,
+                _ => 1.0f
+            };
+            config.Save();
+        };
+
+        ChkAudio.IsChecked = config.EnableAudio;
+        ChkAudio.IsCheckedChanged += (s, e) => { config.EnableAudio = ChkAudio.IsChecked == true; config.Save(); };
+        
+        SldVolume.Value = config.MasterVolume;
+        SldVolume.ValueChanged += (s, e) => { config.MasterVolume = (float)SldVolume.Value; config.Save(); };
+    }
+
+    private void InitializeGpuName()
+    {
+        string gpuName = "Default System GPU";
+        if (OperatingSystem.IsWindows())
         {
             try
             {
-                WallpaperImage.Source = new Bitmap(path);
-                AppendConsole($"[UI] Wallpaper set to {path}");
+                using var searcher = new ManagementObjectSearcher("select * from Win32_VideoController");
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    if (obj["Name"] != null)
+                    {
+                        gpuName = obj["Name"].ToString() ?? "Default System GPU";
+                        break;
+                    }
+                }
             }
-            catch (Exception ex)
-            {
-                AppendConsole($"[UI] Failed to load wallpaper: {ex.Message}");
-            }
+            catch { }
         }
+        
+        CmbGraphicsDevice.ItemsSource = new[] { gpuName };
+        CmbGraphicsDevice.SelectedIndex = 0;
     }
 
     protected override void OnClosed(EventArgs e)
