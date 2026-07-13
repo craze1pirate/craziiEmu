@@ -4,10 +4,6 @@
 
 namespace CraziiEmu.Libs.Agc;
 
-// Holds DCBs whose parsing was suspended on an unsatisfied WAIT_REG_MEM condition.
-// AgcExports re-checks every waiter against guest memory on each submit and resumes
-// the ones whose condition became true (labels are advanced by ReleaseMem/WriteData/
-// DmaData packets or by direct CPU writes).
 internal static class GpuWaitRegistry
 {
     public struct WaitingDcb
