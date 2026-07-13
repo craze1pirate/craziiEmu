@@ -28,6 +28,8 @@
 
 **Project craziiEmu** is an experimental PlayStation 5 compatibility layer and virtual machine emulator built entirely in C# on modern .NET. 
 
+The name **craziiEmu** represents a dual identity: **crazii** (derived from my online handle `crazii`) merged with **Emu** (retaining the naming heritage of the original `sharpemu` repository as a direct sign of respect to the upstream codebase and its creator).
+
 This project is built directly on top of the excellent groundwork laid by the open-source **[sharpemu](https://github.com/par274/sharpemu)** emulator project. Our focus is on optimizing memory management bounds, standardizing high-level operating system system calls (HLE), and introducing a premium, console-like desktop experience for research testing.
 
 Currently, development and compilation primarily target 64-bit Windows systems (refer original developer page).
@@ -44,6 +46,7 @@ Instead of a standard, cluttered desktop window, `craziiEmu` features a highly c
 *   **Dynamic Wallpaper & VRAM Blitting:** Automatically maps the game's native background artwork assets (`pic1.png`) dynamically to the dashboard when focused, rendering color sweeps with high contrast.
 *   **Real-time Log Console:** A toggleable, built-in diagnostic terminal pane at the bottom of the dashboard that streams active CPU tracing, symbol relocation logs, and system alerts.
 *   **Settings Configuration Dialog:** A dedicated, clean settings menu to configure directory paths, choose CPU accuracy modes (Accurate vs. Fast/Native), and select graphics devices.
+*   **Proper fullscreen support:** The emulator can now run games with fullscreen functionality. F11 acts as fullscreen toggle.
 
 ### 🎮 Advanced Keyboard & Controller Mapping
 *   **Dynamic Customization:** Allows users to interactively map any physical keyboard key directly to virtual PlayStation controller inputs.
@@ -55,7 +58,7 @@ Instead of a standard, cluttered desktop window, `craziiEmu` features a highly c
 *   **Accurate Mode (Software Interpreter):** An instruction-by-instruction decoder powered by the `Iced` library, useful for rigorous step-by-step debugging and absolute trace diagnostics. It decodes standard arithmetic, stack frames, relative jumps, and loop control instructions (`push`, `pop`, `cmp`, conditional jumps).
 *   **Fast Mode (Direct/Native Execution):** Bypasses the software interpreter entirely and executes guest x86-64 code directly on the host CPU using the native `DirectExecutionBackend` at full hardware speed. This bypasses the instruction limit of the interpreter, allowing fully optimized compiler binaries to execute.
 
-### 🧠 Core Virtualization & Emulation Engine
+### ⚙️ Core Virtualization & Emulation Engine
 *   **Dual ELF & SELF Loading:** Seamlessly detects and parses standard 64-bit ELF binaries as well as Sony's custom, compressed `SELF` (`SCE\0`) container formats, extracting entry points natively.
 *   **Dynamic Linker & Relocation Engine:** Parses `PT_DYNAMIC` program headers, recursively loads dependent `.sprx` system modules, and patches complex standard pointer relocations (`R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`).
 *   **Unmanaged memory manager (VMM):** Allocates a massive 64GB contiguous address space pool. Features a pure **native x86-64 assembly page-fault VEH trampoline** to bypass strict .NET 10 hardware exception thread-boundary blocks.
