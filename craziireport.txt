@@ -1,0 +1,31 @@
+CraziiEmu Development Report
+======================================================
+This report summarizes the extensive development work completed on top of the original SharpEmu base, transforming it into a capable PS5 homebrew execution environment over the last several days.
+
+1. UI and Graphics Overhaul
+------------------------------------------------------
+- Transitioned from a basic console application to a fully featured Avalonia-based Graphical User Interface (GUI).
+- Implemented a modern "Play" system with library payload management for ELF injection.
+- Added a real-time diagnostic console and log panel to the GUI to track CPU state, memory access, and ELF loader outputs.
+- Developed the foundational structures for custom graphics handling to eventually interface with PS5 video out routines (e.g., Agc submissions).
+
+2. CPU Core and Instruction Emulation Enhancements
+------------------------------------------------------
+The original SharpEmu lacked support for modern x86_64 extensions heavily utilized by PS5 payload compilers (like BMI1/BMI2). We implemented and tested the following from scratch:
+- Bit Manipulation Instructions: `Andn`, `Bextr`, `Rorx`, `Shrx`.
+- Endianness/Move Instructions: `Movbe`.
+- Conditional Move Instructions: The entire suite of `Cmov` variants (e.g., `Cmovb`, `Cmovcc`).
+- Added robust instruction execution limits and loop detection mechanisms to prevent hanging the UI thread on infinite loops.
+
+3. ELF Loader and Dynamic Linker Revamp
+------------------------------------------------------
+- Mapped the ELF structure specifically for PS5 homebrew (e.g., `crispy-doom.elf`, a ~9.6 MB payload).
+- Discovered and fixed critical flaws in the original Dynamic Linker where it failed to handle undefined imported symbols (like `libkernel` functions).
+- Analyzed PS5-specific ELF metadata where Name IDs (NIDs) were being mistakenly parsed as virtual address offsets, leading to memory faults in `.bss` segments.
+- Built a fallback HLE (High-Level Emulation) Dummy Stub generator to safely intercept and bypass unresolved syscalls without crashing.
+
+4. Kernel and Payload SDK Compatibility
+------------------------------------------------------
+- Reverse-engineered the PS5 Payload SDK initialization sequence.
+- Discovered that payloads are hardcoded to search for or jump to exactly `sysret + 10` (expecting the firmware 4.03/4.50 `syscall` gadget offset).
+- Restructured our `stubBase` memory layout to inject NOP padding and place the `syscall; ret` gadget at exactly offset 10, satisfying the PS5 Payload SDK's rigid requirements.

@@ -1,0 +1,19 @@
+<!--
+Copyright (C) 2026 CraziiEmu Emulator Project
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CraziiEmu.CLI/CraziiEmu.CLI.csproj" />
+    <Project Path="src/CraziiEmu.Core/CraziiEmu.Core.csproj" />
+    <Project Path="src/CraziiEmu.HLE/CraziiEmu.HLE.csproj" />
+    <Project Path="src/CraziiEmu.Libs/CraziiEmu.Libs.csproj" />
+    <Project Path="src/CraziiEmu.Logging/CraziiEmu.Logging.csproj" />
+    <Project Path="src/CraziiEmu.Runner/CraziiEmu.Runner.csproj" />
+    <Project Path="src/CraziiEmu.UI/CraziiEmu.UI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CraziiEmu.Core.Tests/CraziiEmu.Core.Tests.csproj" />
+  </Folder>
+</Solution>

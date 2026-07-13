@@ -619,6 +619,47 @@ public static class KernelRuntimeCompatExports
         return address != 0 && TryWriteInt32(ctx, address, value);
     }
 
+    internal static bool ResolveClockTime(int clockId, out long seconds, out long nanoseconds)
+    {
+        switch (clockId)
+        {
+            case 0: // CLOCK_REALTIME
+            case 123: // CLOCK_REALTIME_PRECISE
+            case 124: // CLOCK_REALTIME_FAST
+            case 1: // CLOCK_VIRTUAL
+            case 2: // CLOCK_PROF
+            {
+                var now = DateTimeOffset.UtcNow;
+                seconds = now.ToUnixTimeSeconds();
+                nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
+                return true;
+            }
+
+            case 13: // CLOCK_SECOND
+                seconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                nanoseconds = 0;
+                return true;
+
+            case 4: // CLOCK_MONOTONIC
+            case 125: // CLOCK_MONOTONIC_PRECISE
+            case 126: // CLOCK_MONOTONIC_FAST
+            case 5: // CLOCK_UPTIME
+            case 127: // CLOCK_UPTIME_PRECISE
+            case 128: // CLOCK_UPTIME_FAST
+            case 14: // CLOCK_THREAD_CPUTIME_ID
+            case 15: // CLOCK_PROCESS_CPUTIME_ID
+                var elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - _processStartCounter;
+                seconds = elapsedTicks / System.Diagnostics.Stopwatch.Frequency;
+                nanoseconds = (elapsedTicks % System.Diagnostics.Stopwatch.Frequency) * 1_000_000_000L / System.Diagnostics.Stopwatch.Frequency;
+                return true;
+
+            default:
+                seconds = 0;
+                nanoseconds = 0;
+                return false;
+        }
+    }
+
     [SysAbiExport(
         Nid = "bnZxYgAFeA0",
         ExportName = "sceKernelGetSanitizerNewReplaceExternal",

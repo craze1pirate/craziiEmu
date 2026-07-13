@@ -27,4 +27,9 @@ public class GameItem
     /// Gets or sets the fully-qualified local path to the game's executable.
     /// </summary>
     public string ExecutablePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the game's cover art (e.g., from sce_sys/icon0.png).
+    /// </summary>
+    public Avalonia.Media.Imaging.Bitmap? CoverArt { get; set; }
 }

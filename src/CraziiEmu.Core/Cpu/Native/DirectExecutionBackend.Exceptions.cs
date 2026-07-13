@@ -1,4 +1,4 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+﻿// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -20,7 +20,7 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe void SetupExceptionHandler()
 	{
-		if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_DISABLE_RAW_HANDLER"), "1", StringComparison.Ordinal))
+		if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_RAW_HANDLER"), "1", StringComparison.Ordinal))
 		{
 			_rawExceptionHandlerStub = CreateExceptionHandlerTrampoline(RawVectoredHandlerPtrManaged);
 			if (_rawExceptionHandlerStub == 0)
@@ -32,7 +32,7 @@ public sealed partial class DirectExecutionBackend
 		}
 		else
 		{
-			Console.Error.WriteLine("[LOADER][INFO] Raw exception handler disabled by CraziiEmu_DISABLE_RAW_HANDLER=1");
+			Console.Error.WriteLine("[LOADER][INFO] Raw exception handler disabled by CRAZIIEMU_DISABLE_RAW_HANDLER=1");
 		}
 
 		_handlerDelegate = VectoredHandler;
@@ -102,6 +102,15 @@ public sealed partial class DirectExecutionBackend
 
 			ulong rip = ReadCtxU64(contextRecord, 248);
 			ulong rsp = ReadCtxU64(contextRecord, 152);
+
+			// Thread-mode probe: a hardware exception raised while this thread is inside
+			// the managed import gateway means the VEH->managed reentry happened from
+			// cooperative GC mode ΓÇö a ReversePInvokeBadTransition candidate.
+			if (LogThreadMode && _threadModeGatewayDepth > 0)
+			{
+				TraceThreadMode(
+					$"veh_in_gateway code=0x{exceptionCode:X8} rip=0x{rip:X16} gateway_depth={_threadModeGatewayDepth}");
+			}
 
 			if (exceptionCode == 3221225477u && TryHandleLazyCommittedPage(exceptionRecord, rip, rsp))
 			{
@@ -386,7 +395,7 @@ public sealed partial class DirectExecutionBackend
 
 	private void DumpGuestDisasmDiagnostics(ulong rip, ulong rbp)
 	{
-		if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_DISASM"), "1", StringComparison.Ordinal))
+		if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DISASM"), "1", StringComparison.Ordinal))
 		{
 			return;
 		}
@@ -426,7 +435,7 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine("[LOADER][WARNING]   Could not dump disasm diagnostics.");
 		}
 
-		var extraAddresses = Environment.GetEnvironmentVariable("CraziiEmu_LOG_DISASM_ADDRS");
+		var extraAddresses = Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DISASM_ADDRS");
 		if (string.IsNullOrWhiteSpace(extraAddresses))
 		{
 			return;
@@ -448,7 +457,7 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe void DumpGuestReferenceDiagnostics()
 	{
-		var targetList = ParseDiagnosticAddresses(Environment.GetEnvironmentVariable("CraziiEmu_LOG_REFSCAN_ADDRS"));
+		var targetList = ParseDiagnosticAddresses(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_REFSCAN_ADDRS"));
 		if (targetList.Count == 0 || _cpuContext == null)
 		{
 			return;
@@ -519,14 +528,14 @@ public sealed partial class DirectExecutionBackend
 
 	private void DumpGuestPointerWindowDiagnostics()
 	{
-		var targetList = ParseDiagnosticAddresses(Environment.GetEnvironmentVariable("CraziiEmu_LOG_POINTER_WINDOWS"));
+		var targetList = ParseDiagnosticAddresses(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_POINTER_WINDOWS"));
 		if (targetList.Count == 0)
 		{
 			return;
 		}
 
 		var windowSize = 0x80;
-		var rawWindowSize = Environment.GetEnvironmentVariable("CraziiEmu_LOG_POINTER_WINDOW_SIZE");
+		var rawWindowSize = Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_POINTER_WINDOW_SIZE");
 		if (!string.IsNullOrWhiteSpace(rawWindowSize))
 		{
 			var normalized = rawWindowSize.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
@@ -1139,7 +1148,7 @@ public sealed partial class DirectExecutionBackend
 
 	private static bool ShouldTraceLazyCommit(int traceIndex)
 	{
-		if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_LAZY_COMMIT"), "1", StringComparison.Ordinal))
+		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_LAZY_COMMIT"), "1", StringComparison.Ordinal))
 		{
 			return true;
 		}

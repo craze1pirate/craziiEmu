@@ -1,4 +1,4 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+﻿// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -38,6 +38,7 @@ public static class VideoOutExports
     private const ulong SceVideoOutPixelFormatA2R10G10B10 = 0x88060000;
     private const ulong SceVideoOutPixelFormatA2R10G10B10Srgb = 0x88000000;
     private const ulong SceVideoOutPixelFormatA2R10G10B10Bt2020Pq = 0x88740000;
+    private const ulong SceVideoOutInternalEventVblank = 0x5;
     private const ulong SceVideoOutInternalEventFlip = 0x6;
     private const short OrbisKernelEventFilterVideoOut = -13;
 
@@ -50,12 +51,18 @@ public static class VideoOutExports
     private static long _nextFrameDumpIndex;
     private static string _windowTitle = "CraziiEmu VideoOut";
     private static readonly bool _logFrameRate = string.Equals(
-        Environment.GetEnvironmentVariable("CraziiEmu_LOG_VIDEOOUT_FPS"),
+        Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_VIDEOOUT_FPS"),
+        "1",
+        StringComparison.Ordinal);
+    private static readonly bool _logVideoOutSync = string.Equals(
+        Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_VIDEOOUT_SYNC"),
         "1",
         StringComparison.Ordinal);
     private static long _frameRateWindowStart = Stopwatch.GetTimestamp();
     private static long _submittedFrameCount;
     private static long _presentedFrameCount;
+    private static long _vblankSignalCount;
+    private static long _flipSubmitCount;
 
     public static void ConfigureApplicationInfo(string? title, string? titleId, string? version)
     {
@@ -99,6 +106,7 @@ public static class VideoOutExports
         public float Gamma { get; set; } = 1.0f;
         public VideoOutBufferGroup?[] Groups { get; } = new VideoOutBufferGroup?[MaxDisplayBufferGroups];
         public VideoOutBufferSlot[] BufferSlots { get; } = CreateBufferSlots();
+        public List<FlipEventRegistration> VblankEvents { get; } = new();
         public List<FlipEventRegistration> FlipEvents { get; } = new();
     }
 
@@ -133,9 +141,6 @@ public static class VideoOutExports
         uint Width,
         uint Height,
         uint PitchInPixel);
-
-    private delegate Span<byte> GetSpanDelegate(ulong address, int length);
-    private delegate void SubmitFrameDelegate(ReadOnlySpan<byte> vramSpan, int width, int height, int pitch);
 
     [SysAbiExport(
         Nid = "Up36PTk687E",
@@ -315,11 +320,48 @@ public static class VideoOutExports
         }
 
         Thread.Sleep(1);
-        lock (_stateGate)
+        SignalVblank(port);
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "Xru92wHJRmg",
+        ExportName = "sceVideoOutAddVblankEvent",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceVideoOut")]
+    public static int VideoOutAddVblankEvent(CpuContext ctx)
+    {
+        var equeue = ctx[CpuRegister.Rdi];
+        var handle = unchecked((int)ctx[CpuRegister.Rsi]);
+        if (!TryGetPort(handle, out var port))
         {
-            port.VblankCount++;
+            return OrbisVideoOutErrorInvalidHandle;
         }
 
+        if (!KernelEventQueueCompatExports.IsValidEqueue(equeue))
+        {
+            return OrbisVideoOutErrorInvalidEventQueue;
+        }
+
+        var userData = ctx[CpuRegister.Rdx];
+        lock (_stateGate)
+        {
+            var existingIndex = port.VblankEvents.FindIndex(registration => registration.Equeue == equeue);
+            if (existingIndex >= 0)
+            {
+                port.VblankEvents[existingIndex] = new FlipEventRegistration(equeue, userData);
+            }
+            else
+            {
+                port.VblankEvents.Add(new FlipEventRegistration(equeue, userData));
+            }
+        }
+
+        // Some engines wait on this queue before issuing their first flip. Provide a first
+        // edge now; later calls to WaitVblank advance the same notification sequence.
+        SignalVblank(port);
+        TraceVideoOut($"videoout.add_vblank_event eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16}");
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -374,6 +416,53 @@ public static class VideoOutExports
         return SubmitFlip(ctx, handle, bufferIndex, flipMode, flipArg, submitGpuImage: true);
     }
 
+    // Struct layout matches the classic SceVideoOutFlipStatus (40 bytes):
+    // count, processTime, tsc, flipArg, currentBuffer, flipPendingNum.
+    [SysAbiExport(
+        Nid = "SbU3dwp80lQ",
+        ExportName = "sceVideoOutGetFlipStatus",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceVideoOut")]
+    public static int VideoOutGetFlipStatus(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var statusAddress = ctx[CpuRegister.Rsi];
+        if (statusAddress == 0)
+        {
+            return OrbisVideoOutErrorInvalidAddress;
+        }
+
+        VideoOutPortState? port;
+        lock (_stateGate)
+        {
+            _ports.TryGetValue(handle, out port);
+        }
+
+        if (port is null)
+        {
+            return OrbisVideoOutErrorInvalidHandle;
+        }
+
+        ulong count;
+        long flipArg;
+        uint currentBuffer;
+        lock (_stateGate)
+        {
+            count = port.FlipCount;
+            flipArg = 0;
+            currentBuffer = unchecked((uint)port.CurrentBuffer);
+        }
+
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x00, count);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, 0);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, 0);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, unchecked((ulong)flipArg));
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x20, currentBuffer);
+
+        TraceVideoOut($"videoout.get_flip_status handle={handle} count={count} currentBuffer={currentBuffer}");
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     [SysAbiExport(
         Nid = "zgXifHT9ErY",
         ExportName = "sceVideoOutIsFlipPending",
@@ -410,7 +499,8 @@ public static class VideoOutExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        if (filter != OrbisKernelEventFilterVideoOut || ident != SceVideoOutInternalEventFlip)
+        if (filter != OrbisKernelEventFilterVideoOut ||
+            ident is not (SceVideoOutInternalEventVblank or SceVideoOutInternalEventFlip))
         {
             return OrbisVideoOutErrorInvalidEvent;
         }
@@ -439,7 +529,8 @@ public static class VideoOutExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        if (filter != OrbisKernelEventFilterVideoOut || ident != SceVideoOutInternalEventFlip)
+        if (filter != OrbisKernelEventFilterVideoOut ||
+            ident is not (SceVideoOutInternalEventVblank or SceVideoOutInternalEventFlip))
         {
             return OrbisVideoOutErrorInvalidEvent;
         }
@@ -759,6 +850,38 @@ public static class VideoOutExports
         return groupIndex < 0 ? groupIndex : setIndex;
     }
 
+    private static void SignalVblank(VideoOutPortState port)
+    {
+        List<FlipEventRegistration> vblankEvents;
+        ulong eventHint;
+        lock (_stateGate)
+        {
+            port.VblankCount++;
+            eventHint = SceVideoOutInternalEventVblank |
+                ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            vblankEvents = new List<FlipEventRegistration>(port.VblankEvents);
+        }
+
+        var signalCount = Interlocked.Increment(ref _vblankSignalCount);
+
+        foreach (var vblankEvent in vblankEvents)
+        {
+            _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                vblankEvent.Equeue,
+                SceVideoOutInternalEventVblank,
+                OrbisKernelEventFilterVideoOut,
+                eventHint,
+                vblankEvent.UserData);
+        }
+
+        if (_logVideoOutSync && (signalCount <= 8 || signalCount % 60 == 0))
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][SYNC] vblank#{signalCount} handle={port.Handle} count={port.VblankCount} " +
+                $"queues={vblankEvents.Count} hint=0x{eventHint:X16}");
+        }
+    }
+
     private static int SubmitFlip(
         CpuContext ctx,
         int handle,
@@ -793,36 +916,22 @@ public static class VideoOutExports
             flipEvents = new List<FlipEventRegistration>(port.FlipEvents);
         }
 
+        var guestImageSubmitted = false;
+        ulong guestImageAddress = 0;
         if (submitGpuImage &&
             bufferIndex >= 0 &&
             TryGetDisplayBufferInfo(handle, bufferIndex, out var displayBuffer))
         {
-            var displayType = Type.GetType("CraziiEmu.Core.Gpu.DisplayController, CraziiEmu.Core");
-            if (displayType != null)
-            {
-                var display = displayType.GetProperty("Active")?.GetValue(null);
-                if (display != null)
-                {
-                    var vmmType = ctx.Memory.GetType();
-                    var getSpanMethod = vmmType.GetMethod("GetSpan", new[] { typeof(ulong), typeof(int) });
-                    if (getSpanMethod != null)
-                    {
-                        var getSpan = (GetSpanDelegate)Delegate.CreateDelegate(typeof(GetSpanDelegate), ctx.Memory, getSpanMethod);
-                        var vramSpan = getSpan(displayBuffer.Address, (int)(displayBuffer.PitchInPixel * displayBuffer.Height * 4));
-
-                        var submitFrameMethod = displayType.GetMethod("SubmitFrame");
-                        if (submitFrameMethod != null)
-                        {
-                            var submitFrame = (SubmitFrameDelegate)Delegate.CreateDelegate(typeof(SubmitFrameDelegate), display, submitFrameMethod);
-                            submitFrame(vramSpan, (int)displayBuffer.Width, (int)displayBuffer.Height, (int)displayBuffer.PitchInPixel);
-                        }
-                    }
-                }
-            }
+            guestImageAddress = displayBuffer.Address;
+            guestImageSubmitted = VulkanVideoPresenter.TrySubmitGuestImage(
+                displayBuffer.Address,
+                displayBuffer.Width,
+                displayBuffer.Height,
+                displayBuffer.PitchInPixel);
         }
 
         if (string.Equals(
-                Environment.GetEnvironmentVariable("CraziiEmu_DUMP_VIDEOOUT"),
+                Environment.GetEnvironmentVariable("CRAZIIEMU_DUMP_VIDEOOUT"),
                 "1",
                 StringComparison.Ordinal))
         {
@@ -837,6 +946,15 @@ public static class VideoOutExports
                 OrbisKernelEventFilterVideoOut,
                 eventHint,
                 flipEvent.UserData);
+        }
+
+        var flipCount = Interlocked.Increment(ref _flipSubmitCount);
+        if (_logVideoOutSync && (flipCount <= 8 || flipCount % 60 == 0))
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][SYNC] flip#{flipCount} handle={handle} buffer={bufferIndex} " +
+                $"addr=0x{guestImageAddress:X16} submitted={guestImageSubmitted} " +
+                $"flipQueues={flipEvents.Count}");
         }
 
         TraceVideoOut($"videoout.submit_flip handle={handle} index={bufferIndex} mode={flipMode} arg={flipArg} events={flipEvents.Count}");
@@ -922,6 +1040,16 @@ public static class VideoOutExports
             TraceVideoOut(
                 $"videoout.register_buffers handle={port.Handle} group={groupIndex} start={startIndex} count={addresses.Length} fmt=0x{attribute.PixelFormat:X} tile={attribute.TilingMode} {attribute.Width}x{attribute.Height} pitch={attribute.PitchInPixel}");
             VulkanVideoPresenter.EnsureStarted(attribute.Width, attribute.Height);
+
+            var guestFormat = MapPixelFormatToGuestTextureFormat(attribute.PixelFormat);
+            if (guestFormat != 0)
+            {
+                foreach (var address in addresses)
+                {
+                    VulkanVideoPresenter.RegisterKnownDisplayBuffer(address, guestFormat);
+                }
+            }
+
             return groupIndex;
         }
     }
@@ -942,30 +1070,29 @@ public static class VideoOutExports
     private static bool TryReadBufferAttribute(CpuContext ctx, ulong attributeAddress, bool attribute2, out BufferAttribute attribute)
     {
         attribute = default;
-        if (!TryReadUInt32(ctx, attributeAddress + 0x04, out var tilingMode) ||
-            !TryReadUInt32(ctx, attributeAddress + 0x0C, out var width) ||
-            !TryReadUInt32(ctx, attributeAddress + 0x10, out var height))
+        if (!ctx.TryReadUInt32(attributeAddress + 0x04, out var tilingMode) ||
+            !ctx.TryReadUInt32(attributeAddress + 0x0C, out var width) ||
+            !ctx.TryReadUInt32(attributeAddress + 0x10, out var height))
         {
             return false;
         }
 
         if (attribute2)
         {
-            if (!TryReadUInt32(ctx, attributeAddress + 0x14, out var pitchInPixel2) ||
-                !ctx.TryReadUInt64(attributeAddress + 0x18, out var option) ||
+            if (!ctx.TryReadUInt64(attributeAddress + 0x18, out var option) ||
                 !ctx.TryReadUInt64(attributeAddress + 0x20, out var pixelFormat))
             {
                 return false;
             }
 
-            attribute = new BufferAttribute(NormalizePixelFormat(pixelFormat), tilingMode, 0, width, height, pitchInPixel2, option);
+            attribute = new BufferAttribute(NormalizePixelFormat(pixelFormat), tilingMode, 0, width, height, width, option);
             return true;
         }
 
-        if (!TryReadUInt32(ctx, attributeAddress + 0x00, out var pixelFormat32) ||
-            !TryReadUInt32(ctx, attributeAddress + 0x08, out var aspectRatio) ||
-            !TryReadUInt32(ctx, attributeAddress + 0x14, out var pitchInPixel) ||
-            !TryReadUInt32(ctx, attributeAddress + 0x18, out var option32))
+        if (!ctx.TryReadUInt32(attributeAddress + 0x00, out var pixelFormat32) ||
+            !ctx.TryReadUInt32(attributeAddress + 0x08, out var aspectRatio) ||
+            !ctx.TryReadUInt32(attributeAddress + 0x14, out var pitchInPixel) ||
+            !ctx.TryReadUInt32(attributeAddress + 0x18, out var option32))
         {
             return false;
         }
@@ -1144,6 +1271,22 @@ public static class VideoOutExports
             ? 4u
             : 0u;
 
+    // Maps the PS5 VideoOut pixel format space to the AGC "guest texture format" tags
+    // VulkanVideoPresenter._availableGuestImages keys on (see VulkanVideoPresenter.
+    // GetGuestTextureFormat: format=10 => 56 for 8-bit RGBA variants, format=9 => 9 for 10-bit).
+    private static uint MapPixelFormatToGuestTextureFormat(ulong pixelFormat) =>
+        NormalizePixelFormat(pixelFormat) switch
+        {
+            SceVideoOutPixelFormatA8R8G8B8Srgb or
+            SceVideoOutPixelFormatA8B8G8R8Srgb or
+            SceVideoOutPixelFormatB8G8R8A8Unorm or
+            SceVideoOutPixelFormatR8G8B8A8Unorm => 56u,
+            SceVideoOutPixelFormatA2R10G10B10 or
+            SceVideoOutPixelFormatA2R10G10B10Srgb or
+            SceVideoOutPixelFormatA2R10G10B10Bt2020Pq => 9u,
+            _ => 0u,
+        };
+
     private static ulong NormalizePixelFormat(ulong pixelFormat)
     {
         if (GetBytesPerPixel(pixelFormat) != 0)
@@ -1312,19 +1455,6 @@ public static class VideoOutExports
         return true;
     }
 
-    private static bool TryReadUInt32(CpuContext ctx, ulong address, out uint value)
-    {
-        Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        if (!ctx.Memory.TryRead(address, buffer))
-        {
-            value = 0;
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt32LittleEndian(buffer);
-        return true;
-    }
-
     private static bool TryReadInt16(CpuContext ctx, ulong address, out short value)
     {
         Span<byte> buffer = stackalloc byte[sizeof(short)];
@@ -1340,7 +1470,7 @@ public static class VideoOutExports
 
     private static void TraceVideoOut(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_VIDEOOUT"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_VIDEOOUT"), "1", StringComparison.Ordinal))
         {
             return;
         }

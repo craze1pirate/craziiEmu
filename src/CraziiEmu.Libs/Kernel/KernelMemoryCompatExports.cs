@@ -1974,23 +1974,34 @@ public static class KernelMemoryCompatExports
         LibraryName = "libKernel")]
     public static int ClockGettime(CpuContext ctx)
     {
+        var clockId = unchecked((int)ctx[CpuRegister.Rdi]);
         var timespecAddress = ctx[CpuRegister.Rsi];
         if (timespecAddress == 0)
         {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+            KernelRuntimeCompatExports.TrySetErrno(ctx, 22); // EINVAL
+            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
+            return -1;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var seconds = now.ToUnixTimeSeconds();
-        var nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
+        long seconds;
+        long nanoseconds;
+        if (!KernelRuntimeCompatExports.ResolveClockTime(clockId, out seconds, out nanoseconds))
+        {
+            KernelRuntimeCompatExports.TrySetErrno(ctx, 22); // EINVAL
+            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
+            return -1;
+        }
+
         if (!ctx.TryWriteUInt64(timespecAddress, unchecked((ulong)seconds)) ||
             !ctx.TryWriteUInt64(timespecAddress + sizeof(long), unchecked((ulong)nanoseconds)))
         {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            KernelRuntimeCompatExports.TrySetErrno(ctx, 14); // EFAULT
+            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
+            return -1;
         }
 
         ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        return 0;
     }
 
     [SysAbiExport(

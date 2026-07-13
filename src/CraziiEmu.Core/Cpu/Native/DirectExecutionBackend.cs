@@ -1,4 +1,4 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+﻿// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -11,11 +11,13 @@ using CraziiEmu.Core.Cpu;
 using CraziiEmu.Core.Loader;
 using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
+using CraziiEmu.Logging;
 
 namespace CraziiEmu.Core.Cpu.Native;
 
 public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, IGuestThreadScheduler, IDisposable
 {
+	private static readonly CraziiEmuLogger Log = CraziiEmuLog.For("Native");
 	private const int ImportLoopHistoryLength = 2048;
 
 	private const int ImportLoopWideDiversityWindow = 768;
@@ -422,6 +424,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		private void ThreadMain()
 		{
 			var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(_guestThreadHandle);
+			if (LogThreadMode)
+			{
+				TraceThreadMode($"runner_start guest=0x{_guestThreadHandle:X16}");
+			}
 			try
 			{
 				while (true)
@@ -432,6 +438,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 						return;
 					}
 
+					if (LogThreadMode)
+					{
+						_threadModeCycleId = Interlocked.Increment(ref _threadModeCycleCounter);
+						TraceThreadMode($"runner_run guest=0x{_guestThreadHandle:X16}");
+					}
 					try
 					{
 						_work?.Invoke();
@@ -444,6 +455,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			}
 			finally
 			{
+				if (LogThreadMode)
+				{
+					TraceThreadMode($"runner_stop guest=0x{_guestThreadHandle:X16}");
+				}
 				GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
 			}
 		}
@@ -466,6 +481,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private readonly object _guestThreadGate = new object();
 
 	private readonly Queue<GuestThreadState> _readyGuestThreads = new Queue<GuestThreadState>();
+
+	// Once set, guest worker threads are unwound to the host at their next import
+	// dispatch and Pump refuses to start new ones. This must happen before the
+	// runtime frees trampolines or guest memory: workers that keep running native
+	// guest code during teardown execute freed pages (observed as an execute-AV in
+	// a MEM_FREE module region plus a CLR "UnmanagedCallersOnly" fatal from a Pump
+	// thread entering a freed stub).
+	private volatile bool _guestTeardownRequested;
 
 	private int _readyGuestThreadCount;
 
@@ -565,6 +588,33 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private static int _nestedVehTraceCount;
 
+	// CRAZIIEMU_LOG_THREAD_MODE=1 ΓÇö GC thread-mode corruption investigation. Traces
+	// every managed<->guest transition per guest-thread run cycle so the last event
+	// before a ReversePInvokeBadTransition FailFast identifies the corrupting path.
+	private static readonly bool LogThreadMode =
+		string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_THREAD_MODE"), "1", StringComparison.Ordinal);
+
+	private static long _threadModeCycleCounter;
+
+	[ThreadStatic]
+	private static long _threadModeCycleId;
+
+	[ThreadStatic]
+	private static int _threadModeGatewayDepth;
+
+	[ThreadStatic]
+	private static long _threadModeGatewayCalls;
+
+	[ThreadStatic]
+	private static bool _threadModeGatewayFirstLogged;
+
+	private static void TraceThreadMode(string message)
+	{
+		Console.Error.WriteLine(
+			$"[THREADMODE] {message} cycle={_threadModeCycleId} tid={GetCurrentThreadId()} managed={Environment.CurrentManagedThreadId}");
+		Console.Error.Flush();
+	}
+
 	private const uint MEM_COMMIT = 4096u;
 
 	private const uint MEM_RESERVE = 8192u;
@@ -623,7 +673,17 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private unsafe static int CallNativeEntry(void* entry)
 	{
 		var nativeEntry = (delegate* unmanaged[Cdecl]<int>)entry;
-		return nativeEntry();
+		if (!LogThreadMode)
+		{
+			return nativeEntry();
+		}
+
+		_threadModeGatewayFirstLogged = false;
+		var dispatchesBefore = _threadModeGatewayCalls;
+		TraceThreadMode($"native_enter entry=0x{(ulong)entry:X16}");
+		var result = nativeEntry();
+		TraceThreadMode($"native_exit result=0x{result:X8} dispatches={_threadModeGatewayCalls - dispatchesBefore}");
+		return result;
 	}
 
 	private unsafe static void WriteCtxU64(void* contextRecord, int offset, ulong value)
@@ -802,26 +862,27 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_lastDistinctImportNid = string.Empty;
 		_consecutiveStrlenImports = 0;
 		_strlenPreludeLogged = false;
-		_logStrlenImports = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_STRLEN"), "1", StringComparison.Ordinal);
+		_logStrlenImports = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_STRLEN"), "1", StringComparison.Ordinal);
 		_logStrlenBursts = _logStrlenImports ||
-			string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_STRLEN_BURSTS"), "1", StringComparison.Ordinal);
-		_logGuestContext = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_CONTEXT"), "1", StringComparison.Ordinal);
-		_logGuestThreads = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_GUEST_THREADS"), "1", StringComparison.Ordinal);
-		_logUsleep = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_USLEEP"), "1", StringComparison.Ordinal);
-		_logBootstrap = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_BOOTSTRAP"), "1", StringComparison.Ordinal);
-		_logAllImports = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_ALL_IMPORTS"), "1", StringComparison.Ordinal);
-		_logImportFrames = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_IMPORT_FRAMES"), "1", StringComparison.Ordinal);
-		_logImportRecent = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_IMPORT_RECENT"), "1", StringComparison.Ordinal);
-		_logStackCheck = string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_STACK_CHK"), "1", StringComparison.Ordinal);
-		_probeImportReturn = Environment.GetEnvironmentVariable("CraziiEmu_PROBE_IMPORT_RET");
-		_importFilter = Environment.GetEnvironmentVariable("CraziiEmu_LOG_IMPORT_FILTER");
+			string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_STRLEN_BURSTS"), "1", StringComparison.Ordinal);
+		_logGuestContext = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_CONTEXT"), "1", StringComparison.Ordinal);
+		_logGuestThreads = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_GUEST_THREADS"), "1", StringComparison.Ordinal);
+		_logUsleep = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_USLEEP"), "1", StringComparison.Ordinal);
+		_logBootstrap = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_BOOTSTRAP"), "1", StringComparison.Ordinal);
+		_logAllImports = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_ALL_IMPORTS"), "1", StringComparison.Ordinal);
+		_logImportFrames = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_IMPORT_FRAMES"), "1", StringComparison.Ordinal);
+		_logImportRecent = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_IMPORT_RECENT"), "1", StringComparison.Ordinal);
+		_logStackCheck = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_STACK_CHK"), "1", StringComparison.Ordinal);
+		_probeImportReturn = Environment.GetEnvironmentVariable("CRAZIIEMU_PROBE_IMPORT_RET");
+		_importFilter = Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_IMPORT_FILTER");
 		_disableImportLoopGuard = string.Equals(
-			Environment.GetEnvironmentVariable("CraziiEmu_DISABLE_IMPORT_LOOP_GUARD"),
+			Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_IMPORT_LOOP_GUARD"),
 			"1",
 			StringComparison.Ordinal);
 		_importLoopGuardSeconds = GetImportLoopGuardSeconds();
 		_entryReturnSentinelRip = 0uL;
 		_forcedGuestExit = false;
+		_guestTeardownRequested = false;
 		_importLoopSignatureCount = 0;
 		_importLoopSignatureWriteIndex = 0;
 		_importLoopPatternHits = 0;
@@ -949,7 +1010,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private unsafe bool TryCreateNativeImportIntrinsic(string nid, out nint address)
 	{
 		if (nid == "1jfXLRVzisc" &&
-			string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_USLEEP"), "1", StringComparison.Ordinal))
+			string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_USLEEP"), "1", StringComparison.Ordinal))
 		{
 			address = 0;
 			return false;
@@ -1120,21 +1181,72 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				0x75, 0xF5,
 				0xC3,
 			],
+			// memcpy: guarded native copy. The first "rep movsb" intrinsic had no bounds/null
+			// checking and crashed with a read at -1 right after a null-dst memset recovery in
+			// the NGS2 audio streaming code path, so it was temporarily pulled in favor of the
+			// safe C# HLE memcpy. That detour costs a full import dispatch per call - far too
+			// slow for a function this hot - so this stub keeps the native leaf path and adds
+			// the same guards as memset below: it silently returns dst without copying when dst
+			// or src is null/low-page (< 0x10000) or outside canonical user space, or when len
+			// is 0 or absurd (> 512MB).
 			"Q3VBxCXhUHs" =>
 			[
-				0x48, 0x89, 0xF8,
-				0x48, 0x89, 0xD1,
-				0xF3, 0xA4,
-				0xC3,
+				0x48, 0x89, 0xF8,                                           // mov rax, rdi (return dst)
+				0x48, 0x81, 0xFF, 0x00, 0x00, 0x01, 0x00,                   // cmp rdi, 0x10000
+				0x72, 0x31,                                                 // jb done
+				0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, // mov r8, 0x800000000000
+				0x4C, 0x39, 0xC7,                                           // cmp rdi, r8
+				0x73, 0x22,                                                 // jae done
+				0x48, 0x81, 0xFE, 0x00, 0x00, 0x01, 0x00,                   // cmp rsi, 0x10000
+				0x72, 0x19,                                                 // jb done
+				0x4C, 0x39, 0xC6,                                           // cmp rsi, r8
+				0x73, 0x14,                                                 // jae done
+				0x48, 0x81, 0xFA, 0x00, 0x00, 0x00, 0x20,                   // cmp rdx, 0x20000000
+				0x77, 0x0B,                                                 // ja done
+				0x48, 0x85, 0xD2,                                           // test rdx, rdx
+				0x74, 0x06,                                                 // jz done
+				0x48, 0x89, 0xD1,                                           // mov rcx, rdx
+				0xFC,                                                       // cld
+				0xF3, 0xA4,                                                 // rep movsb
+				0xC3,                                                       // done: ret
+			],
+			// memset: guarded native fill. An earlier unguarded version crashed with a write AV
+			// at address 0 (NGS2 audio streaming init memsets a never-populated buffer field),
+			// so this one mirrors the HLE guards and silently returns dst without writing when
+			// dst is null/low-page (< 0x10000), dst is outside canonical user space, or len is
+			// absurd (> 512MB, e.g. the 0x27060035 / sign-extended values NGS2 passes). Routing
+			// memset through the HLE trampoline instead is not viable: parse/streaming loops
+			// issue hundreds of thousands of small memsets back-to-back, which crawls at
+			// dispatch speed and looks like a repeating-import hang to the loop guard.
+			// _sigprocmask: the HLE handler (KernelRuntimeCompatExports.Sigprocmask) is a pure
+			// no-op returning 0 that never writes oldset, so this is behavior-identical. The
+			// game's bundled libc queries the mask (set=NULL) once per iteration in its font/
+			// parse loops - hundreds of thousands of back-to-back calls that both crawl at
+			// dispatch speed and read as a repeating-import hang to the loop guard.
+			"6xVpy0Fdq+I" =>
+			[
+				0x31, 0xC0, // xor eax, eax
+				0xC3,       // ret
 			],
 			"8zTFvBIAIN8" =>
 			[
-				0x49, 0x89, 0xF8,
-				0x48, 0x89, 0xF0,
-				0x48, 0x89, 0xD1,
-				0xF3, 0xAA,
-				0x4C, 0x89, 0xC0,
-				0xC3,
+				0x48, 0x89, 0xF8,                                           // mov rax, rdi (return dst)
+				0x48, 0x81, 0xFF, 0x00, 0x00, 0x01, 0x00,                   // cmp rdi, 0x10000
+				0x72, 0x2B,                                                 // jb done
+				0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, // mov r8, 0x800000000000
+				0x4C, 0x39, 0xC7,                                           // cmp rdi, r8
+				0x73, 0x1C,                                                 // jae done
+				0x48, 0x81, 0xFA, 0x00, 0x00, 0x00, 0x20,                   // cmp rdx, 0x20000000
+				0x77, 0x13,                                                 // ja done
+				0x48, 0x85, 0xD2,                                           // test rdx, rdx
+				0x74, 0x0E,                                                 // jz done
+				0x48, 0x89, 0xD1,                                           // mov rcx, rdx
+				0x49, 0x89, 0xF9,                                           // mov r9, rdi
+				0x89, 0xF0,                                                 // mov eax, esi
+				0xFC,                                                       // cld
+				0xF3, 0xAA,                                                 // rep stosb
+				0x4C, 0x89, 0xC8,                                           // mov rax, r9
+				0xC3,                                                       // done: ret
 			],
 			_ => default,
 		};
@@ -1274,18 +1386,18 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		{
 			return false;
 		}
-		if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_DISABLE_LLE_LIBC"), "1", StringComparison.Ordinal))
+		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_LLE_LIBC"), "1", StringComparison.Ordinal))
 		{
 			return false;
 		}
-		var value = Environment.GetEnvironmentVariable("CraziiEmu_LLE_LIBC_SAFE_ONLY");
+		var value = Environment.GetEnvironmentVariable("CRAZIIEMU_LLE_LIBC_SAFE_ONLY");
 		if (string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
-		if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LLE_LIBC_ALL"), "1", StringComparison.Ordinal))
+		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LLE_LIBC_ALL"), "1", StringComparison.Ordinal))
 		{
 			return true;
 		}
@@ -1353,10 +1465,25 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	{
 		return exportName switch
 		{
-			"memcpy" or
 			"memmove" or
-			"memset" or
-			"memcmp" => true,
+			// memset/memcpy excluded: the raw LLE routines have no null/bounds guard and crash
+			// with an access violation on bad pointers (observed hit during Quake's CL_Init,
+			// where a still-unidentified upstream bug calls memcpy/memset with a null
+			// destination). Both are instead served by the guarded native intrinsics in
+			// TryCreateNativeImportIntrinsic, which fail safely without leaving the leaf path.
+			"memcmp" or
+			// _Getpctype must come from the game's own Dinkumware libc when one is bundled:
+			// it returns a pointer to that CRT's ctype bitmask table, whose bit layout
+			// (_DI=0x20, _SP=0x04, _BB=0x80, ...) differs from the MSVC-style table the HLE
+			// fallback used to serve. Serving the wrong layout made the bundled printf engine
+			// render every Sys_Error message as an empty string (isdigit misfired during
+			// %-directive parsing) and made mcpp drop 'a'-'f' from identifiers ("texture" ->
+			// "txtur", the 0x80 bit reads as _BB/control there). _Getptolower/_Getptoupper
+			// already resolve to the bundled module because no HLE export shadows them; this
+			// keeps _Getpctype consistent with them. It is a pure accessor returning a pointer
+			// to a const table, so it is also the cheapest possible LLE call - important
+			// because parsers hit it once per input character.
+			"_Getpctype" => true,
 			_ => false,
 		};
 	}
@@ -1568,7 +1695,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private unsafe nint CreateImportHandlerTrampoline(int importIndex)
 	{
-		void* ptr = VirtualAlloc(null, 192u, 12288u, 64u);
+		void* ptr = VirtualAlloc(null, 256u, 12288u, 64u);
 		if (ptr == null)
 		{
 			return 0;
@@ -1596,20 +1723,21 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num++] = 82;
 			ptr2[num++] = 86;
 			ptr2[num++] = 87;
-			ptr2[num++] = 72;
-			ptr2[num++] = 131;
-			ptr2[num++] = 236;
-			ptr2[num++] = 16;
-			ptr2[num++] = 243;
-			ptr2[num++] = 15;
-			ptr2[num++] = 127;
-			ptr2[num++] = 4;
-			ptr2[num++] = 36;
-			ptr2[num++] = 76;
-			ptr2[num++] = 141;
-			ptr2[num++] = 100;
-			ptr2[num++] = 36;
-			ptr2[num++] = 16;
+			// sub rsp, 0x80  ΓÇö reserve 8*16 bytes for the SysV variadic XMM save area
+			ptr2[num++] = 0x48; ptr2[num++] = 0x81; ptr2[num++] = 0xEC;
+			ptr2[num++] = 0x80; ptr2[num++] = 0x00; ptr2[num++] = 0x00; ptr2[num++] = 0x00;
+			// movdqu [rsp + i*0x10], xmm{i}  for i = 0..7  (F3 0F 7F /r, SIB=0x24 base=rsp, disp8)
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x44; ptr2[num++] = 0x24; ptr2[num++] = 0x00; // xmm0
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x4C; ptr2[num++] = 0x24; ptr2[num++] = 0x10; // xmm1
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x54; ptr2[num++] = 0x24; ptr2[num++] = 0x20; // xmm2
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x5C; ptr2[num++] = 0x24; ptr2[num++] = 0x30; // xmm3
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x64; ptr2[num++] = 0x24; ptr2[num++] = 0x40; // xmm4
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x6C; ptr2[num++] = 0x24; ptr2[num++] = 0x50; // xmm5
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x74; ptr2[num++] = 0x24; ptr2[num++] = 0x60; // xmm6
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x0F; ptr2[num++] = 0x7F; ptr2[num++] = 0x7C; ptr2[num++] = 0x24; ptr2[num++] = 0x70; // xmm7
+			// lea r12, [rsp + 0x80]  ΓÇö r12 = argpack base (the 12 pushed GP regs), past the XMM area
+			ptr2[num++] = 0x4C; ptr2[num++] = 0x8D; ptr2[num++] = 0xA4; ptr2[num++] = 0x24;
+			ptr2[num++] = 0x80; ptr2[num++] = 0x00; ptr2[num++] = 0x00; ptr2[num++] = 0x00;
 			ptr2[num++] = 72;
 			ptr2[num++] = 131;
 			ptr2[num++] = 236;
@@ -1657,6 +1785,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num++] = 131;
 			ptr2[num++] = 196;
 			ptr2[num++] = 40;
+			// movdqu xmm0, [r12 - 0x80]  ΓÇö reload the return XMM0 the gateway wrote into the
+			// argpack's xmm0 save slot (float/double returns: powf/logf/wcstod). SysV/Win64
+			// XMM regs are volatile across calls, so an unconditional reload is ABI-safe.
+			ptr2[num++] = 0xF3; ptr2[num++] = 0x41; ptr2[num++] = 0x0F; ptr2[num++] = 0x6F;
+			ptr2[num++] = 0x84; ptr2[num++] = 0x24; ptr2[num++] = 0x80; ptr2[num++] = 0xFF; ptr2[num++] = 0xFF; ptr2[num++] = 0xFF;
 			ptr2[num++] = 76;
 			ptr2[num++] = 137;
 			ptr2[num++] = 228;
@@ -1679,10 +1812,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[num++] = 65;
 			ptr2[num++] = 95;
 			ptr2[num++] = 195;
-			uint num2 = default(uint);
-			VirtualProtect(ptr, 192u, 32u, &num2);
-			FlushInstructionCache(GetCurrentProcess(), ptr, 192u);
-			return (nint)ptr;
+		uint num2 = default(uint);
+		if (!VirtualProtect(ptr, 256u, 32u, &num2))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for import dispatch stub at 0x{(nint)ptr:X16}");
+			return 0;
+		}
+		FlushInstructionCache(GetCurrentProcess(), ptr, 256u);
+		return (nint)ptr;
 		}
 		catch
 		{
@@ -1763,7 +1900,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		tlsHandlerAddress[num++] = 195;
 		_tlsPatchStubOffset = (num + 15) & ~15;
 		uint num2 = default(uint);
-		VirtualProtect((void*)_tlsHandlerAddress, TlsHandlerRegionSize, 32u, &num2);
+		if (!VirtualProtect((void*)_tlsHandlerAddress, TlsHandlerRegionSize, 32u, &num2))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for TLS handler at 0x{_tlsHandlerAddress:X16}");
+			return;
+		}
 		FlushInstructionCache(GetCurrentProcess(), (void*)_tlsHandlerAddress, TlsHandlerRegionSize);
 		Console.Error.WriteLine($"[LOADER][INFO] TLS handler at 0x{_tlsHandlerAddress:X16}");
 	}
@@ -1784,7 +1925,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[i] = 144;
 		}
 		uint num = default(uint);
-		VirtualProtect(ptr, 4096u, 32u, &num);
+		if (!VirtualProtect(ptr, 4096u, 32u, &num))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for unresolved return stub at 0x{(nint)ptr:X16}");
+			return 0;
+		}
 		FlushInstructionCache(GetCurrentProcess(), ptr, 16u);
 		return (nint)ptr;
 	}
@@ -1831,7 +1976,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		EmitByte(code, ref offset, 0xC3);
 
 		uint oldProtect = default;
-		VirtualProtect(ptr, stubSize, 32u, &oldProtect);
+		if (!VirtualProtect(ptr, stubSize, 32u, &oldProtect))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for guest return stub at 0x{(nint)ptr:X16}");
+			return 0;
+		}
 		FlushInstructionCache(GetCurrentProcess(), ptr, (nuint)offset);
 		return (nint)ptr;
 	}
@@ -1847,6 +1996,36 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 		byte* code = (byte*)ptr;
 		int offset = 0;
+		// Native pre-filter: these exception codes are raised while the thread can be in
+		// cooperative GC mode (a C# throw is RaiseException(0xE0434352) on the throwing
+		// thread; FailFast/stack-overflow arrive mid-runtime-failure). Entering the managed
+		// handler then trips the CLR's reverse-P/Invoke check and kills the process with
+		// "Invalid Program: attempted to call a UnmanagedCallersOnly method from managed
+		// code" ΓÇö this is why no managed throw (even one with a catch handler) ever
+		// survived inside the emulator. Continue the handler search without touching
+		// managed code; the CLR's own VEH handles its exceptions. MSVC C++ exceptions
+		// (Vulkan drivers, host CRT) are excluded too: the managed handler only ever
+		// returned CONTINUE_SEARCH for them.
+		ReadOnlySpan<uint> nonManagedExceptionCodes = [0xE0434352u, MSVC_CPP_EXCEPTION, 0xC0000409u, 0xC00000FDu];
+		EmitByte(code, ref offset, 0x48); EmitByte(code, ref offset, 0x8B); EmitByte(code, ref offset, 0x01); // mov rax, [rcx] (ExceptionRecord*)
+		EmitByte(code, ref offset, 0x8B); EmitByte(code, ref offset, 0x00);                                   // mov eax, [rax] (ExceptionCode)
+		var passJumpOffsets = stackalloc int[nonManagedExceptionCodes.Length];
+		for (int i = 0; i < nonManagedExceptionCodes.Length; i++)
+		{
+			EmitByte(code, ref offset, 0x3D);                                                                 // cmp eax, imm32
+			EmitUInt32(code, ref offset, nonManagedExceptionCodes[i]);
+			EmitByte(code, ref offset, 0x74);                                                                 // je pass
+			passJumpOffsets[i] = offset;
+			EmitByte(code, ref offset, 0x00);
+		}
+		EmitByte(code, ref offset, 0xEB); EmitByte(code, ref offset, 0x03);                                   // jmp over pass block
+		int passOffset = offset;
+		EmitByte(code, ref offset, 0x31); EmitByte(code, ref offset, 0xC0);                                   // pass: xor eax, eax (EXCEPTION_CONTINUE_SEARCH)
+		EmitByte(code, ref offset, 0xC3);                                                                     // ret
+		for (int i = 0; i < nonManagedExceptionCodes.Length; i++)
+		{
+			code[passJumpOffsets[i]] = checked((byte)(passOffset - (passJumpOffsets[i] + 1)));
+		}
 		EmitByte(code, ref offset, 0x41); EmitByte(code, ref offset, 0x54); // push r12
 		EmitByte(code, ref offset, 0x41); EmitByte(code, ref offset, 0x55); // push r13
 		EmitByte(code, ref offset, 0x49); EmitByte(code, ref offset, 0x89); EmitByte(code, ref offset, 0xE4); // mov r12, rsp
@@ -1923,7 +2102,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		*(int*)(code + guestRestoreJump) = restoreOffset - (guestRestoreJump + sizeof(int));
 
 		uint oldProtect = default;
-		VirtualProtect(ptr, stubSize, 32u, &oldProtect);
+		if (!VirtualProtect(ptr, stubSize, 32u, &oldProtect))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for exception handler trampoline at 0x{(nint)ptr:X16}");
+			return 0;
+		}
 		FlushInstructionCache(GetCurrentProcess(), ptr, (nuint)offset);
 		return (nint)ptr;
 	}
@@ -2254,7 +2437,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr[num2++] = 144;
 		}
 		uint flNewProtect = default(uint);
-		VirtualProtect((void*)num, 32u, 32u, &flNewProtect);
+		if (!VirtualProtect((void*)num, 32u, 32u, &flNewProtect))
+		{
+			Console.Error.WriteLine($"[LOADER][ERROR] VirtualProtect failed for TLS store helper at 0x{num:X16}");
+			return 0;
+		}
 		FlushInstructionCache(GetCurrentProcess(), (void*)num, 32u);
 		return num;
 	}
@@ -2523,6 +2710,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	public void Pump(CpuContext callerContext, string reason)
 	{
 		_ = callerContext;
+		if (_guestTeardownRequested)
+		{
+			return;
+		}
 		var runSynchronously = string.Equals(reason, "entry_return", StringComparison.Ordinal);
 		WakeExpiredBlockedGuestThreads();
 		if (Volatile.Read(ref _readyGuestThreadCount) == 0)
@@ -3047,6 +3238,45 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		continuationThread.Join();
 	}
 
+	/// <summary>
+	/// Parks every guest worker thread before the caller starts freeing executable
+	/// memory. Workers unwind to the host at their next import dispatch (see the
+	/// teardown check in DispatchImport); this waits for their host threads to
+	/// finish within <paramref name="timeoutMs"/>. Returns false when at least one
+	/// worker is still running ΓÇö the caller must then leak its executable stubs
+	/// rather than free memory a live thread may still execute.
+	/// </summary>
+	private bool RequestGuestThreadTeardown(int timeoutMs)
+	{
+		_guestTeardownRequested = true;
+		Thread[] hostThreads;
+		lock (_guestThreadGate)
+		{
+			_readyGuestThreads.Clear();
+			Interlocked.Exchange(ref _readyGuestThreadCount, 0);
+			hostThreads = _guestThreads.Values
+				.Select(static thread => thread.HostThread)
+				.Where(static host => host is not null && host != Thread.CurrentThread && host.IsAlive)
+				.Cast<Thread>()
+				.ToArray();
+		}
+
+		var deadline = Environment.TickCount64 + timeoutMs;
+		var allStopped = true;
+		foreach (var host in hostThreads)
+		{
+			var remaining = (int)Math.Max(1L, deadline - Environment.TickCount64);
+			if (!host.Join(remaining) && host.IsAlive)
+			{
+				allStopped = false;
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] Guest worker host thread '{host.Name}' still running after teardown wait.");
+			}
+		}
+
+		return allStopped;
+	}
+
 	private void ClearGuestThreads()
 	{
 		GuestContinuationRunner[] runners;
@@ -3326,6 +3556,13 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		ApplyGuestThreadAffinity(thread.AffinityMask);
 		Volatile.Write(ref thread.HostThreadId, unchecked((int)GetCurrentThreadId()));
 		_activeGuestThreadState = thread;
+		if (LogThreadMode)
+		{
+			_threadModeCycleId = Interlocked.Increment(ref _threadModeCycleCounter);
+			TraceThreadMode(
+				$"cycle_start name='{thread.Name}' guest=0x{thread.ThreadHandle:X16} reason={reason} " +
+				$"rsp_slot=0x{(ulong)TlsGetValue(_hostRspSlotTlsIndex):X}");
+		}
 		try
 		{
 			LastError = null;
@@ -3400,6 +3637,13 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 		finally
 		{
+			if (LogThreadMode)
+			{
+				TraceThreadMode(
+					$"cycle_end name='{thread.Name}' state={thread.State} " +
+					$"imports={Interlocked.Read(ref thread.ImportCount)} " +
+					$"rsp_slot=0x{(ulong)TlsGetValue(_hostRspSlotTlsIndex):X}");
+			}
 			_activeGuestThreadState = previousGuestThreadState;
 			Volatile.Write(ref thread.HostThreadId, 0);
 			GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
@@ -3474,169 +3718,175 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		var previousYieldRequested = _activeGuestThreadYieldRequested;
 		var previousYieldReason = _activeGuestThreadYieldReason;
 		nint previousHostRspSlotValue = TlsGetValue(_hostRspSlotTlsIndex);
+		if (LogThreadMode)
+		{
+			TraceThreadMode(
+				$"entry_setup name='{name}' entry=0x{entryPoint:X16} stub=0x{(ulong)ptr:X16} " +
+				$"guest_rsp=0x{context[CpuRegister.Rsp]:X16} rsp_slot_prev=0x{(ulong)previousHostRspSlotValue:X}");
+		}
 		try
-		{
-			_activeExecutionBackend = this;
-			_activeCpuContext = context;
-			_activeEntryReturnSentinelRip = 0;
-			_activeGuestReturnSlotAddress = 0;
-			_activeForcedGuestExit = false;
-			_activeGuestThreadYieldRequested = false;
-			_activeGuestThreadYieldReason = null;
-			BindTlsBase(context);
-			byte* ptr2 = (byte*)ptr;
-			ulong hostRspSlot = (ulong)ptr + stubSize - 16uL;
-			int offset = 0;
-			ptr2[offset++] = 83;
-			ptr2[offset++] = 85;
-			ptr2[offset++] = 87;
-			ptr2[offset++] = 86;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 84;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 85;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 86;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 87;
-			EmitHostNonvolatileXmmSave(ptr2, ref offset);
-			ptr2[offset++] = 73;
-			ptr2[offset++] = 186;
-			*(ulong*)(ptr2 + offset) = hostRspSlot;
-			offset += 8;
-			ptr2[offset++] = 73;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 34;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rsp];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 196;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 131;
-			ptr2[offset++] = 236;
-			ptr2[offset++] = 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 189;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rbp];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rdi];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 199;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rsi];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 198;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rdx];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 194;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = context[CpuRegister.Rcx];
-			offset += 8;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 137;
-			ptr2[offset++] = 193;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 184;
-			*(ulong*)(ptr2 + offset) = entryPoint;
-			offset += 8;
-			ptr2[offset++] = byte.MaxValue;
-			ptr2[offset++] = 208;
-			int sentinelOffset = offset + 4;
-			ptr2[offset++] = 72;
-			ptr2[offset++] = 131;
-			ptr2[offset++] = 196;
-			ptr2[offset++] = 8;
-			ptr2[offset++] = 73;
-			ptr2[offset++] = 186;
-			*(ulong*)(ptr2 + offset) = hostRspSlot;
-			offset += 8;
-			ptr2[offset++] = 73;
-			ptr2[offset++] = 139;
-			ptr2[offset++] = 34;
-			EmitHostNonvolatileXmmRestore(ptr2, ref offset);
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 95;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 94;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 93;
-			ptr2[offset++] = 65;
-			ptr2[offset++] = 92;
-			ptr2[offset++] = 94;
-			ptr2[offset++] = 95;
-			ptr2[offset++] = 93;
-			ptr2[offset++] = 91;
-			ptr2[offset++] = 195;
-			ulong sentinel = (ulong)ptr + (ulong)sentinelOffset;
-			ActiveEntryReturnSentinelRip = (ulong)_guestReturnStub;
-			_activeGuestReturnSlotAddress = context[CpuRegister.Rsp] - 16uL;
-			if (!context.TryWriteUInt64(context[CpuRegister.Rsp], sentinel))
-			{
-				reason = $"failed to patch guest thread return sentinel at 0x{context[CpuRegister.Rsp]:X16}";
-				return GuestNativeCallExitReason.Exception;
-			}
-			uint oldProtect = default(uint);
-			VirtualProtect(ptr, stubSize, 64u, &oldProtect);
-			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
-			TlsSetValue(_hostRspSlotTlsIndex, (nint)hostRspSlot);
-			ActiveGuestThreadYieldRequested = false;
-			ActiveGuestThreadYieldReason = null;
-			try
-			{
-				var nativeReturn = CallNativeEntry(ptr);
-				if (ActiveGuestThreadYieldRequested)
-				{
-					reason = ActiveGuestThreadYieldReason ?? "guest thread blocked";
-					return GuestNativeCallExitReason.Blocked;
-				}
-				if (ActiveForcedGuestExit)
-				{
-					reason = LastError ?? "guest thread forced exit";
-					return GuestNativeCallExitReason.ForcedExit;
-				}
-				reason = $"returned 0x{nativeReturn:X8}";
-				return GuestNativeCallExitReason.Returned;
-			}
-			catch (AccessViolationException ex)
-			{
-				reason = "access violation: " + ex.Message;
-				return GuestNativeCallExitReason.Exception;
-			}
-			catch (Exception ex)
-			{
-				reason = ex.GetType().Name + ": " + ex.Message;
-				return GuestNativeCallExitReason.Exception;
-			}
-		}
-		finally
-		{
-			TlsSetValue(_hostRspSlotTlsIndex, previousHostRspSlotValue);
-			RestoreActiveExecutionThread(
-				previousActiveBackend,
-				previousActiveContext,
-				previousSentinel,
-				previousReturnSlotAddress,
-				previousForcedExit,
-				previousYieldRequested,
-				previousYieldReason);
-			VirtualFree(ptr, 0u, 32768u);
-		}
-	}
+    {
+        _activeExecutionBackend = this;
+        _activeCpuContext = context;
+        _activeEntryReturnSentinelRip = 0;
+        _activeGuestReturnSlotAddress = 0;
+        _activeForcedGuestExit = false;
+        _activeGuestThreadYieldRequested = false;
+        _activeGuestThreadYieldReason = null;
+        BindTlsBase(context);
+        byte* ptr2 = (byte*)ptr;
+        ulong hostRspSlot = (ulong)ptr + stubSize - 16uL;
+        int offset = 0;
+        ptr2[offset++] = 83;
+        ptr2[offset++] = 85;
+        ptr2[offset++] = 87;
+        ptr2[offset++] = 86;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 84;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 85;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 86;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 87;
+        EmitHostNonvolatileXmmSave(ptr2, ref offset);
+        ptr2[offset++] = 73;
+        ptr2[offset++] = 186;
+        *(ulong*)(ptr2 + offset) = hostRspSlot;
+        offset += 8;
+        ptr2[offset++] = 73;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 34;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rsp];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 196;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 131;
+        ptr2[offset++] = 236;
+        ptr2[offset++] = 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 189;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rbp];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rdi];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 199;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rsi];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 198;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rdx];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 194;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = context[CpuRegister.Rcx];
+        offset += 8;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 137;
+        ptr2[offset++] = 193;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 184;
+        *(ulong*)(ptr2 + offset) = entryPoint;
+        offset += 8;
+        ptr2[offset++] = byte.MaxValue;
+        ptr2[offset++] = 208;
+        int sentinelOffset = offset + 4;
+        ptr2[offset++] = 72;
+        ptr2[offset++] = 131;
+        ptr2[offset++] = 196;
+        ptr2[offset++] = 8;
+        ptr2[offset++] = 73;
+        ptr2[offset++] = 186;
+        *(ulong*)(ptr2 + offset) = hostRspSlot;
+        offset += 8;
+        ptr2[offset++] = 73;
+        ptr2[offset++] = 139;
+        ptr2[offset++] = 34;
+        EmitHostNonvolatileXmmRestore(ptr2, ref offset);
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 95;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 94;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 93;
+        ptr2[offset++] = 65;
+        ptr2[offset++] = 92;
+        ptr2[offset++] = 94;
+        ptr2[offset++] = 95;
+        ptr2[offset++] = 93;
+        ptr2[offset++] = 91;
+        ptr2[offset++] = 195;
+        ulong sentinel = (ulong)ptr + (ulong)sentinelOffset;
+        ActiveEntryReturnSentinelRip = (ulong)_guestReturnStub;
+        _activeGuestReturnSlotAddress = context[CpuRegister.Rsp] - 16uL;
+        if (!context.TryWriteUInt64(context[CpuRegister.Rsp], sentinel))
+        {
+            reason = $"failed to patch guest thread return sentinel at 0x{context[CpuRegister.Rsp]:X16}";
+            return GuestNativeCallExitReason.Exception;
+        }
+        uint oldProtect = default(uint);
+        if (!VirtualProtect(ptr, stubSize, 64u, &oldProtect))
+        {
+            reason = $"VirtualProtect failed for guest thread entry stub at 0x{(nint)ptr:X16}";
+            return GuestNativeCallExitReason.Exception;
+        }
+        FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
+        ActiveGuestThreadYieldRequested = false;
+        ActiveGuestThreadYieldReason = null;
+        var nativeReturn = RunGuestEntryStub(ptr, hostRspSlot);
+        if (ActiveGuestThreadYieldRequested)
+        {
+            reason = ActiveGuestThreadYieldReason ?? "guest thread blocked";
+            return GuestNativeCallExitReason.Blocked;
+        }
+        if (ActiveForcedGuestExit)
+        {
+            reason = LastError ?? "guest thread forced exit";
+            return GuestNativeCallExitReason.ForcedExit;
+        }
+        reason = $"returned 0x{nativeReturn:X8}";
+        return GuestNativeCallExitReason.Returned;
+    }
+    catch (AccessViolationException ex)
+    {
+        reason = "access violation: " + ex.Message;
+        return GuestNativeCallExitReason.Exception;
+    }
+    catch (Exception ex)
+    {
+        reason = ex.GetType().Name + ": " + ex.Message;
+        return GuestNativeCallExitReason.Exception;
+    }
+    finally
+    {
+        TlsSetValue(_hostRspSlotTlsIndex, previousHostRspSlotValue);
+        RestoreActiveExecutionThread(
+            previousActiveBackend,
+            previousActiveContext,
+            previousSentinel,
+            previousReturnSlotAddress,
+            previousForcedExit,
+            previousYieldRequested,
+            previousYieldReason);
+        VirtualFree(ptr, 0u, 32768u);
+    }
+}
 
 	private unsafe GuestNativeCallExitReason ExecuteGuestContinuationEntry(
 		CpuContext context,
@@ -3666,6 +3916,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		var previousYieldRequested = _activeGuestThreadYieldRequested;
 		var previousYieldReason = _activeGuestThreadYieldReason;
 		nint previousHostRspSlotValue = TlsGetValue(_hostRspSlotTlsIndex);
+		if (LogThreadMode)
+		{
+			TraceThreadMode(
+				$"continuation_setup name='{name}' resume=0x{entryPoint:X16} stub=0x{(ulong)ptr:X16} " +
+				$"guest_rsp=0x{context[CpuRegister.Rsp]:X16} rsp_slot_prev=0x{(ulong)previousHostRspSlotValue:X}");
+		}
 		try
 		{
 			_activeExecutionBackend = this;
@@ -3728,14 +3984,18 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				return GuestNativeCallExitReason.Exception;
 			}
 			uint oldProtect = default(uint);
-			VirtualProtect(ptr, stubSize, 64u, &oldProtect);
+			if (!VirtualProtect(ptr, stubSize, 64u, &oldProtect))
+			{
+				reason = $"VirtualProtect failed for guest continuation stub at 0x{(nint)ptr:X16}";
+				return GuestNativeCallExitReason.Exception;
+			}
 			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
-			TlsSetValue(_hostRspSlotTlsIndex, (nint)hostRspSlot);
 			ActiveGuestThreadYieldRequested = false;
 			ActiveGuestThreadYieldReason = null;
+
 			try
 			{
-				var nativeReturn = CallNativeEntry(ptr);
+				var nativeReturn = RunGuestEntryStub(ptr, hostRspSlot);
 				if (ActiveGuestThreadYieldRequested)
 				{
 					reason = ActiveGuestThreadYieldReason ?? "guest thread blocked";
@@ -3988,14 +4248,19 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				return false;
 			}
 			uint num5 = default(uint);
-			VirtualProtect(ptr, stubSize, 64u, &num5);
+			if (!VirtualProtect(ptr, stubSize, 64u, &num5))
+			{
+				LastError = $"VirtualProtect failed for guest entry stub at 0x{(nint)ptr:X16}";
+				result = OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+				return false;
+			}
 			FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
 			if (_hostRspSlotStorage != 0)
 			{
 				*(ulong*)_hostRspSlotStorage = num2;
 			}
 			TlsSetValue(_hostRspSlotTlsIndex, (nint)num2);
-			if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_SENTINEL_PROBE"), "1", StringComparison.Ordinal))
+			if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_SENTINEL_PROBE"), "1", StringComparison.Ordinal))
 			{
 				Console.Error.WriteLine("[LOADER][INFO] Running unresolved sentinel probe...");
 				CallNativeEntry((void*)65534);
@@ -4006,7 +4271,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			int num6 = -1;
 			try
 			{
-				num6 = CallNativeEntry(ptr);
+				num6 = RunGuestEntryStub(ptr, num2);
 				Console.Error.WriteLine($"[LOADER][INFO] Guest returned: {num6}");
 				PumpUntilGuestThreadsIdle(context, "entry_return");
 			}
@@ -4033,6 +4298,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 					LastError = "Detected repeating import loop and forced guest unwind to host.";
 				}
 				Console.Error.WriteLine("[LOADER][ERROR] " + LastError);
+				RequestGuestThreadTeardown(3000);
 				return false;
 			}
 			if (num6 == 0)
@@ -4047,6 +4313,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				LastError = $"Guest entry point returned non-zero: {num6}";
 			}
 			Console.Error.WriteLine("[LOADER][ERROR] " + LastError);
+			RequestGuestThreadTeardown(3000);
 			return false;
 		}
 		finally
@@ -4078,7 +4345,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private static int GetStallWatchdogSeconds()
 	{
-		if (int.TryParse(Environment.GetEnvironmentVariable("CraziiEmu_STALL_WATCHDOG_SECONDS"), out var result))
+		if (int.TryParse(Environment.GetEnvironmentVariable("CRAZIIEMU_STALL_WATCHDOG_SECONDS"), out var result))
 		{
 			return Math.Max(0, result);
 		}
@@ -4371,6 +4638,18 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	public unsafe void Dispose()
 	{
+		if (!RequestGuestThreadTeardown(2000))
+		{
+			// A guest worker is still executing native code; freeing the trampolines,
+			// exception-handler stubs, or GC handles under it turns process exit into
+			// an execute-AV / CLR fatal. Leak them ΓÇö the process is going away anyway.
+			Console.Error.WriteLine(
+				"[LOADER][WARN] Skipping executable stub teardown: guest worker threads are still running.");
+			return;
+		}
+		// Native guest workers park idle once every guest thread has unwound; stop
+		// them before any executable stub or TLS index they reference is freed.
+		DisposeNativeGuestExecutors();
 		ClearImportHandlerTrampolines();
 		_importEntries = Array.Empty<ImportStubEntry>();
 		_runtimeSymbolsByName.Clear();

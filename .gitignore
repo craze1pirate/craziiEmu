@@ -1,39 +1,65 @@
-# Copyright (C) 2026 SharpEmu Emulator Project
-# SPDX-License-Identifier: GPL-2.0-or-later
-
-[Dd]ebug/
-[Rr]elease/
+@"
+# .NET / Compiler Build Artifacts
 [Bb]in/
 [Oo]bj/
-[Pp]ublish/
-[Aa]rtifacts/
-logs/
-.tmp/
-
-x86/
-x64/
-arm64/
-
-[Tt]est[Rr]esult*/
-[Bb]uild[Ll]og.*
-
-*.tmp
-*.tmp_proj
-*.log
-
+artifacts/
+publish/
 *.user
-*.suo
 *.userosscache
 *.sln.docstates
 
-.packages
-packages/
-*.nupkg
-.nuget/
-.dotnet-home/
-.cache/
+# NuGet Packages
+.packages/
+project.assets.json
 
-.DS_Store
+# Local Emulation Testing & Debug Files
+*.log
+*.elf
+*.o
+*.so
+*.sprx
+*.prx
+*.pup
+*.dec
+plan.md
+
+# Dev session temp files
+temp_*.cs
+temp_*.txt
+diff*.txt
+patch*.cs
+patch*.py
+reverse_diff.txt
+trace*.txt
+dump*.txt
+
+# Scratch/test projects not part of main solution
+SnakeElf/
+TestCrash/
+scratch/
+obj_dir/
+hardware/
+
+# Windows OS Files
 Thumbs.db
-Desktop.ini
 ehthumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vs/
+.vscode/
+.antigravity/
+.gemini/
+*.suo
+*.ntvs*
+*.njsproj
+
+# Legal exclusions
+*.pdf
+ps5fw/
+keys/
+schematics.pdf
+AGENTS.md
+ai-conv.txt
+"@ | Set-Content .gitignore
