@@ -46,8 +46,8 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           safe_ref="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
-          archive_name="CraziiEmu-win64-${short_sha}.zip"
-          artifact_name="CraziiEmu-win64-${short_sha}"
+          archive_name="CraziiEmu-win64.zip"
+          artifact_name="CraziiEmu-win64"
           release_tag="win64-${safe_ref}-${short_sha}"
           release_name="CraziiEmu win64 ${short_sha}"
 
@@ -88,8 +88,8 @@ jobs:
       - name: Build solution
         run: dotnet build CraziiEmu.slnx -c Release --no-restore
 
-      - name: Publish win-x64 CLI
-        run: dotnet publish src/CraziiEmu.CLI/CraziiEmu.CLI.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishDir="${env:PUBLISH_DIR}"
+      - name: Publish win-x64 UI
+        run: dotnet publish src/CraziiEmu.UI/CraziiEmu.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -p:PublishDir="${env:PUBLISH_DIR}"
 
       - name: Create release archive
         run: |
