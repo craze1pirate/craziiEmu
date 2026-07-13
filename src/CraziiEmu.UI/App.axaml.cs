@@ -1,5 +1,4 @@
-// Copyright (C) 2026 craze1pirate - craziiEmu Project
-// Copyright (C) 2026 par274 - sharpemu Project
+// Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using Avalonia;
