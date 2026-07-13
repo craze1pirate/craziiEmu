@@ -89,6 +89,9 @@
       },
       "craziiemu.hle": {
         "type": "Project"
+      },
+      "craziiemu.logging": {
+        "type": "Project"
       }
     }
   }

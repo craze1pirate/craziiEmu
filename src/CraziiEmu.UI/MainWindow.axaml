@@ -323,12 +323,12 @@
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding}"
+                            <DataTemplate x:CompileBindings="False">
+                                <TextBlock Text="{Binding Text}"
                                            TextWrapping="Wrap"
                                            FontFamily="Cascadia Mono, Consolas, monospace"
                                            FontSize="11"
-                                           Foreground="#0070D1"
+                                           Foreground="{Binding Color}"
                                            Margin="0"/>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -376,7 +376,9 @@
                                     <!-- Game Card -->
                                     <Border Classes="GameCard" Background="#111118" IsVisible="{Binding IsGameCard}">
                                         <Panel>
-                                            <Image Source="{Binding CoverArt}" Stretch="UniformToFill" ZIndex="1"/>
+                                            <Border CornerRadius="14" ClipToBounds="True" ZIndex="1">
+                                                <Image Source="{Binding CoverArt}" Stretch="UniformToFill" />
+                                            </Border>
                                             <Grid ZIndex="0">
                                                 <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
                                                       Fill="#252535"
@@ -384,15 +386,6 @@
                                                       Stretch="Uniform"
                                                       HorizontalAlignment="Center"
                                                       VerticalAlignment="Center"/>
-                                                <TextBlock Text="{Binding Title}"
-                                                           Foreground="#AAAACC"
-                                                           FontSize="10"
-                                                           FontWeight="Medium"
-                                                           HorizontalAlignment="Center"
-                                                           VerticalAlignment="Bottom"
-                                                           Margin="6,0,6,12"
-                                                           TextWrapping="Wrap"
-                                                           TextAlignment="Center"/>
                                             </Grid>
                                         </Panel>
                                     </Border>

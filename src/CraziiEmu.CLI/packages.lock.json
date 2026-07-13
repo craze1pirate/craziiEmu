@@ -100,6 +100,7 @@
         "type": "Project",
         "dependencies": {
           "CraziiEmu.HLE": "[1.0.0, )",
+          "CraziiEmu.Logging": "[1.0.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )"

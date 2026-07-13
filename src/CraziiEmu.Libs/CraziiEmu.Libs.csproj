@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
+    <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,3 +1,4 @@
+using CraziiEmu.Logging;
 // Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -282,9 +283,9 @@ public static class KernelMemoryCompatExports
         const ulong MaxSane = 512UL * 1024 * 1024;
         if (destination < 0x1000 || destination >= CanonicalUserUpper || length > MaxSane)
         {
-            Console.WriteLine("!!! CRITICAL: Bad Memset Call !!!");
-            Console.WriteLine($"Called from RIP: 0x{ctx.Rip:X}");
-            Console.WriteLine($"dst=0x{destination:X} val=0x{value:X2} len=0x{length:X}");
+            CraziiEmuLog.For("Kernel").Info("!!! CRITICAL: Bad Memset Call !!!");
+            CraziiEmuLog.For("Kernel").Info($"Called from RIP: 0x{ctx.Rip:X}");
+            CraziiEmuLog.For("Kernel").Info($"dst=0x{destination:X} val=0x{value:X2} len=0x{length:X}");
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
@@ -6163,3 +6164,5 @@ public static class KernelMemoryCompatExports
         return sum >= left;
     }
 }
+
+

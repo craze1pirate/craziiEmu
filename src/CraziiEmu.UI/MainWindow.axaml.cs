@@ -21,6 +21,7 @@ using CraziiEmu.Logging;
 using CraziiEmu.HLE.Input;
 using CraziiEmu.HLE.Configuration;
 using CraziiEmu.UI.Input;
+using Avalonia.VisualTree;
 
 namespace CraziiEmu.UI;
 
@@ -54,7 +55,7 @@ public partial class MainWindow : Window
     /// <summary>
     /// Gets the collection of log messages for the console output.
     /// </summary>
-    public ObservableCollection<string> ConsoleMessages { get; } = new();
+    public ObservableCollection<ConsoleLine> ConsoleMessages { get; } = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MainWindow"/> class,
@@ -68,8 +69,7 @@ public partial class MainWindow : Window
         
         _logSink = new UiLogSink(line => 
         {
-            if (Dispatcher.UIThread.CheckAccess()) InsertConsoleLine(line);
-            else Dispatcher.UIThread.Post(() => InsertConsoleLine(line));
+            InsertConsoleLine(line);
         });
         CraziiEmuLog.Sink = _logSink;
 
@@ -494,6 +494,42 @@ public partial class MainWindow : Window
         {
             _selectedExecutablePath = selected.ExecutablePath;
             UpdateCarouselFooter(selected.IsAddCard, selected.IsAddCard ? null : selected.Title);
+
+            string? picPath = null;
+            if (!selected.IsAddCard && !string.IsNullOrEmpty(selected.ExecutablePath))
+            {
+                var directory = System.IO.Path.GetDirectoryName(selected.ExecutablePath);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    picPath = System.IO.Path.Combine(directory, "sce_sys", "pic0.png");
+                    if (!System.IO.File.Exists(picPath))
+                        picPath = null;
+                }
+            }
+
+            if (picPath != null)
+            {
+                try { WallpaperImage.Source = new Bitmap(picPath); }
+                catch { RestoreCustomWallpaper(); }
+            }
+            else
+            {
+                RestoreCustomWallpaper();
+            }
+        }
+    }
+
+    private void RestoreCustomWallpaper()
+    {
+        var customPath = TxtWallpaperPath?.Text;
+        if (!string.IsNullOrEmpty(customPath) && System.IO.File.Exists(customPath))
+        {
+            try { WallpaperImage.Source = new Bitmap(customPath); }
+            catch { WallpaperImage.Source = null; }
+        }
+        else
+        {
+            if (WallpaperImage != null) WallpaperImage.Source = null;
         }
     }
 
@@ -693,9 +729,9 @@ public partial class MainWindow : Window
     /// Appends a timestamped message to the console output area.
     /// Thread-safe — may be called from any thread.
     /// </summary>
-    internal void AppendConsole(string message)
+    internal void AppendConsole(string message, string color = "White")
     {
-        var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        var line = new ConsoleLine { Text = $"[{DateTime.Now:HH:mm:ss}] {message}", Color = color };
 
         if (Dispatcher.UIThread.CheckAccess())
         {
@@ -707,15 +743,33 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InsertConsoleLine(string line)
+    private ScrollViewer? _consoleScroller;
+
+    private void InsertConsoleLine(ConsoleLine line)
     {
+        bool isAtBottom = true;
+        
+        if (_consoleScroller == null)
+        {
+            _consoleScroller = ConsoleOutput.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        }
+        
+        if (_consoleScroller != null)
+        {
+            isAtBottom = _consoleScroller.Offset.Y >= _consoleScroller.Extent.Height - _consoleScroller.Viewport.Height - 10;
+        }
+
         ConsoleMessages.Add(line);
-        // Optional: limit log history to prevent infinite memory growth
+        
         if (ConsoleMessages.Count > 10000)
         {
             ConsoleMessages.RemoveAt(0);
         }
-        ConsoleOutput.ScrollIntoView(line);
+        
+        if (isAtBottom)
+        {
+            ConsoleOutput.ScrollIntoView(line);
+        }
     }
 
     /// <summary>

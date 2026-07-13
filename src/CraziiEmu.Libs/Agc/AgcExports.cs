@@ -1,4 +1,5 @@
-﻿// Copyright (C) 2026 CraziiEmu Emulator Project
+using CraziiEmu.Logging;
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -4054,7 +4055,7 @@ public static class AgcExports
             _tracedTextureHashes[key] = hash;
         }
 
-        Console.Error.WriteLine(
+        CraziiEmuLog.For("Agc").Info(
             $"[LOADER][TRACE] agc.texture_hash addr=0x{descriptor.Address:X16} " +
             $"size={descriptor.Width}x{descriptor.Height} bytes={source.Length} hash=0x{hash:X16}");
     }
@@ -5698,7 +5699,7 @@ public static class AgcExports
             return;
         }
 
-        Console.Error.WriteLine($"[LOADER][TRACE] {message}");
+        CraziiEmuLog.For("Agc").Info($"[LOADER][TRACE] {message}");
     }
 
     private static void TraceAgcShader(string message)
@@ -5708,7 +5709,7 @@ public static class AgcExports
             return;
         }
 
-        Console.Error.WriteLine($"[LOADER][TRACE] {message}");
+        CraziiEmuLog.For("Agc").Info($"[LOADER][TRACE] {message}");
     }
 
     private static string FormatShaderDwords(IReadOnlyList<uint> values) =>
@@ -5772,7 +5773,7 @@ public static class AgcExports
             return;
         }
 
-        Console.Error.WriteLine(
+        CraziiEmuLog.For("Agc").Info(
             $"[LOADER][TRACE] agc.create_shader dst=0x{destinationAddress:X16} header=0x{headerAddress:X16} code=0x{codeAddress:X16} {detail}");
     }
 
@@ -5858,3 +5859,5 @@ public static class AgcExports
         return true;
     }
 }
+
+

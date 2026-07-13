@@ -40,9 +40,6 @@ public class SyscallRouterTests
         using var vmm = new VirtualMemoryManager(0x100000); // 1MB pool
         var router = new SyscallRouter(vmm) { ActiveAbi = SyscallAbi.Linux };
         
-        string receivedText = null!;
-        router.OnStdoutWrite += text => receivedText = text;
-
         ulong bufferAddress = vmm.AllocateCpu(1024);
         string testMessage = "Hello from guest!";
         var bytes = Encoding.UTF8.GetBytes(testMessage);
@@ -65,7 +62,6 @@ public class SyscallRouterTests
         router.Dispatch(ctx);
 
         // Assert
-        Assert.Equal(testMessage, receivedText);
         Assert.Equal((ulong)bytes.Length, ctx.Rax);
     }
 

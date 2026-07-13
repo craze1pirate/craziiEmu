@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
+using CraziiEmu.Logging;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -128,7 +129,7 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
     {
         ulong safeOffset = AllocateCpu(size);
         _highMemoryMap[highAddress] = safeOffset;
-        Console.WriteLine($"[VMM] Mapped High Address 0x{highAddress:X16} -> 0x{safeOffset:X16} (size: 0x{size:X})");
+        CraziiEmuLog.For("Memory").Info($"[VMM] Mapped High Address 0x{highAddress:X16} -> 0x{safeOffset:X16} (size: 0x{size:X})");
     }
 
     /// <summary>
@@ -368,3 +369,4 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
         public fixed byte _pad[112];
     }
 }
+

@@ -1,4 +1,5 @@
-﻿// Copyright (C) 2026 CraziiEmu Emulator Project
+using CraziiEmu.Logging;
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -876,7 +877,7 @@ public static class VideoOutExports
 
         if (_logVideoOutSync && (signalCount <= 8 || signalCount % 60 == 0))
         {
-            Console.Error.WriteLine(
+            CraziiEmuLog.For("VideoOut").Info(
                 $"[LOADER][SYNC] vblank#{signalCount} handle={port.Handle} count={port.VblankCount} " +
                 $"queues={vblankEvents.Count} hint=0x{eventHint:X16}");
         }
@@ -951,7 +952,7 @@ public static class VideoOutExports
         var flipCount = Interlocked.Increment(ref _flipSubmitCount);
         if (_logVideoOutSync && (flipCount <= 8 || flipCount % 60 == 0))
         {
-            Console.Error.WriteLine(
+            CraziiEmuLog.For("VideoOut").Info(
                 $"[LOADER][SYNC] flip#{flipCount} handle={handle} buffer={bufferIndex} " +
                 $"addr=0x{guestImageAddress:X16} submitted={guestImageSubmitted} " +
                 $"flipQueues={flipEvents.Count}");
@@ -993,7 +994,7 @@ public static class VideoOutExports
         var elapsedSeconds = (double)elapsedTicks / Stopwatch.Frequency;
         var submitted = Interlocked.Exchange(ref _submittedFrameCount, 0);
         var presentedCount = Interlocked.Exchange(ref _presentedFrameCount, 0);
-        Console.Error.WriteLine(
+        CraziiEmuLog.For("VideoOut").Info(
             $"[LOADER][PERF] videoout submitted_fps={submitted / elapsedSeconds:F1} " +
             $"presented_fps={presentedCount / elapsedSeconds:F1}");
     }
@@ -1475,6 +1476,8 @@ public static class VideoOutExports
             return;
         }
 
-        Console.Error.WriteLine($"[LOADER][TRACE] {message}");
+        CraziiEmuLog.For("VideoOut").Info($"[LOADER][TRACE] {message}");
     }
 }
+
+

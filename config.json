@@ -1,0 +1,29 @@
+{
+  "Input": {
+    "DpadUp": 87,
+    "DpadDown": 83,
+    "DpadLeft": 65,
+    "DpadRight": 68,
+    "Cross": 32,
+    "Circle": 160,
+    "Square": 70,
+    "Triangle": 69,
+    "L1": 81,
+    "R1": 82,
+    "L2": 9,
+    "R2": 13,
+    "Options": 27,
+    "Create": 8,
+    "PsButton": 36,
+    "L3": 162,
+    "R3": 163,
+    "LeftStickLeft": 51,
+    "LeftStickRight": 52,
+    "LeftStickUp": 49,
+    "LeftStickDown": 50,
+    "RightStickLeft": 37,
+    "RightStickRight": 39,
+    "RightStickUp": 38,
+    "RightStickDown": 40
+  }
+}

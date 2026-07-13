@@ -1,3 +1,4 @@
+using CraziiEmu.Logging;
 // Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -164,7 +165,7 @@ public sealed class SelfLoader : ISelfLoader
         var programHeaders = ParseProgramHeaders(imageData, loadContext, elfHeader);
 
         var totalImageSize = CalculateTotalImageSize(programHeaders);
-        Console.WriteLine($"Total image size needed: 0x{totalImageSize:X} ({totalImageSize} bytes)");
+        CraziiEmuLog.For("Loader").Info($"Total image size needed: 0x{totalImageSize:X} ({totalImageSize} bytes)");
         var isNextGen = elfHeader.AbiVersion == 2;
         var imageBase = DetermineRequestedImageBase(virtualMemory, totalImageSize, isNextGen, clearVirtualMemory, elfHeader, programHeaders);
 
@@ -185,8 +186,8 @@ public sealed class SelfLoader : ISelfLoader
                 var allocatedBase = physicalVm.AllocateAt(imageBase, totalImageSize, executable: true);
                 if (allocatedBase != imageBase)
                 {
-                    Console.WriteLine($"[LOADER] Could not allocate module at preferred base 0x{imageBase:X16}");
-                    Console.WriteLine($"[LOADER] Allocated module at 0x{allocatedBase:X16} instead.");
+                    CraziiEmuLog.For("Loader").Info($"[LOADER] Could not allocate module at preferred base 0x{imageBase:X16}");
+                    CraziiEmuLog.For("Loader").Info($"[LOADER] Allocated module at 0x{allocatedBase:X16} instead.");
                 }
 
                 imageBase = allocatedBase;
@@ -234,13 +235,13 @@ public sealed class SelfLoader : ISelfLoader
             out var initializerFunctions);
         var procParamAddress = ResolveProcParamAddress(programHeaders, imageBase);
 
-        Console.WriteLine($"[LOADER] ELF e_entry: 0x{elfHeader.EntryPoint:X16}");
-        Console.WriteLine($"[LOADER] Generation: {(isNextGen ? "Gen5 (PS5)" : "Gen4 (PS4)")}");
-        Console.WriteLine($"[LOADER] Using image base: 0x{imageBase:X16}");
-        Console.WriteLine($"[LOADER] Final entry point: 0x{elfHeader.EntryPoint + imageBase:X16}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] ELF e_entry: 0x{elfHeader.EntryPoint:X16}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Generation: {(isNextGen ? "Gen5 (PS5)" : "Gen4 (PS4)")}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Using image base: 0x{imageBase:X16}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Final entry point: 0x{elfHeader.EntryPoint + imageBase:X16}");
         if (procParamAddress != 0)
         {
-            Console.WriteLine($"[LOADER] ProcParam: 0x{procParamAddress:X16}");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] ProcParam: 0x{procParamAddress:X16}");
         }
 
         int count = ((IReadOnlyList<ProgramHeader>)programHeaders).Count;
@@ -248,7 +249,7 @@ public sealed class SelfLoader : ISelfLoader
         for (var i = 0; i < phCountToLog; i++)
         {
             var ph = programHeaders[i];
-            Console.WriteLine($"[LOADER] PH[{i}]: type={ph.HeaderType}, vaddr=0x{ph.VirtualAddress:X16} -> 0x{ph.VirtualAddress + imageBase:X16}, memsz=0x{ph.MemorySize:X}");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] PH[{i}]: type={ph.HeaderType}, vaddr=0x{ph.VirtualAddress:X16} -> 0x{ph.VirtualAddress + imageBase:X16}, memsz=0x{ph.MemorySize:X}");
         }
 
         if (_nextTlsModuleId == tlsModuleId && _nextTlsModuleId < uint.MaxValue)
@@ -281,7 +282,7 @@ public sealed class SelfLoader : ISelfLoader
     {
         if (fs == null)
         {
-            Console.WriteLine("[LOADER] param.json not found (no filesystem provided).");
+            CraziiEmuLog.For("Loader").Info("[LOADER] param.json not found (no filesystem provided).");
             return default;
         }
 
@@ -301,13 +302,13 @@ public sealed class SelfLoader : ISelfLoader
 
         if (foundPath == null)
         {
-            Console.WriteLine("[LOADER] param.json not found (no root path / unknown layout).");
+            CraziiEmuLog.For("Loader").Info("[LOADER] param.json not found (no root path / unknown layout).");
             return default;
         }
 
         var applicationInfo = Ps5ParamJsonReader.TryReadPs5Param(fs, foundPath);
-        Console.WriteLine($"[LOADER] Loading param.json at {foundPath}");
-        Console.WriteLine(
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Loading param.json at {foundPath}");
+        CraziiEmuLog.For("Loader").Info(
             $"[LOADER] Title: {applicationInfo.Title ?? "(unknown)"}, " +
             $"TitleId: {applicationInfo.TitleId ?? "(unknown)"}, " +
             $"Version: {applicationInfo.Version ?? "(unknown)"}");
@@ -501,13 +502,13 @@ public sealed class SelfLoader : ISelfLoader
 
         var dynamicInfo = ParseDynamicInfo(dynamicTable);
 
-        Console.WriteLine($"[LOADER] Dynamic Info: StrTab=0x{dynamicInfo.StrTabOffset:X}, StrTabSize=0x{dynamicInfo.StrTabSize:X}");
-        Console.WriteLine($"[LOADER] Dynamic Info: SymTab=0x{dynamicInfo.SymTabOffset:X}, SymTabSize=0x{dynamicInfo.SymTabSize:X}");
-        Console.WriteLine($"[LOADER] Dynamic Info: Rela=0x{dynamicInfo.RelaOffset:X}, RelaSize=0x{dynamicInfo.RelaSize:X}");
-        Console.WriteLine($"[LOADER] Dynamic Info: JmpRel=0x{dynamicInfo.JmpRelOffset:X}, JmpRelSize=0x{dynamicInfo.JmpRelSize:X}");
-        Console.WriteLine($"[LOADER] Dynamic Info: PltGot=0x{dynamicInfo.PltGotOffset:X}");
-        Console.WriteLine($"[LOADER] TLS module id: {tlsModuleId}");
-        Console.WriteLine($"[LOADER] HasImportMetadata: {dynamicInfo.HasImportMetadata}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Dynamic Info: StrTab=0x{dynamicInfo.StrTabOffset:X}, StrTabSize=0x{dynamicInfo.StrTabSize:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Dynamic Info: SymTab=0x{dynamicInfo.SymTabOffset:X}, SymTabSize=0x{dynamicInfo.SymTabSize:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Dynamic Info: Rela=0x{dynamicInfo.RelaOffset:X}, RelaSize=0x{dynamicInfo.RelaSize:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Dynamic Info: JmpRel=0x{dynamicInfo.JmpRelOffset:X}, JmpRelSize=0x{dynamicInfo.JmpRelSize:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Dynamic Info: PltGot=0x{dynamicInfo.PltGotOffset:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] TLS module id: {tlsModuleId}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] HasImportMetadata: {dynamicInfo.HasImportMetadata}");
 
         var relocations = new List<ElfRelocation>(512);
 
@@ -525,13 +526,13 @@ public sealed class SelfLoader : ISelfLoader
 
         if (!dynamicInfo.HasImportMetadata)
         {
-            Console.WriteLine($"[LOADER] No import metadata found in ELF!");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] No import metadata found in ELF!");
         }
 
         if (relocations.Count != 0)
         {
-            Console.WriteLine($"[LOADER] ImageBase runtime: 0x{imageBase:X16}");
-            Console.WriteLine($"[LOADER] Processing {relocations.Count} relocations...");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] ImageBase runtime: 0x{imageBase:X16}");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] Processing {relocations.Count} relocations...");
         }
 
         uint maxSymbolIndex = 0;
@@ -611,23 +612,23 @@ public sealed class SelfLoader : ISelfLoader
                 seenImportNids);
             if (sectionFallbackRelocCount != 0)
             {
-                Console.WriteLine(
+                CraziiEmuLog.For("Loader").Info(
                     $"[LOADER] Section relocation fallback recovered {sectionFallbackRelocCount} relocation entries, {orderedImportNids.Count} unique NIDs, {descriptors.Count} descriptors");
             }
         }
 
-        Console.WriteLine($"[LOADER] Found {orderedImportNids.Count} unique NIDs, {descriptors.Count} descriptors");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Found {orderedImportNids.Count} unique NIDs, {descriptors.Count} descriptors");
 
         if (descriptors.Count == 0)
         {
-            Console.WriteLine($"[LOADER] No relocation descriptors!");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] No relocation descriptors!");
             return EmptyImportStubs;
         }
 
         importedRelocations = BuildImportedRelocations(descriptors);
 
         var stubsByAddress = CreateImportStubMapping(virtualMemory, orderedImportNids);
-        Console.WriteLine($"[LOADER] Created {stubsByAddress.Count} import stubs");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] Created {stubsByAddress.Count} import stubs");
 
         int printCount = Math.Min(10, orderedImportNids.Count);
         for (int i = 0; i < printCount; i++)
@@ -1842,12 +1843,12 @@ public sealed class SelfLoader : ISelfLoader
     {
         if (size == 0 || size > int.MaxValue)
         {
-            Console.WriteLine($"[LOADER] TryLoadTableBytes: size=0 or too big (0x{size:X})");
+            CraziiEmuLog.For("Loader").Info($"[LOADER] TryLoadTableBytes: size=0 or too big (0x{size:X})");
             tableBytes = Array.Empty<byte>();
             return false;
         }
 
-        Console.WriteLine($"[LOADER] TryLoadTableBytes: trying location=0x{location:X}, size=0x{size:X}, imageBase=0x{imageBase:X}");
+        CraziiEmuLog.For("Loader").Info($"[LOADER] TryLoadTableBytes: trying location=0x{location:X}, size=0x{size:X}, imageBase=0x{imageBase:X}");
 
         tableBytes = GC.AllocateUninitializedArray<byte>((int)size);
 
@@ -2422,3 +2423,5 @@ public sealed class SelfLoader : ISelfLoader
         public ulong DecompressedSize => _decompressedSize;
     }
 }
+
+

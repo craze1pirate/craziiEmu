@@ -1,3 +1,4 @@
+using CraziiEmu.Logging;
 // Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -380,7 +381,7 @@ public static class KernelExports
         }
         else
         {
-            Console.WriteLine($"[DEBUG][PRINF] {outStr}");
+            CraziiEmuLog.For("Kernel").Info($"[DEBUG][PRINF] {outStr}");
         }
 
         ctx[CpuRegister.Rax] = (ulong)System.Text.Encoding.UTF8.GetByteCount(outStr);
@@ -407,7 +408,7 @@ public static class KernelExports
             msg = $"perror(\"{msg}\")";
         }
 
-        Console.WriteLine(msg);
+        CraziiEmuLog.For("Kernel").Info(msg);
 
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -431,3 +432,5 @@ public static class KernelExports
         return string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PTHREADS"), "1", StringComparison.Ordinal);
     }
 }
+
+

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
+using CraziiEmu.Logging;
 using System.Collections.Generic;
 using System.Text;
 using CraziiEmu.Core.Memory;
@@ -17,11 +18,6 @@ public class SyscallRouter
     private readonly VirtualMemoryManager _memory;
     private readonly Dictionary<ulong, Action<CpuContext>> _linuxHandlers;
     private readonly Dictionary<ulong, Action<CpuContext>> _freeBsdHandlers;
-
-    /// <summary>
-    /// Triggered when the sys_write syscall outputs data to stdout (fd 1).
-    /// </summary>
-    public event Action<string>? OnStdoutWrite;
 
     /// <summary>
     /// Gets or sets the active ABI for system call routing.
@@ -96,7 +92,7 @@ public class SyscallRouter
         }
         else
         {
-            OnStdoutWrite?.Invoke($"[Syscall] Unhandled syscall RAX={ctx.Rax} (0x{ctx.Rax:X}) RDI={ctx.Rdi} (0x{ctx.Rdi:X}) RSI={ctx.Rsi} (0x{ctx.Rsi:X})\n");
+            CraziiEmuLog.For("HLE").Info($"[Syscall] Unhandled syscall RAX={ctx.Rax} (0x{ctx.Rax:X}) RDI={ctx.Rdi} (0x{ctx.Rdi:X}) RSI={ctx.Rsi} (0x{ctx.Rsi:X})\n");
             // Unregistered syscall: gracefully return ENOSYS (78 for FreeBSD, 38 for Linux)
             ulong enosysCode = ActiveAbi == SyscallAbi.FreeBsd ? 78UL : 38UL;
             SetError(ctx, enosysCode);
@@ -116,7 +112,7 @@ public class SyscallRouter
             {
                 var span = _memory.GetSpan(bufferAddress, count);
                 var text = Encoding.UTF8.GetString(span);
-                OnStdoutWrite?.Invoke(text);
+                CraziiEmuLog.For("HLE").Info(text);
                 SetSuccess(ctx, (ulong)count); // Success: bytes written
             }
             catch (ArgumentOutOfRangeException)
@@ -145,7 +141,7 @@ public class SyscallRouter
             catch { }
         }
         
-        OnStdoutWrite?.Invoke($"[Syscall] sys_exit called with code {ctx.Rdi}{leftoverString}\n");
+        CraziiEmuLog.For("HLE").Info($"[Syscall] sys_exit called with code {ctx.Rdi}{leftoverString}\n");
         ctx.IsTerminated = true;
         ctx.ExitCode = (int)ctx.Rdi;
     }
@@ -176,7 +172,7 @@ public class SyscallRouter
         }
         catch { }
 
-        OnStdoutWrite?.Invoke($"[HLE] dlsym called for '{symbolName}'\n");
+        CraziiEmuLog.For("HLE").Info($"[HLE] dlsym called for '{symbolName}'\n");
 
         if (!_dlsymStubs.TryGetValue(symbolName, out ulong stubAddr))
         {
@@ -216,9 +212,10 @@ public class SyscallRouter
         }
         catch (Exception ex)
         {
-            OnStdoutWrite?.Invoke($"[Error] SysDlsymStub failed to write stubAddr 0x{stubAddr:X} to outAddr 0x{outAddr:X}: {ex.Message}\n");
+            CraziiEmuLog.For("HLE").Info($"[Error] SysDlsymStub failed to write stubAddr 0x{stubAddr:X} to outAddr 0x{outAddr:X}: {ex.Message}\n");
         }
 
         SetSuccess(ctx, 0); // Return 0 (success)
     }
 }
+

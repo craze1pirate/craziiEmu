@@ -34,7 +34,6 @@ namespace CraziiEmu.Runner
             var display = new DisplayController(vmm);
 
             // Hook up stdout console writes
-            router.OnStdoutWrite += Console.Write;
 
             ulong entryPoint = 0x401790;
 

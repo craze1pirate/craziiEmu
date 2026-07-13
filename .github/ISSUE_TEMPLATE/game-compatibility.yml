@@ -1,0 +1,144 @@
+# Copyright (C) 2026 SharpEmu Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+name: Game Compatibility Report
+description: Report compatibility status of a game
+labels: ["game-compatibility"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to report the compatibility status of a game.
+
+        Please include the **game name in the issue title**.
+
+        Example title:
+        Demon’s Souls (PPSA01341)
+
+  - type: input
+    id: game_name
+    attributes:
+      label: Game Name
+      placeholder: e.g. Demon's Souls
+    validations:
+      required: true
+
+  - type: input
+    id: title_id
+    attributes:
+      label: Title ID
+      description: Game title ID (PPSA / CUSA / PCSA etc.)
+      placeholder: e.g. PPSA01341
+    validations:
+      required: true
+
+  - type: input
+    id: game_version
+    attributes:
+      label: Game Version
+      placeholder: e.g. 1.00 / 1.09
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Current Status
+      description: What happens when running the game?
+      options:
+        - Nothing happens
+        - Crashes on boot
+        - Boots to black screen
+        - Shows intro / menus
+        - Ingame but unstable
+        - Playable
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe what happens when running the game
+      placeholder: |
+        Example:
+        - Game boots
+        - Shows intro logos
+        - Crashes when entering gameplay
+    validations:
+      required: true
+
+  - type: upload
+    id: logs
+    attributes:
+      label: Log File
+      description: Drag and drop your log file here, or click to browse
+    validations:
+      required: false
+      accept: ".log,.txt,.zip"
+
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: Operating System
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      placeholder: e.g. AMD Ryzen 7 5800X3D
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: e.g. NVIDIA GeForce RTX 4070 Super
+    validations:
+      required: true
+
+  - type: input
+    id: ram
+    attributes:
+      label: RAM
+      placeholder: e.g. 32 GB
+    validations:
+      required: true
+
+  - type: input
+    id: emulator_version
+    attributes:
+      label: Emulator Version / Commit
+      placeholder: e.g. v0.0.1 / a1b2c3d
+    validations:
+      required: true
+
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      options:
+        - Vulkan
+        - OpenGL
+        - DirectX
+        - Software
+        - N/A
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Notes
+      description: Screenshots, settings, patches, workarounds, or anything else relevant
