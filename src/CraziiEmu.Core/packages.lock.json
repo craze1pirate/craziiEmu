@@ -8,12 +8,6 @@
         "resolved": "1.21.0",
         "contentHash": "dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg=="
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[10.0.9, )",
-        "resolved": "10.0.9",
-        "contentHash": "4Iw41e2h7I4t70SJcX2GCmbyKJIlA273Cfm9RJMM050/3VBejGAG1KcthP5Z2L6SQcbfbf6BhNWO26+ZG+GzMg=="
-      },
       "Silk.NET.Input": {
         "type": "Direct",
         "requested": "[2.23.0, )",
@@ -152,13 +146,6 @@
           "Silk.NET.Core": "2.23.0",
           "Silk.NET.Vulkan": "2.23.0"
         }
-      }
-    },
-    "net10.0/win-x64": {
-      "Ultz.Native.GLFW": {
-        "type": "Transitive",
-        "resolved": "3.4.0",
-        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
       }
     }
   }
