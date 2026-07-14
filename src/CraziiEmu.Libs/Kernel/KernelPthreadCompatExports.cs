@@ -1181,8 +1181,10 @@ public static class KernelPthreadCompatExports
 
     private static int PthreadCondSignalCore(CpuContext ctx, ulong condAddress, bool broadcast)
     {
+        Console.Error.WriteLine($"[KERNEL] PthreadCondSignalCore: condAddress=0x{condAddress:X16}, broadcast={broadcast}");
         if (condAddress == 0)
         {
+            Console.Error.WriteLine("[KERNEL] PthreadCondSignalCore: condAddress is 0, returning INVALID_ARGUMENT");
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 

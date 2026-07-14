@@ -391,10 +391,6 @@ public sealed partial class DirectExecutionBackend
 				{
 					orbisGen2Result = DispatchKernelDynlibDlsym();
 				}
-				else if (string.Equals(importStubEntry.Nid, "r8mvOaWdi28", StringComparison.Ordinal))
-				{
-					orbisGen2Result = DispatchIl2CppApiLookupSymbol();
-				}
 				else if (importStubEntry.Export is { } cachedExport &&
 					(cachedExport.Target & cpuContext.TargetGeneration) != 0)
 				{
@@ -1347,47 +1343,6 @@ public sealed partial class DirectExecutionBackend
 		};
 
 		return alias != null && TryResolveRuntimeSymbolAddress(alias, out address);
-	}
-
-	private OrbisGen2Result DispatchIl2CppApiLookupSymbol()
-	{
-		var cpuContext = ActiveCpuContext;
-		if (cpuContext == null)
-		{
-			return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-		}
-
-		var symbolNameAddress = cpuContext[CpuRegister.Rdi];
-		var outputAddress = cpuContext[CpuRegister.Rsi];
-		if (!TryReadAsciiZ(symbolNameAddress, 512, out var symbolName) ||
-			outputAddress == 0 ||
-			!TryResolveIl2CppApiAddress(symbolName, out var resolvedAddress) ||
-			!TryWriteUInt64Compat(outputAddress, resolvedAddress))
-		{
-			Console.Error.WriteLine(
-				$"[LOADER][WARN] il2cpp_api_lookup_symbol failed: name='{symbolName}' out=0x{outputAddress:X16}");
-			if (outputAddress != 0)
-			{
-				_ = TryWriteUInt64Compat(outputAddress, 0);
-			}
-
-			cpuContext[CpuRegister.Rax] = ulong.MaxValue;
-			return OrbisGen2Result.ORBIS_GEN2_OK;
-		}
-
-		cpuContext[CpuRegister.Rax] = 0;
-		return OrbisGen2Result.ORBIS_GEN2_OK;
-	}
-
-	private bool TryResolveIl2CppApiAddress(string symbolName, out ulong address)
-	{
-		if (TryResolveRuntimeSymbolAddress(symbolName, out address))
-		{
-			return true;
-		}
-
-		return Aerolib.Instance.TryGetByExportName(symbolName, out var symbol) &&
-			TryResolveRuntimeSymbolAddress(symbol.Nid, out address);
 	}
 
 	private OrbisGen2Result DispatchBootstrapBridge()

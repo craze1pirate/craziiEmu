@@ -369,6 +369,24 @@ public static class KernelRuntimeCompatExports
             {
                 _ = ctx.Memory.TryWrite(address, new byte[0x80]);
             }
+            else
+            {
+                var bytes = new byte[32];
+                ctx.Memory.TryRead(address, bytes);
+                var hex = BitConverter.ToString(bytes);
+                Console.Error.WriteLine($"[KERNEL] sceKernelGetProcParam returning 0x{address:X}. Bytes: {hex}");
+                
+                // Search for 0x60
+                for (ulong p = address - 0x1000; p < address + 0x10000; p += 8)
+                {
+                    if (KernelMemoryCompatExports.TryReadUInt32Compat(ctx, p, out uint val) && val == 0x60)
+                    {
+                        var b = new byte[16];
+                        ctx.Memory.TryRead(p, b);
+                        Console.Error.WriteLine($"[KERNEL] Found possible ProcParam at 0x{p:X}. Bytes: {BitConverter.ToString(b)}");
+                    }
+                }
+            }
         }
 
         TraceProcParam(ctx, address);
@@ -1003,7 +1021,17 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelDebugRaiseException(CpuContext ctx)
     {
-        _ = ctx;
+        var reason = ctx[CpuRegister.Rdi];
+        var fmtPtr = ctx[CpuRegister.Rsi];
+        var str = "null";
+        if (fmtPtr != 0 && KernelMemoryCompatExports.TryReadNullTerminatedUtf8(ctx, fmtPtr, 1024, out var readStr))
+        {
+            str = readStr;
+        }
+        Console.Error.WriteLine($"[KERNEL] sceKernelDebugRaiseException called! reason=0x{reason:X} ({reason}), fmt={str}");
+        // On a real console this halts the process; in HLE we log and return 0
+        // so execution can continue (the game checks proc-param validity before calling this).
+        ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -1014,8 +1042,8 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelDebugRaiseExceptionOnReleaseMode(CpuContext ctx)
     {
-        _ = ctx;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        Console.Error.WriteLine("[KERNEL] sceKernelDebugRaiseExceptionOnReleaseMode called!");
+        throw new InvalidOperationException("sceKernelDebugRaiseExceptionOnReleaseMode called!");
     }
 
     [SysAbiExport(
@@ -1851,6 +1879,7 @@ public static class KernelRuntimeCompatExports
                     searchArgs[4] is ulong searchedAddress && searchedAddress != 0)
                 {
                     mappedAddress = searchedAddress;
+                    KernelMemoryCompatExports.RegisterReservedVirtualRange(searchedAddress, length);
                     return true;
                 }
             }
@@ -1873,6 +1902,7 @@ public static class KernelRuntimeCompatExports
             }
 
             mappedAddress = allocated;
+            KernelMemoryCompatExports.RegisterReservedVirtualRange(allocated, length);
             return true;
         }
         catch

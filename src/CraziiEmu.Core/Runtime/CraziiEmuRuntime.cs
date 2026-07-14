@@ -172,11 +172,18 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return failedInitializerResult;
         }
 
+        var activeEntryPoint = image.EntryPoint;
+        if (activeRuntimeSymbols.TryGetValue("module_start", out var modStart))
+        {
+            activeEntryPoint = modStart;
+            Console.Error.WriteLine($"[RUNTIME] Overriding entry point with module_start: 0x{activeEntryPoint:X16}");
+        }
+
         Console.Error.WriteLine($"[RUNTIME] Dispatching, gen: {generation}");
-        Console.Error.WriteLine($"[RUNTIME] About to call DispatchEntry with entryPoint=0x{image.EntryPoint:X16}");
+        Console.Error.WriteLine($"[RUNTIME] About to call DispatchEntry with entryPoint=0x{activeEntryPoint:X16}");
 
         var result = _cpuDispatcher.DispatchEntry(
-            image.EntryPoint,
+            activeEntryPoint,
             generation,
             activeImportStubs,
             activeRuntimeSymbols,
@@ -414,6 +421,25 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return null;
     }
 
+    /// <summary>
+    /// Address threshold separating guest (PS5) virtual memory from host (native) memory.
+    /// LLE modules such as libc.prx are mapped into the host address space at addresses
+    /// above this boundary; their initializers must be invoked as native function pointers
+    /// rather than dispatched through the guest CPU emulator.
+    /// </summary>
+    /// <remarks>
+    /// Guest memory lives in the range 0x0000_0008_0000_0000 – 0x0000_0080_0000_0000.
+    /// The Linux-style host heap and mapped files start well above that.
+    /// 0x0001_0000_0000 (4 GiB) is a conservative split: no PS5 ELF maps that low on the host.
+    /// </remarks>
+    private const ulong NativeAddressThreshold = 0x0001_0000_0000UL;
+
+    /// <summary>
+    /// Delegate type matching the cdecl no-arg void initializer signature used by
+    /// DT_INIT / DT_PREINIT_ARRAY / DT_INIT_ARRAY function pointers in ELF modules.
+    /// </summary>
+    private unsafe delegate void NativeInitializerFn();
+
     private OrbisGen2Result? RunPreloadedModuleInitializers(
         IReadOnlyList<LoadedModuleImage> loadedModuleImages,
         Generation generation,
@@ -423,38 +449,120 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         for (var i = 0; i < loadedModuleImages.Count; i++)
         {
             var loadedModule = loadedModuleImages[i];
-            var initEntryPoint = loadedModule.Image.InitFunctionEntryPoint;
-            if (initEntryPoint < 0x10000)
-            {
-                continue;
-            }
-
+            var image = loadedModule.Image;
             var moduleName = Path.GetFileName(loadedModule.Path);
             if (string.IsNullOrWhiteSpace(moduleName))
             {
                 moduleName = $"module#{i}";
             }
 
-            Console.Error.WriteLine(
-                $"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
+            // Determine whether this module lives in native host memory or in guest space.
+            // libc.prx and other LLE modules are loaded at high host addresses (e.g. 0x17B27…).
+            // Their initializers are real x86-64 code callable as native function pointers —
+            // running them through the guest CPU dispatcher would be wrong and would crash.
+            var initEntryPoint = image.InitFunctionEntryPoint;
+            var hasInitArrays = image.PreInitializerFunctions.Count > 0 ||
+                                image.InitializerFunctions.Count > 0;
 
-            var result = _cpuDispatcher.DispatchModuleInitializer(
-                initEntryPoint,
-                generation,
-                activeImportStubs,
-                activeRuntimeSymbols,
-                moduleName,
-                _cpuExecutionOptions);
-            if (result != OrbisGen2Result.ORBIS_GEN2_OK)
+            if (initEntryPoint < 0x10000 && !hasInitArrays)
             {
+                // Nothing to run for this module.
+                continue;
+            }
+
+            // Heuristic: if the first non-trivial initializer address (or InitFunctionEntryPoint)
+            // exceeds NativeAddressThreshold the module is LLE-mapped into the host address space.
+            ulong representativeAddr = initEntryPoint >= 0x10000
+                ? initEntryPoint
+                : (image.PreInitializerFunctions.Count > 0
+                    ? image.PreInitializerFunctions[0]
+                    : (image.InitializerFunctions.Count > 0 ? image.InitializerFunctions[0] : 0));
+
+            bool isNativeModule = representativeAddr >= NativeAddressThreshold;
+
+            if (isNativeModule)
+            {
+                // ---------- LLE / native module path ----------
+                // Call pre-initializers and initializers as native function pointers.
+                // These are the DT_PREINIT_ARRAY and DT_INIT_ARRAY entries that the
+                // dynamic linker normally runs before handing control to _start.
                 Console.Error.WriteLine(
-                    $"[RUNTIME] Module start failed: {moduleName} -> {result}");
-                return result;
+                    $"[RUNTIME] Starting native module {moduleName}: " +
+                    $"preinit={image.PreInitializerFunctions.Count}, " +
+                    $"init={image.InitializerFunctions.Count}");
+
+                InvokeNativeInitializerList(moduleName, "preinit", image.PreInitializerFunctions);
+                InvokeNativeInitializerList(moduleName, "init", image.InitializerFunctions);
+            }
+            else if (initEntryPoint >= 0x10000)
+            {
+                // ---------- Guest module path (original behaviour) ----------
+                Console.Error.WriteLine(
+                    $"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
+
+                var result = _cpuDispatcher.DispatchModuleInitializer(
+                    initEntryPoint,
+                    generation,
+                    activeImportStubs,
+                    activeRuntimeSymbols,
+                    moduleName,
+                    _cpuExecutionOptions);
+                if (result != OrbisGen2Result.ORBIS_GEN2_OK)
+                {
+                    Console.Error.WriteLine(
+                        $"[RUNTIME] Module start failed: {moduleName} -> {result}");
+                    return result;
+                }
             }
         }
 
         return null;
     }
+
+    /// <summary>
+    /// Invokes a list of native ELF initializer function pointers directly on the host CPU.
+    /// Used for LLE modules (e.g. libc.prx) whose code lives in the host address space.
+    /// Exceptions thrown by an initializer are caught and logged; execution continues so
+    /// that subsequent initializers can still run (matching typical C runtime behaviour).
+    /// </summary>
+    /// <param name="moduleName">Human-readable module name for diagnostic output.</param>
+    /// <param name="phase">Phase label ("preinit" or "init") for diagnostic output.</param>
+    /// <param name="addresses">Ordered list of native function pointer addresses to invoke.</param>
+    private static unsafe void InvokeNativeInitializerList(
+        string moduleName,
+        string phase,
+        IReadOnlyList<ulong> addresses)
+    {
+        for (var j = 0; j < addresses.Count; j++)
+        {
+            var addr = addresses[j];
+            if (addr < 0x10000)
+            {
+                // Null or sentinel initializer entries are common in ELF DT_INIT_ARRAY;
+                // skip them silently.
+                continue;
+            }
+
+            Console.Error.WriteLine(
+                $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> 0x{addr:X16}");
+            try
+            {
+                // Cast the address to a function pointer and invoke it directly.
+                // The ELF init-array convention uses cdecl void() signatures.
+                var fn = (delegate* unmanaged[Cdecl]<void>)addr;
+                fn();
+                Console.Error.WriteLine(
+                    $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> completed");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+                // Do not rethrow — continue with remaining initializers.
+            }
+        }
+    }
+
 
     private OrbisGen2Result? RunImageInitializers(
         string label,
@@ -544,7 +652,9 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         var moduleDirectoriesList = new System.Collections.Generic.List<string>()
         {
             Path.Combine(ebootDirectory, "sce_module"),
-            Path.Combine(ebootDirectory, "sce_modules")
+            Path.Combine(ebootDirectory, "sce_modules"),
+            Path.Combine(ebootDirectory, "Media", "Modules"),
+            Path.Combine(ebootDirectory, "Media", "Plugins")
         };
         if (!string.IsNullOrWhiteSpace(configFirmware))
         {

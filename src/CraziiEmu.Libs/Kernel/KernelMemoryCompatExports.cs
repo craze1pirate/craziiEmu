@@ -158,6 +158,28 @@ public static class KernelMemoryCompatExports
     private readonly record struct MappedRegion(ulong Address, ulong Length, int Protection, bool IsFlexible, bool IsDirect, ulong DirectStart);
     private readonly record struct BatchMapEntry(ulong Start, ulong Offset, ulong Length, byte Protection, byte Type, int Operation);
 
+    /// <summary>
+    /// Registers a host-reserved virtual range in the HLE mapped-regions table so that
+    /// <c>sceKernelVirtualQuery</c> can locate it. Called by <c>KernelRuntimeCompatExports</c>
+    /// after successfully reserving a virtual range via the physical VM's AllocateAt path.
+    /// </summary>
+    public static void RegisterReservedVirtualRange(ulong address, ulong length)
+    {
+        lock (_memoryGate)
+        {
+            if (!_mappedRegions.ContainsKey(address))
+            {
+                _mappedRegions[address] = new MappedRegion(
+                    address,
+                    length,
+                    OrbisProtCpuReadWrite,
+                    IsFlexible: false,
+                    IsDirect: false,
+                    DirectStart: 0);
+            }
+        }
+    }
+
     public static void RegisterGuestPathMount(string guestMountPoint, string hostRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(guestMountPoint);
@@ -4664,7 +4686,7 @@ public static class KernelMemoryCompatExports
         return destination == 0 || destinationCount == 0 || TryWriteWideTerminator(ctx, destination);
     }
 
-    private static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
+    internal static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
     {
         value = string.Empty;
         if (address == 0 || maxLength <= 0)
@@ -4767,7 +4789,7 @@ public static class KernelMemoryCompatExports
         return true;
     }
 
-    private static bool TryReadUInt32Compat(CpuContext ctx, ulong address, out uint value)
+    internal static bool TryReadUInt32Compat(CpuContext ctx, ulong address, out uint value)
     {
         Span<byte> bytes = stackalloc byte[sizeof(uint)];
         if (!TryReadCompat(ctx, address, bytes))

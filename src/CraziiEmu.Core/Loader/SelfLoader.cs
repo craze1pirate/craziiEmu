@@ -8,6 +8,8 @@ using CraziiEmu.Logging;
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
+using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -342,30 +344,70 @@ public sealed class SelfLoader : ISelfLoader
         if (imageData.Length >= sizeof(uint))
         {
             uint magic = BinaryPrimitives.ReadUInt32BigEndian(imageData[..sizeof(uint)]);
-            if (magic == SelfMagic || magic == 0x53434500)
+            uint magicLe = BinaryPrimitives.ReadUInt32LittleEndian(imageData[..sizeof(uint)]);
+            if (magic == SelfMagic || magic == 0x53434500 || magicLe == 0xEEF51454)
             {
-            var selfHeader = ReadUnmanaged<SelfHeader>(imageData, 0);
-            if (!selfHeader.HasKnownLayout || selfHeader.Unknown != 0x22)
-            {
-                throw new InvalidDataException("SELF header signature is not recognized.");
-            }
+                var selfHeader = ReadUnmanaged<SelfHeader>(imageData, 0);
+                if (!selfHeader.HasKnownLayout)
+                {
+                    throw new InvalidDataException("SELF header signature is not recognized.");
+                }
 
-            var segmentCount = selfHeader.SegmentCount;
-            var elfOffset = checked(SelfHeaderSize + (segmentCount * SelfSegmentSize));
-            EnsureRange(imageData.Length, (ulong)elfOffset, (ulong)Unsafe.SizeOf<ElfHeader>());
+                var segmentCount = selfHeader.SegmentCount;
+                var segments = segmentCount == 0 ? Array.Empty<SelfSegment>() : GC.AllocateUninitializedArray<SelfSegment>(segmentCount);
+                for (var i = 0; i < segmentCount; i++)
+                {
+                    var segmentOffset = checked(SelfHeaderSize + (i * SelfSegmentSize));
+                    segments[i] = ReadUnmanaged<SelfSegment>(imageData, segmentOffset);
+                }
 
-            var segments = segmentCount == 0 ? Array.Empty<SelfSegment>() : GC.AllocateUninitializedArray<SelfSegment>(segmentCount);
-            for (var i = 0; i < segmentCount; i++)
-            {
-                var segmentOffset = checked(SelfHeaderSize + (i * SelfSegmentSize));
-                segments[i] = ReadUnmanaged<SelfSegment>(imageData, segmentOffset);
-            }
+                ulong currentBlockTableOffset = checked((ulong)Unsafe.SizeOf<SelfHeader>() + ((ulong)segmentCount * (ulong)Unsafe.SizeOf<SelfSegment>()));
+                var blockTables = new Dictionary<int, IReadOnlyList<SelfBlockInfo>>();
+                int currentOffset = (int)currentBlockTableOffset;
 
-            return new LoadContext(IsSelf: true, elfOffset, selfHeader.FileSize, segments);
+                for (var i = 0; i < segmentCount; i++)
+                {
+                    var seg = segments[i];
+                    if (seg.IsBlocked)
+                    {
+                        int numBlocks = (int)((seg.DecompressedSize + 0xFFFF) / 0x10000);
+                        if (numBlocks > 0)
+                        {
+                            var blocks = new SelfBlockInfo[numBlocks];
+                            for (int b = 0; b < numBlocks; b++)
+                            {
+                                blocks[b] = ReadUnmanaged<SelfBlockInfo>(imageData, currentOffset);
+                                currentOffset += Unsafe.SizeOf<SelfBlockInfo>();
+                            }
+                            blockTables[i] = blocks;
+                            Console.Error.WriteLine($"[LOADER] Added {numBlocks} blocks for segment index {i}");
+                        }
+                    }
+                }
+
+                int actualElfOffset = FindElfOffset(imageData);
+                if (actualElfOffset <= 0)
+                {
+                    actualElfOffset = currentOffset;
+                }
+
+                return new LoadContext(IsSelf: true, actualElfOffset, selfHeader.FileSize, segments, blockTables);
             }
         }
 
-        return new LoadContext(IsSelf: false, ElfOffset: 0, SelfFileSize: 0, Array.Empty<SelfSegment>());
+        return new LoadContext(IsSelf: false, ElfOffset: 0, SelfFileSize: 0, Array.Empty<SelfSegment>(), new Dictionary<int, IReadOnlyList<SelfBlockInfo>>());
+    }
+
+    private static int FindElfOffset(ReadOnlySpan<byte> imageData)
+    {
+        for (int i = 0; i < Math.Min(imageData.Length - 4, 0x1000); i += 4)
+        {
+            if (BinaryPrimitives.ReadUInt32BigEndian(imageData.Slice(i, 4)) == 0x7F454C46)
+            {
+                return i;
+            }
+        }
+        return 0;
     }
 
     private static ProgramHeader[] ParseProgramHeaders(
@@ -378,7 +420,7 @@ public sealed class SelfLoader : ISelfLoader
             return Array.Empty<ProgramHeader>();
         }
 
-        if (elfHeader.ProgramHeaderEntrySize < ProgramHeaderSize)
+        if (elfHeader.ProgramHeaderEntrySize < (uint)ProgramHeaderSize)
         {
             throw new InvalidDataException("Program header entry size is smaller than expected.");
         }
@@ -392,10 +434,17 @@ public sealed class SelfLoader : ISelfLoader
         var headers = GC.AllocateUninitializedArray<ProgramHeader>(elfHeader.ProgramHeaderCount);
         for (var i = 0; i < headers.Length; i++)
         {
-            var entryOffset = checked(tableOffset + (i * elfHeader.ProgramHeaderEntrySize));
+            var entryOffset = checked(tableOffset + (i * (int)elfHeader.ProgramHeaderEntrySize));
             headers[i] = ReadUnmanaged<ProgramHeader>(imageData, entryOffset);
         }
 
+        foreach (var ph in headers)
+        {
+            if (ph.HeaderType == ProgramHeaderType.Load || ph.HeaderType == ProgramHeaderType.SceProcParam)
+            {
+                Console.Error.WriteLine($"[LOADER] PH {ph.HeaderType} VAddr=0x{ph.VirtualAddress:X} PAddr=0x{ph.PhysicalAddress:X} Offset=0x{ph.Offset:X} FileSz=0x{ph.FileSize:X} MemSz=0x{ph.MemorySize:X}");
+            }
+        }
         return headers;
     }
 
@@ -419,9 +468,7 @@ public sealed class SelfLoader : ISelfLoader
                 throw new InvalidDataException("ELF segment file size cannot exceed memory size.");
             }
 
-            var sourceOffset = header.FileSize == 0
-                ? 0UL
-                : ResolvePhysicalSegmentOffset(imageData.Length, loadContext, header, index);
+            var (sourceOffset, matchedSegmentIndex, resolveStatus) = ResolvePhysicalSegmentOffset(imageData.Length, loadContext, header, index);
 
             var virtualAddress = header.VirtualAddress + imageBase;
 
@@ -440,15 +487,64 @@ public sealed class SelfLoader : ISelfLoader
             }
 
             ReadOnlySpan<byte> fileData = ReadOnlySpan<byte>.Empty;
-            if (header.FileSize != 0)
+            byte[]? decompressedArray = null;
+
+            Console.Error.WriteLine($"[LOADER] MapLoadSegments: index={index} -> resolveStatus={resolveStatus}, matchedSegIndex={matchedSegmentIndex}");
+            if (resolveStatus == SelfSegmentResolveStatus.Compressed)
             {
+                var matchedSegment = loadContext.SelfSegments[matchedSegmentIndex];
+
+                if (matchedSegmentIndex != -1 && loadContext.BlockTables.TryGetValue(matchedSegmentIndex, out var blocks))
+                {
+                    Console.Error.WriteLine($"[LOADER] Decompressing {blocks.Count} blocks for segment {index} (matchedSeg: {matchedSegmentIndex})");
+                    decompressedArray = DecompressSegmentBlocks(imageData, matchedSegment, blocks);
+                    fileData = decompressedArray;
+                    sourceOffset = 0;
+                }
+                else if (matchedSegment.IsCompressed && !matchedSegment.IsBlocked)
+                {
+                    Console.Error.WriteLine($"[LOADER] Decompressing single block for segment {index}");
+                    decompressedArray = DecompressSingleSegment(imageData, matchedSegment);
+                    fileData = decompressedArray;
+                    sourceOffset = 0;
+                }
+                else
+                {
+                    Console.Error.WriteLine($"[LOADER] ERROR: matchedSegIndex: {matchedSegmentIndex}, BlockTables contains? {loadContext.BlockTables.ContainsKey(matchedSegmentIndex)}");
+                    throw new InvalidDataException($"Missing block table for compressed segment {index}");
+                }
+            }
+            else if (resolveStatus == SelfSegmentResolveStatus.Resolved && header.FileSize != 0)
+            {
+                // sourceOffset was set by ResolvePhysicalSegmentOffset — use it directly
+                if (sourceOffset + header.FileSize > (ulong)imageData.Length)
+                {
+                    Console.Error.WriteLine($"[LOADER] WARN: segment {index} resolved offset 0x{sourceOffset:X} + fileSize 0x{header.FileSize:X} = 0x{sourceOffset + header.FileSize:X} exceeds image length 0x{imageData.Length:X}; clamping fileData to available.");
+                    var available = (int)Math.Min((long)header.FileSize, imageData.Length - (long)sourceOffset);
+                    fileData = imageData.Slice((int)sourceOffset, available);
+                }
+                else
+                {
+                    fileData = imageData.Slice((int)sourceOffset, (int)header.FileSize);
+                }
+            }
+            else if (resolveStatus == SelfSegmentResolveStatus.NotFound && header.FileSize != 0)
+            {
+                // Raw ELF or no SELF segment match — use header.Offset directly
                 if (header.FileSize > int.MaxValue)
                 {
                     throw new NotSupportedException("Segments larger than 2 GB are not currently supported.");
                 }
 
-                EnsureRange(imageData.Length, sourceOffset, header.FileSize);
+                sourceOffset = header.Offset;
+                EnsureRange(imageData.Length, header.Offset, header.FileSize);
                 fileData = imageData.Slice((int)sourceOffset, (int)header.FileSize);
+            }
+
+            if (decompressedArray != null && index == 2 && decompressedArray.Length > 0x781F0)
+            {
+                var procParamBytes = decompressedArray.AsSpan(0x781F0, 0x60);
+                Console.Error.WriteLine($"[LOADER] Decompressed Segment {index} at 0x781F0: {BitConverter.ToString(procParamBytes.ToArray())}");
             }
 
             virtualMemory.Map(
@@ -458,6 +554,103 @@ public sealed class SelfLoader : ISelfLoader
                 fileData,
                 header.Flags);
         }
+    }
+
+    private static byte[] DecompressSingleSegment(
+        ReadOnlySpan<byte> imageData,
+        SelfSegment segment)
+    {
+        var uncompressedData = new byte[segment.DecompressedSize];
+        var chunkData = imageData.Slice((int)segment.Offset, (int)segment.CompressedSize);
+        
+        try
+        {
+            using var ms = new MemoryStream(chunkData.ToArray());
+            using var deflate = new DeflateStream(ms, CompressionMode.Decompress);
+            int read = 0, currentOffset = 0;
+            int remaining = (int)segment.DecompressedSize;
+            while (remaining > 0 && (read = deflate.Read(uncompressedData, currentOffset, remaining)) > 0)
+            {
+                currentOffset += read;
+                remaining -= read;
+            }
+        }
+        catch (InvalidDataException)
+        {
+            using var ms2 = new MemoryStream(chunkData.ToArray());
+            using var zlib = new ZLibStream(ms2, CompressionMode.Decompress);
+            int read = 0, currentOffset = 0;
+            int remaining = (int)segment.DecompressedSize;
+            while (remaining > 0 && (read = zlib.Read(uncompressedData, currentOffset, remaining)) > 0)
+            {
+                currentOffset += read;
+                remaining -= read;
+            }
+        }
+        return uncompressedData;
+    }
+
+    private static byte[] DecompressSegmentBlocks(
+        ReadOnlySpan<byte> imageData,
+        SelfSegment segment,
+        IReadOnlyList<SelfBlockInfo> blocks)
+    {
+        var uncompressedData = new byte[segment.DecompressedSize];
+        int outputOffset = 0;
+
+        foreach (var block in blocks)
+        {
+            var isUncompressed = (block.Flags & 1) == 0; // Or whatever flag implies uncompressed. Actually PS4/PS5 uses (Size == 0x10000) or flags. Wait, Size is compressed size.
+            
+            var blockData = imageData.Slice((int)segment.Offset + (int)block.Offset, (int)block.Size);
+
+            if (block.Size == 0x10000 || isUncompressed) // Just copy
+            {
+                if (block.Size != 0x10000)
+                    Console.Error.WriteLine($"[LOADER][WARN] Copying block size {block.Size:X} with flags {block.Flags:X} (isUncompressed={isUncompressed})");
+                blockData.CopyTo(uncompressedData.AsSpan(outputOffset, blockData.Length));
+                outputOffset += blockData.Length;
+            }
+            else
+            {
+                try
+                {
+                    using var ms = new MemoryStream(blockData.ToArray());
+                    using var deflate = new DeflateStream(ms, CompressionMode.Decompress);
+                    int read;
+                    int remaining = 0x10000;
+                    if (segment.DecompressedSize - (ulong)outputOffset < 0x10000)
+                        remaining = (int)(segment.DecompressedSize - (ulong)outputOffset);
+
+                    int currentOffset = outputOffset;
+                    while (remaining > 0 && (read = deflate.Read(uncompressedData, currentOffset, remaining)) > 0)
+                    {
+                        currentOffset += read;
+                        remaining -= read;
+                    }
+                    outputOffset = currentOffset;
+                }
+                catch (InvalidDataException)
+                {
+                    using var ms2 = new MemoryStream(blockData.ToArray());
+                    using var zlib = new ZLibStream(ms2, CompressionMode.Decompress);
+                    int read;
+                    int remaining = 0x10000;
+                    if (segment.DecompressedSize - (ulong)outputOffset < 0x10000)
+                        remaining = (int)(segment.DecompressedSize - (ulong)outputOffset);
+
+                    int currentOffset = outputOffset;
+                    while (remaining > 0 && (read = zlib.Read(uncompressedData, currentOffset, remaining)) > 0)
+                    {
+                        currentOffset += read;
+                        remaining -= read;
+                    }
+                    outputOffset = currentOffset;
+                }
+            }
+        }
+
+        return uncompressedData;
     }
 
     private static ulong ResolveProcParamAddress(IReadOnlyList<ProgramHeader> programHeaders, ulong imageBase)
@@ -470,7 +663,9 @@ public sealed class SelfLoader : ISelfLoader
                 continue;
             }
 
-            return header.VirtualAddress + imageBase;
+            ulong procParamAddr = header.VirtualAddress + imageBase;
+            Console.Error.WriteLine($"[LOADER] Found ProcParam! VAddr=0x{header.VirtualAddress:X}, Offset=0x{header.Offset:X}, PAddr=0x{header.PhysicalAddress:X}, FileSz=0x{header.FileSize:X}, MemSz=0x{header.MemorySize:X}, Total=0x{procParamAddr:X}");
+            return procParamAddr;
         }
 
         return 0;
@@ -732,7 +927,7 @@ public sealed class SelfLoader : ISelfLoader
     {
         if (elfHeader.SectionHeaderOffset == 0 ||
             elfHeader.SectionHeaderCount == 0 ||
-            elfHeader.SectionHeaderEntrySize < ElfSectionHeaderSize)
+            elfHeader.SectionHeaderEntrySize < (uint)ElfSectionHeaderSize)
         {
             return 0;
         }
@@ -743,7 +938,7 @@ public sealed class SelfLoader : ISelfLoader
             if (!TryReadSectionHeader(imageData, loadContext, elfHeader, sectionIndex, out var relocationHeader) ||
                 relocationHeader.Type != SectionTypeRela ||
                 relocationHeader.Size == 0 ||
-                relocationHeader.EntrySize < ElfRelocationSize)
+                relocationHeader.EntrySize < (ulong)ElfRelocationSize)
             {
                 continue;
             }
@@ -765,7 +960,7 @@ public sealed class SelfLoader : ISelfLoader
             if (relocationHeader.Link < elfHeader.SectionHeaderCount &&
                 TryReadSectionHeader(imageData, loadContext, elfHeader, (int)relocationHeader.Link, out var symbolHeader) &&
                 symbolHeader.Size != 0 &&
-                symbolHeader.EntrySize >= ElfSymbolSize &&
+                symbolHeader.EntrySize >= (ulong)ElfSymbolSize &&
                 TryReadElfRelativeSlice(imageData, loadContext, symbolHeader.Offset, symbolHeader.Size, out symbolTable) &&
                 symbolHeader.Link < elfHeader.SectionHeaderCount &&
                 TryReadSectionHeader(imageData, loadContext, elfHeader, (int)symbolHeader.Link, out var stringHeader) &&
@@ -1140,7 +1335,7 @@ public sealed class SelfLoader : ISelfLoader
     {
         if (elfHeader.SectionHeaderOffset == 0 ||
             elfHeader.SectionHeaderCount == 0 ||
-            elfHeader.SectionHeaderEntrySize < ElfSectionHeaderSize)
+            elfHeader.SectionHeaderEntrySize < (uint)ElfSectionHeaderSize)
         {
             return 0;
         }
@@ -1155,7 +1350,7 @@ public sealed class SelfLoader : ISelfLoader
 
             if (sectionHeader.Type != SectionTypeSymbolTable ||
                 sectionHeader.Size == 0 ||
-                sectionHeader.EntrySize < ElfSymbolSize ||
+                sectionHeader.EntrySize < (ulong)ElfSymbolSize ||
                 sectionHeader.Link >= elfHeader.SectionHeaderCount)
             {
                 continue;
@@ -1175,7 +1370,7 @@ public sealed class SelfLoader : ISelfLoader
             for (ulong symbolIndex = 0; symbolIndex < symbolCount; symbolIndex++)
             {
                 var symbolOffset = sectionHeader.Offset + (symbolIndex * sectionHeader.EntrySize);
-                if (!TryReadElfRelativeSlice(imageData, loadContext, symbolOffset, ElfSymbolSize, out var symbolBytes))
+                if (!TryReadElfRelativeSlice(imageData, loadContext, symbolOffset, (ulong)ElfSymbolSize, out var symbolBytes))
                 {
                     continue;
                 }
@@ -1362,7 +1557,7 @@ public sealed class SelfLoader : ISelfLoader
         }
 
         var headerOffset = elfHeader.SectionHeaderOffset + ((ulong)sectionIndex * elfHeader.SectionHeaderEntrySize);
-        if (!TryReadElfRelativeSlice(imageData, loadContext, headerOffset, ElfSectionHeaderSize, out var sectionBytes))
+        if (!TryReadElfRelativeSlice(imageData, loadContext, headerOffset, (ulong)ElfSectionHeaderSize, out var sectionBytes))
         {
             sectionHeader = default;
             return false;
@@ -1393,8 +1588,8 @@ public sealed class SelfLoader : ISelfLoader
             return true;
         }
 
-        var dynamicOffset = ResolvePhysicalSegmentOffset(imageData.Length, loadContext, dynamicHeader, dynamicHeaderIndex);
-        if (!TrySlice(imageData, dynamicOffset, dynamicHeader.FileSize, out dynamicTable))
+        var (sourceOffset, _, _) = ResolvePhysicalSegmentOffset(imageData.Length, loadContext, dynamicHeader, dynamicHeaderIndex);
+        if (!TrySlice(imageData, sourceOffset, dynamicHeader.FileSize, out dynamicTable))
         {
             dynamicTable = default;
             return false;
@@ -1430,7 +1625,7 @@ public sealed class SelfLoader : ISelfLoader
         }
 
         var requiredBytes = checked((ulong)orderedImportNids.Count * ImportStubSlotSize);
-        var mapSize = AlignUp(Math.Max(requiredBytes, (ulong)PageSize), PageSize);
+        var mapSize = AlignUp(Math.Max(requiredBytes, (ulong)PageSize), (ulong)PageSize);
         Console.Error.WriteLine(
             $"[LOADER] CreateImportStubMapping: nids={orderedImportNids.Count}, required=0x{requiredBytes:X}, map_size=0x{mapSize:X}");
         if (mapSize > int.MaxValue)
@@ -2119,37 +2314,31 @@ public sealed class SelfLoader : ISelfLoader
         return true;
     }
 
-    private static ulong ResolvePhysicalSegmentOffset(int imageLength, LoadContext loadContext, ProgramHeader header, int headerIndex)
+    private static (ulong Offset, int MatchedSegmentIndex, SelfSegmentResolveStatus Status) ResolvePhysicalSegmentOffset(int imageLength, LoadContext loadContext, ProgramHeader header, int headerIndex)
     {
         if (!loadContext.IsSelf)
         {
-            return checked((ulong)loadContext.ElfOffset + header.Offset);
+            return (checked((ulong)loadContext.ElfOffset + header.Offset), -1, SelfSegmentResolveStatus.Resolved);
         }
 
-        if (!TryResolveSelfSegmentOffset(
+        if (TryResolveSelfSegmentOffset(
                 imageLength,
                 loadContext.SelfSegments,
                 header,
                 headerIndex,
                 out var offset,
-                out var resolveStatus))
+                out var status,
+                out var matchedSegIndex))
         {
-            if (TryResolveSelfFallbackOffset(imageLength, loadContext, header, out var fallbackOffset))
-            {
-                return fallbackOffset;
-            }
-
-            if (resolveStatus is SelfSegmentResolveStatus.Encrypted or SelfSegmentResolveStatus.Compressed)
-            {
-                throw new NotSupportedException(
-                    $"SELF segment for program header {headerIndex} is marked as {resolveStatus.ToString().ToLowerInvariant()} and no dumped payload could be resolved. " +
-                    "Runtime decryption is not implemented yet. Use a decrypted ELF/FSELF image.");
-            }
-
-            throw new NotSupportedException($"SELF segment mapping for program header {headerIndex} could not be resolved.");
+            return (offset, matchedSegIndex, status);
         }
 
-        return offset;
+        if (TryResolveSelfFallbackOffset(imageLength, loadContext, header, out var fallbackOffset))
+        {
+            return (fallbackOffset, -1, SelfSegmentResolveStatus.Resolved);
+        }
+        
+        return (0, -1, SelfSegmentResolveStatus.NotFound);
     }
 
     private static bool TryResolveSelfFallbackOffset(
@@ -2202,49 +2391,83 @@ public sealed class SelfLoader : ISelfLoader
         ProgramHeader header,
         int headerIndex,
         out ulong offset,
-        out SelfSegmentResolveStatus status)
+        out SelfSegmentResolveStatus status,
+        out int matchedSegIndex)
     {
-        foreach (var segment in selfSegments)
+        // --- Phase 1: prefer an exact-size match (CompressedSize == header.FileSize) ---
+        for (int i = 0; i < selfSegments.Count; i++)
         {
-            if (!segment.IsBlocked)
-            {
+            var segment = selfSegments[i];
+            if (segment.ProgramHeaderId != (ulong)headerIndex)
                 continue;
-            }
 
-            var phdrId = segment.ProgramHeaderId;
-            if (phdrId != (ulong)headerIndex)
-            {
+            // Only consider the exact-size candidate if it actually fits the header
+            if (segment.CompressedSize != header.FileSize)
                 continue;
-            }
 
-            if (segment.IsEncrypted || segment.IsCompressed)
+            bool needsDecompression = (segment.IsCompressed || segment.IsBlocked)
+                && segment.CompressedSize != segment.DecompressedSize;
+            Console.Error.WriteLine($"[LOADER] Seg {i} (exact-size match): CSize={segment.CompressedSize} DSize={segment.DecompressedSize} IsEncrypted={segment.IsEncrypted} needsDecomp={needsDecompression} Type={segment.Type}");
+
+            if (segment.IsEncrypted || needsDecompression)
             {
-                if (TryIsInRange(imageLength, segment.Offset, header.FileSize))
-                {
-                    offset = segment.Offset;
-                    status = SelfSegmentResolveStatus.ResolvedDumped;
-                    return true;
-                }
-
                 offset = 0;
                 status = segment.IsEncrypted
                     ? SelfSegmentResolveStatus.Encrypted
                     : SelfSegmentResolveStatus.Compressed;
-                return false;
+                matchedSegIndex = i;
+                return true;
             }
 
-            if (!TryIsInRange(imageLength, segment.Offset, header.FileSize))
+            bool inRange = TryIsInRange(imageLength, segment.Offset, header.FileSize);
+            Console.Error.WriteLine($"[LOADER] Seg {i} (exact-size): inRange={inRange} (imgLen={imageLength}, offset={segment.Offset}, headerFileSize={header.FileSize})");
+            if (inRange)
             {
-                continue;
+                offset = segment.Offset;
+                status = SelfSegmentResolveStatus.Resolved;
+                matchedSegIndex = i;
+                Console.Error.WriteLine($"[LOADER] Seg {i}: Returning Resolved (exact-size)");
+                return true;
             }
+        }
+
+        // --- Phase 2: fall back to first matching phdrId ---
+        for (int i = 0; i < selfSegments.Count; i++)
+        {
+            var segment = selfSegments[i];
+            var phdrId = segment.ProgramHeaderId;
+            if (phdrId != (ulong)headerIndex)
+                continue;
+
+            bool needsDecompression = (segment.IsCompressed || segment.IsBlocked)
+                && segment.CompressedSize != segment.DecompressedSize;
+            Console.Error.WriteLine($"[LOADER] Seg {i}: CSize={segment.CompressedSize} DSize={segment.DecompressedSize} IsEncrypted={segment.IsEncrypted} needsDecomp={needsDecompression} Type={segment.Type}");
+
+            if (segment.IsEncrypted || needsDecompression)
+            {
+                offset = 0;
+                status = segment.IsEncrypted
+                    ? SelfSegmentResolveStatus.Encrypted
+                    : SelfSegmentResolveStatus.Compressed;
+                matchedSegIndex = i;
+                return true;
+            }
+
+            bool inRange = TryIsInRange(imageLength, segment.Offset, header.FileSize);
+            Console.Error.WriteLine($"[LOADER] Seg {i}: inRange={inRange} (imgLen={imageLength}, offset={segment.Offset}, headerFileSize={header.FileSize})");
+            if (!inRange)
+                continue;
 
             offset = segment.Offset;
             status = SelfSegmentResolveStatus.Resolved;
+            matchedSegIndex = i;
+            Console.Error.WriteLine($"[LOADER] Seg {i}: Returning Resolved");
             return true;
         }
 
         offset = 0;
         status = SelfSegmentResolveStatus.NotFound;
+        matchedSegIndex = -1;
         return false;
     }
 
@@ -2265,7 +2488,7 @@ public sealed class SelfLoader : ISelfLoader
             throw new InvalidDataException("Only little-endian ELF images are currently supported.");
         }
 
-        if (header.ProgramHeaderEntrySize != ProgramHeaderSize)
+        if (header.ProgramHeaderEntrySize != (uint)ProgramHeaderSize)
         {
             throw new InvalidDataException($"Unsupported ELF program header entry size: {header.ProgramHeaderEntrySize}.");
         }
@@ -2297,7 +2520,7 @@ public sealed class SelfLoader : ISelfLoader
         }
     }
 
-    private readonly record struct LoadContext(bool IsSelf, int ElfOffset, ulong SelfFileSize, IReadOnlyList<SelfSegment> SelfSegments);
+    private readonly record struct LoadContext(bool IsSelf, int ElfOffset, ulong SelfFileSize, IReadOnlyList<SelfSegment> SelfSegments, IReadOnlyDictionary<int, IReadOnlyList<SelfBlockInfo>> BlockTables);
 
     private readonly record struct DynamicInfo(
         ulong StrTabOffset,
@@ -2400,19 +2623,34 @@ public sealed class SelfLoader : ISelfLoader
 
         public ulong FileSize => _fileSize;
 
-        public bool HasKnownLayout =>
-            _ident0 == 0x4F &&
-            _ident1 == 0x15 &&
-            _ident2 == 0x3D &&
-            _ident3 == 0x1D &&
-            _ident4 == 0x00 &&
-            _ident5 == 0x01 &&
-            _ident6 == 0x01 &&
-            _ident7 == 0x12 &&
-            _ident8 == 0x01 &&
-            _ident9 == 0x01 &&
-            _ident10 == 0x00 &&
-            _ident11 == 0x00;
+        public bool HasKnownLayout
+        {
+            get
+            {
+                if (_ident0 == 0x54 && _ident1 == 0x14 && _ident2 == 0xF5 && _ident3 == 0xEE)
+                {
+                    return true;
+                }
+                
+                if (_ident0 == 0x53 && _ident1 == 0x43 && _ident2 == 0x45 && _ident3 == 0x00)
+                {
+                    return true;
+                }
+
+                return _ident0 == 0x4F && _ident1 == 0x15 && _ident2 == 0x3D && _ident3 == 0x1D &&
+                       _ident4 == 0x00 && _ident5 == 0x01 && _ident6 == 0x01 && _ident7 == 0x12 &&
+                       _ident8 == 0x01 && _ident9 == 0x01 && _ident10 == 0x00 && _ident11 == 0x00;
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private readonly struct SelfBlockInfo
+    {
+        public readonly uint Offset;
+        public readonly uint Size;
+        public readonly uint Flags;
+        public readonly uint Reserved;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
