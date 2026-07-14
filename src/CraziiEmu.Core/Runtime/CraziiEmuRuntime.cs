@@ -421,24 +421,32 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return null;
     }
 
-    /// <summary>
-    /// Address threshold separating guest (PS5) virtual memory from host (native) memory.
-    /// LLE modules such as libc.prx are mapped into the host address space at addresses
-    /// above this boundary; their initializers must be invoked as native function pointers
-    /// rather than dispatched through the guest CPU emulator.
-    /// </summary>
-    /// <remarks>
-    /// Guest memory lives in the range 0x0000_0008_0000_0000 – 0x0000_0080_0000_0000.
-    /// The Linux-style host heap and mapped files start well above that.
-    /// 0x0001_0000_0000 (4 GiB) is a conservative split: no PS5 ELF maps that low on the host.
-    /// </remarks>
-    private const ulong NativeAddressThreshold = 0x0001_0000_0000UL;
+    private static int GetModuleInitPriority(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return 50;
+        }
 
-    /// <summary>
-    /// Delegate type matching the cdecl no-arg void initializer signature used by
-    /// DT_INIT / DT_PREINIT_ARRAY / DT_INIT_ARRAY function pointers in ELF modules.
-    /// </summary>
-    private unsafe delegate void NativeInitializerFn();
+        if (name.Equals("libc.prx", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("libkernel.prx", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0; // Core C/system runtime MUST initialize before anything else
+        }
+
+        if (name.StartsWith("libSce", StringComparison.OrdinalIgnoreCase))
+        {
+            return 10; // PS5 SDK system libraries
+        }
+
+        if (name.Equals("Il2cppUserAssemblies.prx", StringComparison.OrdinalIgnoreCase))
+        {
+            return 100; // User game assemblies must run last when all system & middleware plugins are initialized
+        }
+
+        return 50; // Standard middleware & game plugins (AkUnitySoundEngine, PSN, SaveData, CommonDialog, PS5Util)
+    }
 
     private OrbisGen2Result? RunPreloadedModuleInitializers(
         IReadOnlyList<LoadedModuleImage> loadedModuleImages,
@@ -446,121 +454,99 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         IReadOnlyDictionary<ulong, string> activeImportStubs,
         IReadOnlyDictionary<string, ulong> activeRuntimeSymbols)
     {
-        for (var i = 0; i < loadedModuleImages.Count; i++)
+        var orderedModules = loadedModuleImages
+            .OrderBy(m => GetModuleInitPriority(m.Path))
+            .ThenBy(m => m.Path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        for (var i = 0; i < orderedModules.Count; i++)
         {
-            var loadedModule = loadedModuleImages[i];
-            var image = loadedModule.Image;
-            var moduleName = Path.GetFileName(loadedModule.Path);
+            var loadedModule = orderedModules[i];
+            var image        = loadedModule.Image;
+            var moduleName   = Path.GetFileName(loadedModule.Path);
             if (string.IsNullOrWhiteSpace(moduleName))
             {
                 moduleName = $"module#{i}";
             }
 
-            // Determine whether this module lives in native host memory or in guest space.
-            // libc.prx and other LLE modules are loaded at high host addresses (e.g. 0x17B27…).
-            // Their initializers are real x86-64 code callable as native function pointers —
-            // running them through the guest CPU dispatcher would be wrong and would crash.
+            // Dispatch the legacy DT_INIT single-function pointer (if any).
             var initEntryPoint = image.InitFunctionEntryPoint;
-            var hasInitArrays = image.PreInitializerFunctions.Count > 0 ||
-                                image.InitializerFunctions.Count > 0;
-
-            if (initEntryPoint < 0x10000 && !hasInitArrays)
+            if (initEntryPoint >= 0x10000)
             {
-                // Nothing to run for this module.
-                continue;
-            }
-
-            // Heuristic: if the first non-trivial initializer address (or InitFunctionEntryPoint)
-            // exceeds NativeAddressThreshold the module is LLE-mapped into the host address space.
-            ulong representativeAddr = initEntryPoint >= 0x10000
-                ? initEntryPoint
-                : (image.PreInitializerFunctions.Count > 0
-                    ? image.PreInitializerFunctions[0]
-                    : (image.InitializerFunctions.Count > 0 ? image.InitializerFunctions[0] : 0));
-
-            bool isNativeModule = representativeAddr >= NativeAddressThreshold;
-
-            if (isNativeModule)
-            {
-                // ---------- LLE / native module path ----------
-                // Call pre-initializers and initializers as native function pointers.
-                // These are the DT_PREINIT_ARRAY and DT_INIT_ARRAY entries that the
-                // dynamic linker normally runs before handing control to _start.
-                Console.Error.WriteLine(
-                    $"[RUNTIME] Starting native module {moduleName}: " +
-                    $"preinit={image.PreInitializerFunctions.Count}, " +
-                    $"init={image.InitializerFunctions.Count}");
-
-                InvokeNativeInitializerList(moduleName, "preinit", image.PreInitializerFunctions);
-                InvokeNativeInitializerList(moduleName, "init", image.InitializerFunctions);
-            }
-            else if (initEntryPoint >= 0x10000)
-            {
-                // ---------- Guest module path (original behaviour) ----------
                 Console.Error.WriteLine(
                     $"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
 
-                var result = _cpuDispatcher.DispatchModuleInitializer(
+                var r = _cpuDispatcher.DispatchModuleInitializer(
                     initEntryPoint,
                     generation,
                     activeImportStubs,
                     activeRuntimeSymbols,
                     moduleName,
                     _cpuExecutionOptions);
-                if (result != OrbisGen2Result.ORBIS_GEN2_OK)
+                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
                 {
                     Console.Error.WriteLine(
-                        $"[RUNTIME] Module start failed: {moduleName} -> {result}");
-                    return result;
+                        $"[RUNTIME] Module start failed: {moduleName} -> {r}");
+                    return r;
+                }
+            }
+
+            // Dispatch every DT_PREINIT_ARRAY entry through the guest CPU.
+            for (var j = 0; j < image.PreInitializerFunctions.Count; j++)
+            {
+                var addr = image.PreInitializerFunctions[j];
+                if (addr < 0x10000)
+                {
+                    continue; // null/sentinel slot — skip
+                }
+
+                Console.Error.WriteLine(
+                    $"[RUNTIME]   {moduleName} preinit[{j}] -> 0x{addr:X16}");
+
+                var r = _cpuDispatcher.DispatchModuleInitializer(
+                    addr,
+                    generation,
+                    activeImportStubs,
+                    activeRuntimeSymbols,
+                    moduleName,
+                    _cpuExecutionOptions);
+                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
+                {
+                    Console.Error.WriteLine(
+                        $"[RUNTIME]   {moduleName} preinit[{j}] failed -> {r}");
+                    return r;
+                }
+            }
+
+            // Dispatch every DT_INIT_ARRAY entry through the guest CPU.
+            for (var j = 0; j < image.InitializerFunctions.Count; j++)
+            {
+                var addr = image.InitializerFunctions[j];
+                if (addr < 0x10000)
+                {
+                    continue; // null/sentinel slot — skip
+                }
+
+                Console.Error.WriteLine(
+                    $"[RUNTIME]   {moduleName} init[{j}] -> 0x{addr:X16}");
+
+                var r = _cpuDispatcher.DispatchModuleInitializer(
+                    addr,
+                    generation,
+                    activeImportStubs,
+                    activeRuntimeSymbols,
+                    moduleName,
+                    _cpuExecutionOptions);
+                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
+                {
+                    Console.Error.WriteLine(
+                        $"[RUNTIME]   {moduleName} init[{j}] failed -> {r}");
+                    return r;
                 }
             }
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// Invokes a list of native ELF initializer function pointers directly on the host CPU.
-    /// Used for LLE modules (e.g. libc.prx) whose code lives in the host address space.
-    /// Exceptions thrown by an initializer are caught and logged; execution continues so
-    /// that subsequent initializers can still run (matching typical C runtime behaviour).
-    /// </summary>
-    /// <param name="moduleName">Human-readable module name for diagnostic output.</param>
-    /// <param name="phase">Phase label ("preinit" or "init") for diagnostic output.</param>
-    /// <param name="addresses">Ordered list of native function pointer addresses to invoke.</param>
-    private static unsafe void InvokeNativeInitializerList(
-        string moduleName,
-        string phase,
-        IReadOnlyList<ulong> addresses)
-    {
-        for (var j = 0; j < addresses.Count; j++)
-        {
-            var addr = addresses[j];
-            if (addr < 0x10000)
-            {
-                // Null or sentinel initializer entries are common in ELF DT_INIT_ARRAY;
-                // skip them silently.
-                continue;
-            }
-
-            Console.Error.WriteLine(
-                $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> 0x{addr:X16}");
-            try
-            {
-                // Cast the address to a function pointer and invoke it directly.
-                // The ELF init-array convention uses cdecl void() signatures.
-                var fn = (delegate* unmanaged[Cdecl]<void>)addr;
-                fn();
-                Console.Error.WriteLine(
-                    $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> completed");
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(
-                    $"[RUNTIME]   Native {phase}[{j}] {moduleName} -> EXCEPTION: {ex.GetType().Name}: {ex.Message}");
-                // Do not rethrow — continue with remaining initializers.
-            }
-        }
     }
 
 
