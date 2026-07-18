@@ -37,9 +37,31 @@ public enum OrbisGen2Result : int
     ORBIS_GEN2_ERROR_ALREADY_EXISTS = unchecked((int)0x80020004),
 
     /// <summary>
+    /// Indicates that a file descriptor is bad or closed.
+    /// </summary>
+    ORBIS_GEN2_ERROR_BAD_FILE_DESCRIPTOR = unchecked((int)0x80020009),
+
+    /// <summary>
+    /// Indicates that the operation ran out of memory.
+    /// </summary>
+    ORBIS_GEN2_ERROR_OUT_OF_MEMORY = unchecked((int)0x8002000C),
+
+    /// <summary>
+    /// Indicates that access was denied.
+    /// </summary>
+    ORBIS_GEN2_ERROR_ACCESS_DENIED = unchecked((int)0x8002000D),
+
+    /// <summary>
     /// Indicates that completing the operation would deadlock.
     /// </summary>
     ORBIS_GEN2_ERROR_DEADLOCK = unchecked((int)0x8002000B),
+
+    /// <summary>
+    /// Indicates that the waited-on object was deleted while the caller was
+    /// blocked on it. Matches the SCE kernel EACCES code that waiters of a
+    /// deleted semaphore observe.
+    /// </summary>
+    ORBIS_GEN2_ERROR_DELETED = unchecked((int)0x8002000D),
 
     /// <summary>
     /// Indicates that the target resource is busy.
@@ -50,6 +72,13 @@ public enum OrbisGen2Result : int
     /// Indicates that the operation should be retried later.
     /// </summary>
     ORBIS_GEN2_ERROR_TRY_AGAIN = unchecked((int)0x80020023),
+
+    /// <summary>
+    /// Indicates that a blocked wait was canceled (e.g. sceKernelCancelSema).
+    /// Matches the SCE kernel ECANCELED code that canceled semaphore waiters
+    /// observe.
+    /// </summary>
+    ORBIS_GEN2_ERROR_CANCELED = unchecked((int)0x80020055),
 
     /// <summary>
     /// Indicates that behavior is recognized but not implemented yet.

@@ -198,12 +198,14 @@ public static class KernelExports
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
     public static int PthreadCreate(CpuContext ctx)
+        => PthreadCreateCore(ctx, ctx[CpuRegister.R8]);
+
+    private static int PthreadCreateCore(CpuContext ctx, ulong nameAddress)
     {
         var threadIdAddress = ctx[CpuRegister.Rdi];
         var attrAddress = ctx[CpuRegister.Rsi];
         var entryAddress = ctx[CpuRegister.Rdx];
         var argument = ctx[CpuRegister.Rcx];
-        var nameAddress = ctx[CpuRegister.R8];
         var name = nameAddress == 0 ? string.Empty : ReadCString(ctx, nameAddress, 256);
         var threadHandle = KernelPthreadState.CreateThreadHandle(ctx, name);
         KernelPthreadExtendedCompatExports.GetThreadStartScheduling(
@@ -260,7 +262,7 @@ public static class KernelExports
         LibraryName = "libKernel")]
     public static int PosixPthreadCreate(CpuContext ctx)
     {
-        return PthreadCreate(ctx);
+        return PthreadCreateCore(ctx, nameAddress: 0);
     }
 
     [SysAbiExport(
@@ -270,7 +272,7 @@ public static class KernelExports
         LibraryName = "libKernel")]
     public static int PosixPthreadCreateNameNp(CpuContext ctx)
     {
-        return PthreadCreate(ctx);
+        return PthreadCreateCore(ctx, ctx[CpuRegister.R8]);
     }
 
     [SysAbiExport(
@@ -281,6 +283,9 @@ public static class KernelExports
     public static int PthreadExit(CpuContext ctx)
     {
         var value = ctx[CpuRegister.Rdi];
+        // Run cleanup on the still-executable thread before unwinding it.
+        KernelPthreadExtendedCompatExports.RunThreadLocalDestructors(ctx);
+        KernelMemoryCompatExports.RunThreadDtors(ctx);
         GuestThreadExecution.RequestCurrentEntryExit("scePthreadExit", value);
         ctx[CpuRegister.Rax] = value;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -294,6 +299,8 @@ public static class KernelExports
     public static int PosixPthreadExit(CpuContext ctx)
     {
         var value = ctx[CpuRegister.Rdi];
+        KernelPthreadExtendedCompatExports.RunThreadLocalDestructors(ctx);
+        KernelMemoryCompatExports.RunThreadDtors(ctx);
         GuestThreadExecution.RequestCurrentEntryExit("pthread_exit", value);
         ctx[CpuRegister.Rax] = value;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -368,6 +375,13 @@ public static class KernelExports
     public static int KernelOpen(CpuContext ctx) => KernelMemoryCompatExports.KernelOpenUnderscore(ctx);
 
     [SysAbiExport(
+        Nid = "mqQMh1zPPT8",
+        ExportName = "fstat",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Fstat(CpuContext ctx) => KernelMemoryCompatExports.KernelFstat(ctx);
+
+    [SysAbiExport(
         Nid = "hcuQgD53UxM",
         ExportName = "printf",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -419,19 +433,41 @@ public static class KernelExports
     private static string ReadCString(CpuContext ctx, ulong address, int maxLen)
     {
         Span<byte> buf = stackalloc byte[maxLen];
-        if (!ctx.Memory.TryRead(address, buf))
-            return $"<unreadable 0x{address:X16}>";
+        Span<byte> one = stackalloc byte[1];
+        var len = 0;
+        while (len < buf.Length)
+        {
+            if (!ctx.Memory.TryRead(address + (ulong)len, one))
+                return len == 0 ? $"<unreadable 0x{address:X16}>" : System.Text.Encoding.UTF8.GetString(buf[..len]);
 
-        int len = 0;
-        while (len < buf.Length && buf[len] != 0) len++;
+            if (one[0] == 0)
+                break;
 
-        try { return System.Text.Encoding.UTF8.GetString(buf.Slice(0, len)); }
-        catch { return System.Text.Encoding.ASCII.GetString(buf.Slice(0, len)); }
+            buf[len++] = one[0];
+        }
+
+        try { return System.Text.Encoding.UTF8.GetString(buf[..len]); }
+        catch { return System.Text.Encoding.ASCII.GetString(buf[..len]); }
     }
 
     private static bool ShouldTracePthread()
     {
         return string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PTHREADS"), "1", StringComparison.Ordinal);
+    }
+
+    [SysAbiExport(
+        Nid = "L1SBTkC+Cvw",
+        ExportName = "abort",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Abort(CpuContext ctx)
+    {
+        // Route through the same graceful guest-entry-exit path as exit(): letting the call
+        // fall through to the host's native abort() does not unwind the guest thread cleanly.
+        Console.Error.WriteLine("[LOADER][INFO] abort() called by guest - terminating");
+        GuestThreadExecution.RequestCurrentEntryExit("abort", -1);
+        ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 }
 

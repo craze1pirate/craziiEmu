@@ -58,27 +58,27 @@ public static class NetCtlExports
         var natInfoAddress = ctx[CpuRegister.Rdi];
         if (natInfoAddress == 0)
         {
-            return SetReturn(ctx, NetCtlErrorInvalidAddress);
+            return ctx.SetReturn(NetCtlErrorInvalidAddress, typeof(long));
         }
 
         Span<byte> natInfo = stackalloc byte[NatInfoSize];
         if (!ctx.Memory.TryRead(natInfoAddress, natInfo))
         {
-            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
         }
 
         var size = BinaryPrimitives.ReadUInt32LittleEndian(natInfo[..sizeof(uint)]);
         if (size != NatInfoSize)
         {
-            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT, typeof(long));
         }
 
         BinaryPrimitives.WriteInt32LittleEndian(natInfo[4..], 1);
         BinaryPrimitives.WriteInt32LittleEndian(natInfo[8..], 3);
         BinaryPrimitives.WriteUInt32LittleEndian(natInfo[12..], 0x7F000001);
         return ctx.Memory.TryWrite(natInfoAddress, natInfo)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 
     [SysAbiExport(
@@ -88,7 +88,7 @@ public static class NetCtlExports
         LibraryName = "libSceNetCtl")]
     public static int NetCtlCheckCallback(CpuContext ctx)
     {
-        return SetReturn(ctx, 0);
+        return ctx.SetReturn(0, typeof(long));
     }
 
     [SysAbiExport(
@@ -101,14 +101,14 @@ public static class NetCtlExports
         var stateAddress = ctx[CpuRegister.Rdi];
         if (stateAddress == 0)
         {
-            return SetReturn(ctx, NetCtlErrorInvalidAddress);
+            return ctx.SetReturn(NetCtlErrorInvalidAddress, typeof(long));
         }
 
         Span<byte> stateBytes = stackalloc byte[sizeof(int)];
         BinaryPrimitives.WriteInt32LittleEndian(stateBytes, 0);
         return ctx.Memory.TryWrite(stateAddress, stateBytes)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 
     [SysAbiExport(
@@ -123,7 +123,7 @@ public static class NetCtlExports
         var callbackIdAddress = ctx[CpuRegister.Rdx];
         if (function == 0 || callbackIdAddress == 0)
         {
-            return SetReturn(ctx, NetCtlErrorInvalidAddress);
+            return ctx.SetReturn(NetCtlErrorInvalidAddress, typeof(long));
         }
 
         lock (CallbackGate)
@@ -131,21 +131,28 @@ public static class NetCtlExports
             var callbackId = Array.FindIndex(Callbacks, static callback => callback.Function == 0);
             if (callbackId < 0)
             {
-                return SetReturn(ctx, NetCtlErrorNoSpace);
+                return ctx.SetReturn(NetCtlErrorNoSpace, typeof(long));
             }
 
             Span<byte> callbackIdBytes = stackalloc byte[sizeof(uint)];
             BinaryPrimitives.WriteUInt32LittleEndian(callbackIdBytes, unchecked((uint)callbackId));
             if (!ctx.Memory.TryWrite(callbackIdAddress, callbackIdBytes))
             {
-                return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+                return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
             }
 
             Callbacks[callbackId] = new CallbackRegistration(function, argument);
         }
 
-        return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_OK);
+        return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_OK, typeof(long));
     }
+
+    [SysAbiExport(
+        Nid = "1NE9OWdBIww",
+        ExportName = "sceNetCtlRegisterCallbackV6",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNetCtl")]
+    public static int NetCtlRegisterCallbackV6(CpuContext ctx) => NetCtlRegisterCallback(ctx);
 
     [SysAbiExport(
         Nid = "obuxdTiwkF8",
@@ -158,7 +165,7 @@ public static class NetCtlExports
         var infoAddress = ctx[CpuRegister.Rsi];
         if (infoAddress == 0)
         {
-            return SetReturn(ctx, NetCtlErrorInvalidAddress);
+            return ctx.SetReturn(NetCtlErrorInvalidAddress, typeof(long));
         }
 
         return code switch
@@ -178,7 +185,7 @@ public static class NetCtlExports
             NetCtlInfoHttpProxyConfig => WriteUInt32(ctx, infoAddress, 0),
             NetCtlInfoHttpProxyServer => WriteAsciiZ(ctx, infoAddress, string.Empty, 256),
             NetCtlInfoHttpProxyPort => WriteUInt16(ctx, infoAddress, 0),
-            _ => SetReturn(ctx, NetCtlErrorNotConnected),
+            _ => ctx.SetReturn(NetCtlErrorNotConnected, typeof(long)),
         };
     }
 
@@ -186,8 +193,8 @@ public static class NetCtlExports
     {
         Span<byte> bytes = stackalloc byte[count];
         return ctx.Memory.TryWrite(address, bytes)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 
     private static int WriteUInt32(CpuContext ctx, ulong address, uint value)
@@ -195,8 +202,8 @@ public static class NetCtlExports
         Span<byte> bytes = stackalloc byte[sizeof(uint)];
         BinaryPrimitives.WriteUInt32LittleEndian(bytes, value);
         return ctx.Memory.TryWrite(address, bytes)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 
     private static int WriteUInt16(CpuContext ctx, ulong address, ushort value)
@@ -204,8 +211,8 @@ public static class NetCtlExports
         Span<byte> bytes = stackalloc byte[sizeof(ushort)];
         BinaryPrimitives.WriteUInt16LittleEndian(bytes, value);
         return ctx.Memory.TryWrite(address, bytes)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 
     private static int WriteAsciiZ(CpuContext ctx, ulong address, string value, int byteCount)
@@ -218,13 +225,7 @@ public static class NetCtlExports
         }
 
         return ctx.Memory.TryWrite(address, bytes)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
-    }
-
-    private static int SetReturn(CpuContext ctx, int result)
-    {
-        ctx[CpuRegister.Rax] = unchecked((ulong)(long)result);
-        return result;
+            ? ctx.SetReturn(0, typeof(long))
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT, typeof(long));
     }
 }

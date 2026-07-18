@@ -8,7 +8,6 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
@@ -28,9 +27,18 @@ public static class KernelRuntimeCompatExports
     private const int MallocReplaceSize = 0x70;
     private const int NewReplaceSize = 0x68;
     private const int OrbisTimesecSize = sizeof(long) + sizeof(uint) + sizeof(uint);
-    private const ulong ModuleInfoHandleOffset = 0x108;
-    private const ulong ModuleInfoNameOffset = 0x10;
-    private const int ModuleInfoNameMaxBytes = 64;
+    // PS4/PS5 libkernel module-info ABI. The extended form is consumed by
+    // sceKernelGetModuleInfoFromAddr and ends at byte 0x1A8; libc commonly
+    // places its stack canary immediately after that caller-owned buffer.
+    private const int ModuleInfoNameMaxBytes = 256;
+    private const int ModuleInfoSize = 0x160;
+    private const int ModuleInfoExSize = 0x1A8;
+    private const ulong ModuleInfoNameOffset = 0x08;
+    private const ulong ModuleInfoExHandleOffset = 0x108;
+    private const ulong ModuleInfoExInitProcOffset = 0x128;
+    private const ulong ModuleInfoExSegmentsOffset = 0x160;
+    private const ulong ModuleInfoExSegmentCountOffset = 0x1A0;
+    private const int ModuleInfoSegmentSize = 16;
     private const ulong DefaultKernelTscFrequency = 10_000_000UL;
     private const ulong PrtAreaStartAddress = 0x0000001000000000UL;
     private const ulong PrtAreaSize = 0x000000EC00000000UL;
@@ -44,12 +52,13 @@ public static class KernelRuntimeCompatExports
     private static readonly long _processStartCounter = Stopwatch.GetTimestamp();
     private static readonly RdtscDelegate? _rdtscReader = CreateRdtscReader();
     private static readonly ulong _kernelTscFrequency = ResolveKernelTscFrequency();
-    private static readonly ulong _stackChkGuardValue = 0xC0DEC0DECAFEBABEUL;
+    private static readonly ulong _stackChkGuardValue = 0xC0DEC0DECAFEBA00UL;
     private static nint _stackChkGuardObjectAddress;
     private static bool _stackChkGuardInitialized;
     private static ulong _applicationHeapApiAddress;
     private static ulong _processProcParamAddress;
     private static ulong _nextReservedVirtualBase = 0x6000_0000_0UL;
+    private static readonly List<ReleasedVirtualRange> _releasedVirtualRanges = new();
     private static uint _gpoStateBits;
     private static readonly HashSet<int> _loadedSysmodules = new();
     private static readonly object _prtApertureGate = new();
@@ -63,6 +72,11 @@ public static class KernelRuntimeCompatExports
 
     [ThreadStatic]
     private static int _shortUsleepCount;
+
+    private static readonly bool _stopwatchTicksAreNanoseconds =
+        Stopwatch.Frequency == 1_000_000_000L;
+
+    private readonly record struct ReleasedVirtualRange(ulong Address, ulong Length);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate ulong RdtscDelegate();
@@ -86,11 +100,11 @@ public static class KernelRuntimeCompatExports
 
         if (micros < 1000)
         {
-            // Guest worker pools use usleep(1) as a polling backoff. Periodically
-            // relinquish a full host time slice so spin workers cannot starve producers.
-            if ((++_shortUsleepCount & 31) == 0)
+            // Guest worker pools use usleep(1) as a polling backoff. Do not turn
+            // PS microsecond waits into Windows millisecond sleeps on hot paths.
+            if ((++_shortUsleepCount & 255) == 0)
             {
-                Thread.Sleep(1);
+                Thread.Sleep(0);
             }
             else
             {
@@ -100,8 +114,10 @@ public static class KernelRuntimeCompatExports
         else
         {
             _shortUsleepCount = 0;
-            var sleepMilliseconds = (int)Math.Min((micros + 999UL) / 1000UL, int.MaxValue);
-            Thread.Sleep(sleepMilliseconds);
+            // Precise sleep: rounding microseconds up to Thread.Sleep
+            // milliseconds (which itself overshoots by a scheduler quantum)
+            // hard-caps games that pace their frame loop with usleep.
+            HostTiming.SleepMicroseconds((long)Math.Min(micros, long.MaxValue));
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -198,8 +214,18 @@ public static class KernelRuntimeCompatExports
         else
         {
             var elapsedTicks = Stopwatch.GetTimestamp() - _processStartCounter;
-            seconds = elapsedTicks / Stopwatch.Frequency;
-            nanoseconds = (elapsedTicks % Stopwatch.Frequency) * 1_000_000_000L / Stopwatch.Frequency;
+            if (_stopwatchTicksAreNanoseconds)
+            {
+                // Constant divisors let the JIT strength-reduce the division;
+                // games call this thousands of times per second.
+                seconds = elapsedTicks / 1_000_000_000L;
+                nanoseconds = elapsedTicks - seconds * 1_000_000_000L;
+            }
+            else
+            {
+                seconds = elapsedTicks / Stopwatch.Frequency;
+                nanoseconds = (elapsedTicks % Stopwatch.Frequency) * 1_000_000_000L / Stopwatch.Frequency;
+            }
         }
 
         if (!ctx.TryWriteUInt64(timeAddress, unchecked((ulong)seconds)) ||
@@ -792,13 +818,36 @@ public static class KernelRuntimeCompatExports
                 : AlignUp(_nextReservedVirtualBase, effectiveAlignment);
         }
 
-        if (!TryReserveVirtualRange(ctx, desiredAddress, length, effectiveAlignment, allowSearch: !fixedMapping, out var mappedAddress))
+        ulong releasedAddress = 0;
+        var reusedReleasedRange = !fixedMapping && requestedAddress == 0 &&
+            TryTakeReleasedVirtualRange(length, effectiveAlignment, out releasedAddress);
+        var alreadyBacked = fixedMapping && requestedAddress != 0 &&
+            KernelMemoryCompatExports.IsGuestRangeBacked(ctx, requestedAddress, length);
+        ulong mappedAddress;
+        if (reusedReleasedRange)
+        {
+            mappedAddress = releasedAddress;
+        }
+        else if (alreadyBacked)
+        {
+            mappedAddress = requestedAddress;
+        }
+        else if (!TryReserveVirtualRange(
+                     ctx,
+                     desiredAddress,
+                     length,
+                     effectiveAlignment,
+                     allowSearch: !fixedMapping,
+                     out mappedAddress))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
 
-        Console.Error.WriteLine(
-            $"[LOADER][TRACE] reserve_virtual_range: req=0x{requestedAddress:X16} desired=0x{desiredAddress:X16} mapped=0x{mappedAddress:X16} len=0x{length:X16} flags=0x{flags:X8} align=0x{effectiveAlignment:X16}");
+        if (ShouldTraceVirtualMemory())
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][TRACE] reserve_virtual_range: req=0x{requestedAddress:X16} desired=0x{desiredAddress:X16} mapped=0x{mappedAddress:X16} len=0x{length:X16} flags=0x{flags:X8} align=0x{effectiveAlignment:X16} already_backed={alreadyBacked} reused={reusedReleasedRange}");
+        }
 
         if (!ctx.TryWriteUInt64(inOutAddressPointer, mappedAddress))
         {
@@ -810,7 +859,77 @@ public static class KernelRuntimeCompatExports
             _nextReservedVirtualBase = Math.Max(_nextReservedVirtualBase, mappedAddress + length);
         }
 
+        KernelMemoryCompatExports.RegisterReservedVirtualRange(mappedAddress, length);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    internal static void RegisterReleasedVirtualRange(ulong address, ulong length)
+    {
+        if (address == 0 || length == 0 || ulong.MaxValue - address < length)
+        {
+            return;
+        }
+
+        lock (_stateGate)
+        {
+            var start = address;
+            var end = address + length;
+            for (var i = _releasedVirtualRanges.Count - 1; i >= 0; i--)
+            {
+                var existing = _releasedVirtualRanges[i];
+                var existingEnd = existing.Address + existing.Length;
+                if (end < existing.Address || existingEnd < start)
+                {
+                    continue;
+                }
+
+                start = Math.Min(start, existing.Address);
+                end = Math.Max(end, existingEnd);
+                _releasedVirtualRanges.RemoveAt(i);
+            }
+
+            _releasedVirtualRanges.Add(new ReleasedVirtualRange(start, end - start));
+        }
+    }
+
+    private static bool TryTakeReleasedVirtualRange(
+        ulong length,
+        ulong alignment,
+        out ulong address)
+    {
+        address = 0;
+        lock (_stateGate)
+        {
+            for (var i = 0; i < _releasedVirtualRanges.Count; i++)
+            {
+                var range = _releasedVirtualRanges[i];
+                var rangeEnd = range.Address + range.Length;
+                var aligned = AlignUp(range.Address, alignment);
+                if (aligned >= rangeEnd || length > rangeEnd - aligned)
+                {
+                    continue;
+                }
+
+                _releasedVirtualRanges.RemoveAt(i);
+                if (aligned > range.Address)
+                {
+                    _releasedVirtualRanges.Add(
+                        new ReleasedVirtualRange(range.Address, aligned - range.Address));
+                }
+
+                var allocationEnd = aligned + length;
+                if (allocationEnd < rangeEnd)
+                {
+                    _releasedVirtualRanges.Add(
+                        new ReleasedVirtualRange(allocationEnd, rangeEnd - allocationEnd));
+                }
+
+                address = aligned;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     [SysAbiExport(
@@ -874,22 +993,36 @@ public static class KernelRuntimeCompatExports
     public static int KernelGetModuleInfoFromAddr(CpuContext ctx)
     {
         var queriedAddress = ctx[CpuRegister.Rdi];
-        _ = ctx[CpuRegister.Rsi]; // mode
+        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
         var outInfoAddress = ctx[CpuRegister.Rdx];
         if (outInfoAddress == 0)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var moduleHandle = ResolveModuleHandleByAddress(queriedAddress);
-        if (!TryWriteInt32(ctx, outInfoAddress + ModuleInfoHandleOffset, moduleHandle))
+        if (flags is < 0 or >= 3)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!ctx.TryReadUInt64(outInfoAddress, out var callerSize))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        if (KernelModuleRegistry.TryGetModuleByHandle(moduleHandle, out var module))
+        if (callerSize != ModuleInfoExSize)
         {
-            _ = TryWriteModuleName(ctx, outInfoAddress, module.Name);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!KernelModuleRegistry.TryGetModuleByAddress(queriedAddress, out var module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        if (!TryWriteModuleInfoEx(ctx, outInfoAddress, module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -904,22 +1037,36 @@ public static class KernelRuntimeCompatExports
     public static int KernelGetModuleInfoForUnwind(CpuContext ctx)
     {
         var queriedAddress = ctx[CpuRegister.Rdi];
-        _ = ctx[CpuRegister.Rsi]; // flags
+        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
         var outInfoAddress = ctx[CpuRegister.Rdx];
         if (outInfoAddress == 0)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var moduleHandle = ResolveModuleHandleByAddress(queriedAddress);
-        if (!TryWriteInt32(ctx, outInfoAddress + ModuleInfoHandleOffset, moduleHandle))
+        if (flags is < 0 or >= 3)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!ctx.TryReadUInt64(outInfoAddress, out var callerSize))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        if (KernelModuleRegistry.TryGetModuleByHandle(moduleHandle, out var module))
+        if (callerSize < 0x130)
         {
-            _ = TryWriteModuleName(ctx, outInfoAddress, module.Name);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!KernelModuleRegistry.TryGetModuleByAddress(queriedAddress, out var module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        if (!TryWriteModuleInfoForUnwind(ctx, outInfoAddress, module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -959,7 +1106,7 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelGetModuleInfoInternal(CpuContext ctx)
     {
-        return KernelGetModuleInfoByHandleCore(
+        return KernelGetModuleInfoExByHandleCore(
             ctx,
             unchecked((int)ctx[CpuRegister.Rdi]),
             ctx[CpuRegister.Rsi]);
@@ -1150,6 +1297,8 @@ public static class KernelRuntimeCompatExports
     public static int KernelLoadStartModule(CpuContext ctx)
     {
         var modulePathAddress = ctx[CpuRegister.Rdi];
+        var argumentSize = ctx[CpuRegister.Rsi];
+        var argumentAddress = ctx[CpuRegister.Rdx];
         var resultAddress = ctx[CpuRegister.R9];
         if (resultAddress != 0 && !TryWriteInt32(ctx, resultAddress, 0))
         {
@@ -1175,6 +1324,40 @@ public static class KernelRuntimeCompatExports
         else
         {
             handle = KernelModuleRegistry.RegisterSyntheticModule("module.sprx", isSystemModule: false);
+        }
+
+        if (KernelModuleRegistry.TryBeginModuleStart(handle, out var moduleToStart))
+        {
+            var scheduler = GuestThreadExecution.Scheduler;
+            string? startError = null;
+            var started = scheduler is not null && scheduler.TryCallGuestFunction(
+                ctx,
+                moduleToStart.InitEntryPoint,
+                argumentSize,
+                argumentAddress,
+                0,
+                0,
+                $"sceKernelLoadStartModule:{moduleToStart.Name}",
+                out startError);
+            KernelModuleRegistry.CompleteModuleStart(handle, started);
+            if (!started)
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][ERROR] sceKernelLoadStartModule failed to start '{moduleToStart.Name}' " +
+                    $"at 0x{moduleToStart.InitEntryPoint:X16}: {startError ?? "guest scheduler unavailable"}");
+                var error = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_CPU_TRAP;
+                if (resultAddress != 0)
+                {
+                    _ = TryWriteInt32(ctx, resultAddress, error);
+                }
+
+                ctx[CpuRegister.Rax] = unchecked((ulong)(long)error);
+                return error;
+            }
+
+            Console.Error.WriteLine(
+                $"[LOADER][INFO] sceKernelLoadStartModule started '{moduleToStart.Name}' " +
+                $"at 0x{moduleToStart.InitEntryPoint:X16}");
         }
 
         ctx[CpuRegister.Rax] = unchecked((uint)handle);
@@ -1441,22 +1624,6 @@ public static class KernelRuntimeCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    private static int ResolveModuleHandleByAddress(ulong queriedAddress)
-    {
-        if (queriedAddress != 0 &&
-            KernelModuleRegistry.TryGetModuleByAddress(queriedAddress, out var moduleFromAddress))
-        {
-            return moduleFromAddress.Handle;
-        }
-
-        if (KernelModuleRegistry.TryGetFirstModule(out var firstModule))
-        {
-            return firstModule.Handle;
-        }
-
-        return 1;
-    }
-
     private static int KernelGetModuleInfoByHandleCore(CpuContext ctx, int handle, ulong outInfoAddress)
     {
         if (outInfoAddress == 0)
@@ -1469,12 +1636,52 @@ public static class KernelRuntimeCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
 
-        if (!TryWriteInt32(ctx, outInfoAddress + ModuleInfoHandleOffset, module.Handle))
+        if (!ctx.TryReadUInt64(outInfoAddress, out var callerSize))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        _ = TryWriteModuleName(ctx, outInfoAddress, module.Name);
+        if (callerSize != ModuleInfoSize)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryWriteModuleInfo(ctx, outInfoAddress, module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static int KernelGetModuleInfoExByHandleCore(CpuContext ctx, int handle, ulong outInfoAddress)
+    {
+        if (outInfoAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!KernelModuleRegistry.TryGetModuleByHandle(handle, out var module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        if (!ctx.TryReadUInt64(outInfoAddress, out var callerSize))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (callerSize != ModuleInfoExSize)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryWriteModuleInfoEx(ctx, outInfoAddress, module))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -1521,22 +1728,88 @@ public static class KernelRuntimeCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    private static bool TryWriteModuleName(CpuContext ctx, ulong outInfoAddress, string moduleName)
+    private static bool TryWriteModuleInfo(
+        CpuContext ctx,
+        ulong outInfoAddress,
+        KernelModuleRegistry.ModuleEntry module)
     {
-        if (outInfoAddress == 0 || string.IsNullOrWhiteSpace(moduleName))
+        var payload = new byte[ModuleInfoSize];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, ModuleInfoSize);
+        WriteModuleName(payload, module.Name);
+        WriteModuleSegment(payload, 0x108, module);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0x148), 1);
+        return ctx.Memory.TryWrite(outInfoAddress, payload);
+    }
+
+    private static bool TryWriteModuleInfoEx(
+        CpuContext ctx,
+        ulong outInfoAddress,
+        KernelModuleRegistry.ModuleEntry module)
+    {
+        var payload = new byte[ModuleInfoExSize];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, ModuleInfoExSize);
+        WriteModuleName(payload, module.Name);
+        BinaryPrimitives.WriteInt32LittleEndian(
+            payload.AsSpan((int)ModuleInfoExHandleOffset),
+            module.Handle);
+        BinaryPrimitives.WriteUInt64LittleEndian(
+            payload.AsSpan((int)ModuleInfoExInitProcOffset),
+            module.EntryPoint);
+        WriteModuleSegment(payload, (int)ModuleInfoExSegmentsOffset, module);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            payload.AsSpan((int)ModuleInfoExSegmentCountOffset),
+            1);
+        return ctx.Memory.TryWrite(outInfoAddress, payload);
+    }
+
+    private static bool TryWriteModuleInfoForUnwind(
+        CpuContext ctx,
+        ulong outInfoAddress,
+        KernelModuleRegistry.ModuleEntry module)
+    {
+        const int unwindInfoSize = 0x130;
+        var payload = new byte[unwindInfoSize];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, unwindInfoSize);
+        WriteModuleName(payload, module.Name);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0x108), module.EhFrameHeaderAddress);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0x110), module.EhFrameAddress);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0x118), module.EhFrameSize);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(0x120), module.BaseAddress);
+        BinaryPrimitives.WriteUInt64LittleEndian(
+            payload.AsSpan(0x128),
+            module.EndAddress - module.BaseAddress);
+        return ctx.Memory.TryWrite(outInfoAddress, payload);
+    }
+
+    private static void WriteModuleName(Span<byte> payload, string moduleName)
+    {
+        if (string.IsNullOrWhiteSpace(moduleName))
         {
-            return false;
+            return;
         }
 
         var encoded = Encoding.UTF8.GetBytes(moduleName);
         var payloadLength = Math.Min(encoded.Length, ModuleInfoNameMaxBytes - 1);
-        var buffer = new byte[ModuleInfoNameMaxBytes];
         if (payloadLength > 0)
         {
-            Array.Copy(encoded, 0, buffer, 0, payloadLength);
+            encoded.AsSpan(0, payloadLength).CopyTo(
+                payload.Slice((int)ModuleInfoNameOffset, payloadLength));
         }
+    }
 
-        return ctx.Memory.TryWrite(outInfoAddress + ModuleInfoNameOffset, buffer);
+    private static void WriteModuleSegment(
+        Span<byte> payload,
+        int offset,
+        KernelModuleRegistry.ModuleEntry module)
+    {
+        Debug.Assert(offset >= 0 && offset + ModuleInfoSegmentSize <= payload.Length);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.Slice(offset), module.BaseAddress);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            payload.Slice(offset + sizeof(ulong)),
+            (uint)Math.Min(module.EndAddress - module.BaseAddress, uint.MaxValue));
+        // Loaded modules are represented as a single aggregate readable and
+        // executable range until per-program-header registry data is exposed.
+        BinaryPrimitives.WriteInt32LittleEndian(payload.Slice(offset + 12), 5);
     }
 
     private static bool TryReadUtf8Z(CpuContext ctx, ulong address, int maxLength, out string value)
@@ -1590,40 +1863,59 @@ public static class KernelRuntimeCompatExports
 
     private static ulong ResolveKernelTscFrequency()
     {
+        var (frequencyHz, source) = SelectKernelTscFrequency(
+            _rdtscReader is not null,
+            Environment.GetEnvironmentVariable("CRAZIIEMU_TSC_FREQ_HZ"),
+            TryCalibrateHostTscFrequency,
+            TryResolveCpuidTscFrequency,
+            Stopwatch.Frequency);
+        TraceKernelTscFrequency(source, frequencyHz);
+        return frequencyHz;
+    }
+
+    internal delegate bool TryGetFrequency(out ulong frequencyHz);
+
+    // sceKernelReadTsc only returns the CPU's RDTSC when the host RDTSC reader is available
+    // (currently 64-bit Windows); otherwise it falls back to the QPC-based Stopwatch. The
+    // calibrated and CPUID frequencies both describe RDTSC, so reporting either while ReadTsc is
+    // actually returning Stopwatch ticks makes sceKernelGetTscFrequency disagree with the counter,
+    // and a guest computing elapsed = readTscDelta / frequency gets the wrong time on Linux and
+    // macOS. Gate those on rdtscAvailable; otherwise report Stopwatch's own frequency so the pair
+    // stays consistent.
+    internal static (ulong FrequencyHz, string Source) SelectKernelTscFrequency(
+        bool rdtscAvailable,
+        string? overrideHzText,
+        TryGetFrequency tryCalibrate,
+        TryGetFrequency tryResolveCpuid,
+        long stopwatchFrequency)
+    {
         const ulong minSane = 1_000_000UL;
 
-        var overrideHzText = Environment.GetEnvironmentVariable("CraziiEmu_TSC_FREQ_HZ");
+
         if (!string.IsNullOrWhiteSpace(overrideHzText) &&
             ulong.TryParse(overrideHzText, out var overrideHz) &&
             overrideHz >= minSane)
         {
-            TraceKernelTscFrequency("env", overrideHz);
-            return overrideHz;
+            return (overrideHz, "env");
         }
 
-        if (TryCalibrateHostTscFrequency(out ulong calibratedHz) && calibratedHz >= minSane)
+        if (rdtscAvailable)
         {
-            TraceKernelTscFrequency("calibrated-rdtsc", calibratedHz);
-            return calibratedHz;
+            if (tryCalibrate(out ulong calibratedHz) && calibratedHz >= minSane)
+            {
+                return (calibratedHz, "calibrated-rdtsc");
+            }
+
+            if (tryResolveCpuid(out ulong cpuidHz) && cpuidHz >= minSane)
+            {
+                return (cpuidHz, "cpuid");
+            }
         }
 
-        if (TryResolveCpuidTscFrequency(out ulong cpuidHz) && cpuidHz >= minSane)
-        {
-            TraceKernelTscFrequency("cpuid", cpuidHz);
-            return cpuidHz;
-        }
-
-        var hostQpc = Stopwatch.Frequency > 0
-            ? unchecked((ulong)Stopwatch.Frequency)
+        var hostQpc = stopwatchFrequency > 0
+            ? unchecked((ulong)stopwatchFrequency)
             : DefaultKernelTscFrequency;
-        if (hostQpc >= minSane)
-        {
-            TraceKernelTscFrequency("qpc", hostQpc);
-            return hostQpc;
-        }
-
-        TraceKernelTscFrequency("default", DefaultKernelTscFrequency);
-        return DefaultKernelTscFrequency;
+        return hostQpc >= minSane ? (hostQpc, "qpc") : (DefaultKernelTscFrequency, "default");
     }
 
     private static void TraceKernelTscFrequency(string source, ulong frequencyHz)
@@ -1756,7 +2048,8 @@ public static class KernelRuntimeCompatExports
 
     private static RdtscDelegate? CreateRdtscReader()
     {
-        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
+        if (!Environment.Is64BitProcess ||
+            RuntimeInformation.ProcessArchitecture != Architecture.X64)
         {
             return null;
         }
@@ -1786,8 +2079,8 @@ public static class KernelRuntimeCompatExports
         }
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern nint VirtualAlloc(nint lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);
+    private static unsafe nint VirtualAlloc(nint lpAddress, nuint dwSize, uint flAllocationType, uint flProtect) =>
+        (nint)HostMemory.Alloc((void*)lpAddress, dwSize, flAllocationType, flProtect);
 
     private static bool TryReserveVirtualRange(
         CpuContext ctx,
@@ -1797,119 +2090,16 @@ public static class KernelRuntimeCompatExports
         bool allowSearch,
         out ulong mappedAddress)
     {
-        mappedAddress = 0;
-        if (length == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            object memoryObject = ctx.Memory;
-            MethodInfo? allocateAt = null;
-            MethodInfo? allocateAtOrAbove = null;
-            var allocateAtHasAllowAlternativeArg = false;
-            for (var depth = 0; depth < 4; depth++)
-            {
-                foreach (var candidate in memoryObject.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    var parameters = candidate.GetParameters();
-                    if (string.Equals(candidate.Name, "TryAllocateAtOrAbove", StringComparison.Ordinal) &&
-                        parameters.Length == 5 &&
-                        parameters[0].ParameterType == typeof(ulong) &&
-                        parameters[1].ParameterType == typeof(ulong) &&
-                        parameters[2].ParameterType == typeof(bool) &&
-                        parameters[3].ParameterType == typeof(ulong) &&
-                        parameters[4].ParameterType == typeof(ulong).MakeByRefType())
-                    {
-                        allocateAtOrAbove = candidate;
-                    }
-                    else if (string.Equals(candidate.Name, "AllocateAt", StringComparison.Ordinal))
-                    {
-                        if (parameters.Length == 3 &&
-                            parameters[0].ParameterType == typeof(ulong) &&
-                            parameters[1].ParameterType == typeof(ulong) &&
-                            parameters[2].ParameterType == typeof(bool))
-                        {
-                            allocateAt = candidate;
-                            allocateAtHasAllowAlternativeArg = false;
-                        }
-                        else if (parameters.Length == 4 &&
-                            parameters[0].ParameterType == typeof(ulong) &&
-                            parameters[1].ParameterType == typeof(ulong) &&
-                            parameters[2].ParameterType == typeof(bool) &&
-                            parameters[3].ParameterType == typeof(bool))
-                        {
-                            allocateAt = candidate;
-                            allocateAtHasAllowAlternativeArg = true;
-                        }
-                    }
-
-                    if (allocateAtOrAbove is not null && allocateAt is not null)
-                    {
-                        break;
-                    }
-                }
-
-                if (allocateAtOrAbove is not null || allocateAt is not null)
-                {
-                    break;
-                }
-
-                var innerProperty = memoryObject.GetType().GetProperty("Inner", BindingFlags.Public | BindingFlags.Instance);
-                if (innerProperty is null)
-                {
-                    break;
-                }
-
-                var innerValue = innerProperty.GetValue(memoryObject);
-                if (innerValue is null || ReferenceEquals(innerValue, memoryObject))
-                {
-                    break;
-                }
-
-                memoryObject = innerValue;
-            }
-
-            if (allowSearch && allocateAtOrAbove is not null)
-            {
-                var searchArgs = new object[] { desiredAddress, length, false, alignment, 0UL };
-                var searchResult = allocateAtOrAbove.Invoke(memoryObject, searchArgs);
-                if (searchResult is bool trueValue && trueValue &&
-                    searchArgs[4] is ulong searchedAddress && searchedAddress != 0)
-                {
-                    mappedAddress = searchedAddress;
-                    KernelMemoryCompatExports.RegisterReservedVirtualRange(searchedAddress, length);
-                    return true;
-                }
-            }
-
-            if (allocateAt is null)
-            {
-                Console.Error.WriteLine($"[LOADER][TRACE] reserve_virtual_range: AllocateAt missing on {ctx.Memory.GetType().FullName}");
-                return false;
-            }
-
-            var invokeArgs = allocateAtHasAllowAlternativeArg
-                ? new object[] { desiredAddress, length, false, allowSearch }
-                : new object[] { desiredAddress, length, false };
-            var result = allocateAt.Invoke(memoryObject, invokeArgs);
-            if (result is not ulong allocated || allocated == 0)
-            {
-                var resultType = result?.GetType().FullName ?? "null";
-                Console.Error.WriteLine($"[LOADER][TRACE] reserve_virtual_range: AllocateAt returned {resultType} value={result ?? "null"}");
-                return false;
-            }
-
-            mappedAddress = allocated;
-            KernelMemoryCompatExports.RegisterReservedVirtualRange(allocated, length);
-            return true;
-        }
-        catch
-        {
-            Console.Error.WriteLine("[LOADER][TRACE] reserve_virtual_range: AllocateAt invocation threw");
-            return false;
-        }
+        return KernelVirtualRangeAllocator.TryReserve(
+            ctx,
+            desiredAddress,
+            length,
+            executable: false,
+            alignment,
+            allowSearch,
+            allowAllocateAtAlternative: allowSearch,
+            "reserve_virtual_range",
+            out mappedAddress);
     }
 
     private static ulong AlignUp(ulong value, ulong alignment)
@@ -1921,5 +2111,122 @@ public static class KernelRuntimeCompatExports
 
         var mask = alignment - 1;
         return (value + mask) & ~mask;
+    }
+
+    private static bool ShouldTraceVirtualMemory()
+    {
+        return string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_VIRTUAL_MEMORY"), "1", StringComparison.Ordinal);
+    }
+    [SysAbiExport(
+        Nid = "QvsZxomvUHs",
+        ExportName = "sceKernelNanosleep",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelNanosleep(CpuContext ctx) => NanosleepCore(ctx, posix: false);
+
+    [SysAbiExport(
+        Nid = "yS8U2TGCe1A",
+        ExportName = "nanosleep",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixNanosleep(CpuContext ctx) => NanosleepCore(ctx, posix: true);
+
+    private static int NanosleepCore(CpuContext ctx, bool posix)
+    {
+        const int eFault = 14;
+        const int eInvalid = 22;
+        var requestAddress = ctx[CpuRegister.Rdi];
+        var remainAddress = ctx[CpuRegister.Rsi];
+
+        if (requestAddress == 0)
+        {
+            return NanosleepFailure(ctx, posix, eInvalid, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        Span<byte> timespecBuffer = stackalloc byte[16];
+        if (!ctx.Memory.TryRead(requestAddress, timespecBuffer))
+        {
+            return NanosleepFailure(ctx, posix, eFault, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        var tvSec = BinaryPrimitives.ReadInt64LittleEndian(timespecBuffer);
+        var tvNsec = BinaryPrimitives.ReadInt64LittleEndian(timespecBuffer[sizeof(long)..]);
+        if (tvSec < 0 || tvNsec < 0 || tvNsec >= 1_000_000_000L)
+        {
+            return NanosleepFailure(ctx, posix, eInvalid, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (tvSec == 0 && tvNsec == 0)
+        {
+            WriteRemainingTime(ctx, remainAddress, 0, 0);
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        GuestThreadExecution.Scheduler?.Pump(ctx, posix ? "nanosleep" : "sceKernelNanosleep");
+        var totalTicks = tvSec * TimeSpan.TicksPerSecond + Math.Max(tvNsec / 100L, 1L);
+        try
+        {
+            Thread.Sleep(TimeSpan.FromTicks(totalTicks));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            Thread.Sleep(TimeSpan.FromMilliseconds(int.MaxValue));
+        }
+
+        WriteRemainingTime(ctx, remainAddress, 0, 0);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static int NanosleepFailure(
+        CpuContext ctx,
+        bool posix,
+        int errnoValue,
+        OrbisGen2Result sceResult)
+    {
+        if (posix)
+        {
+            TrySetErrno(ctx, errnoValue);
+            ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        }
+        else
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)errnoValue);
+        }
+
+        return (int)sceResult;
+    }
+
+    private static void WriteRemainingTime(CpuContext ctx, ulong remainAddress, long seconds, long nanoseconds)
+    {
+        if (remainAddress == 0)
+        {
+            return;
+        }
+
+        Span<byte> remainBuffer = stackalloc byte[16];
+        BinaryPrimitives.WriteInt64LittleEndian(remainBuffer, seconds);
+        BinaryPrimitives.WriteInt64LittleEndian(remainBuffer[sizeof(long)..], nanoseconds);
+        ctx.Memory.TryWrite(remainAddress, remainBuffer);
+    }
+
+    [SysAbiExport(
+        Nid = "QcteRwbsnV0",
+        ExportName = "usleep",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PosixUsleep(CpuContext ctx) => KernelUsleep(ctx);
+
+    [SysAbiExport(
+        Nid = "HoLVWNanBBc",
+        ExportName = "getpid",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int GetProcessId(CpuContext ctx)
+    {
+        var processId = Environment.ProcessId;
+        ctx[CpuRegister.Rax] = unchecked((uint)processId);
+        return processId;
     }
 }

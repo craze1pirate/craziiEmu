@@ -3,26 +3,26 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.Logging;
-
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Ampr;
+using CraziiEmu.Libs.Bink;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Threading;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Linq;
 using System.Globalization;
 
 namespace CraziiEmu.Libs.Kernel;
 
-public static class KernelMemoryCompatExports
+public static partial class KernelMemoryCompatExports
 {
     private const int MaxGuestStringLength = 4096;
     private const int WideCharSize = sizeof(ushort);
     private const int MemsetChunkSize = 16 * 1024;
-    private const int TlsModuleBlockSize = 0x10000;
+    private static readonly byte[] _zeroChunk = new byte[MemsetChunkSize];
     private const int O_WRONLY = 0x1;
     private const int O_RDWR = 0x2;
     private const int O_APPEND = 0x8;
@@ -99,31 +99,48 @@ public static class KernelMemoryCompatExports
     private static readonly Dictionary<int, OpenDirectory> _openDirectories = new();
     private static readonly object _libcAllocGate = new();
     private static readonly object _memoryGate = new();
-    private static readonly object _tlsGate = new();
     private static readonly object _ioTraceGate = new();
     private static readonly object _statCacheGate = new();
     private static readonly object _guestMountGate = new();
     private static readonly Dictionary<ulong, DirectAllocation> _directAllocations = new();
     private static readonly Dictionary<ulong, LibcHeapAllocation> _libcAllocations = new();
-    private static readonly Dictionary<ulong, MappedRegion> _mappedRegions = new();
-    private static readonly Dictionary<ulong, ulong> _tlsModuleBlocks = new();
+    // Keyed by (and kept sorted on) region base address so VirtualQuery can find a
+    // containing/next region with a binary search instead of an O(n) scan. Every
+    // write uses the region's own Address as the key (see AddMappedRegionSliceLocked
+    // and the mmap sites), so Values enumerate in ascending address order.
+    private static readonly SortedList<ulong, MappedRegion> _mappedRegions = new();
+    private static readonly Dictionary<ulong, string> _mappedRegionNames = new();
     private static readonly Dictionary<string, string> _guestMounts = new(StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> _tracedStatResults = new(StringComparer.Ordinal);
     private static readonly HashSet<string> _negativeStatCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, ulong> _aprFileSizeCache = new(StringComparer.OrdinalIgnoreCase);
     private static long _nextFileDescriptor = 2;
+
+    internal static int AllocateGuestFileDescriptor()
+    {
+        lock (_fdGate)
+        {
+            return (int)Interlocked.Increment(ref _nextFileDescriptor);
+        }
+    }
+
     private static ulong _nextPhysicalAddress;
     private static ulong _nextVirtualAddress;
+    // First guest virtual address handed out for direct/flexible mappings
+    // when the game does not request one. 4GB is free on Windows, but on
+    // POSIX hosts it belongs to the host image / runtime (the Mach-O image
+    // base is 0x100000000 on macOS), so search from a guest-owned window
+    // well clear of host mappings instead.
+    private static readonly ulong DefaultMapSearchBase =
+        OperatingSystem.IsWindows() ? 0x1_0000_0000UL : 0x20_0000_0000UL;
     private static ulong _mainDirectMemoryPoolBase = UnsetMainDirectMemoryPoolBase;
     private static ulong _allocatedFlexibleBytes;
     private static ulong _threadAtexitCountCallback;
     private static ulong _threadAtexitReportCallback;
     private static ulong _threadDtorsCallback;
-    private static int _nullMemsetRecoveryCount;
-    private static int _nonCanonicalMemsetRecoveryCount;
-    private static int _inaccessibleMemsetRecoveryCount;
     private static int _hostMemoryWriteFallbackCount;
     private static int _hostMemoryReadFallbackCount;
-    private static int _nullWcscpyRecoveryCount;
+    private static int _nullStrcasecmpRecoveryCount;
     private static string? _cachedApp0Root;
     private static string? _cachedDownload0Root;
 
@@ -139,12 +156,23 @@ public static class KernelMemoryCompatExports
         public uint Type;
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern nuint VirtualQuery(nint lpAddress, out MemoryBasicInformation lpBuffer, nuint dwLength);
+    private static unsafe nuint VirtualQuery(nint lpAddress, out MemoryBasicInformation lpBuffer, nuint dwLength)
+    {
+        _ = dwLength;
+        var result = HostMemory.Query((void*)lpAddress, out var info);
+        lpBuffer = default;
+        lpBuffer.BaseAddress = (nint)info.BaseAddress;
+        lpBuffer.AllocationBase = (nint)info.AllocationBase;
+        lpBuffer.AllocationProtect = info.AllocationProtect;
+        lpBuffer.RegionSize = (nuint)info.RegionSize;
+        lpBuffer.State = info.State;
+        lpBuffer.Protect = info.Protect;
+        lpBuffer.Type = info.Type;
+        return result;
+    }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool VirtualProtect(nint lpAddress, nuint dwSize, uint flNewProtect, out uint lpflOldProtect);
+    private static unsafe bool VirtualProtect(nint lpAddress, nuint dwSize, uint flNewProtect, out uint lpflOldProtect) =>
+        HostMemory.Protect((void*)lpAddress, dwSize, flNewProtect, out lpflOldProtect);
 
     private sealed class OpenDirectory
     {
@@ -177,32 +205,6 @@ public static class KernelMemoryCompatExports
                     IsDirect: false,
                     DirectStart: 0);
             }
-        }
-    }
-
-    public static void RegisterGuestPathMount(string guestMountPoint, string hostRoot)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(guestMountPoint);
-        ArgumentException.ThrowIfNullOrWhiteSpace(hostRoot);
-
-        var normalizedMountPoint = NormalizeGuestStatCachePath(guestMountPoint);
-        if (normalizedMountPoint is null || normalizedMountPoint == "/")
-        {
-            throw new ArgumentException("Guest mount point must name a directory.", nameof(guestMountPoint));
-        }
-
-        var normalizedHostRoot = Path.GetFullPath(hostRoot);
-        Directory.CreateDirectory(normalizedHostRoot);
-        lock (_guestMountGate)
-        {
-            _guestMounts[normalizedMountPoint] = normalizedHostRoot;
-        }
-
-        lock (_statCacheGate)
-        {
-            _negativeStatCache.RemoveWhere(path =>
-                string.Equals(path, normalizedMountPoint, StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith(normalizedMountPoint + "/", StringComparison.OrdinalIgnoreCase));
         }
     }
 
@@ -257,1836 +259,6 @@ public static class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
-        Nid = "8zTFvBIAIN8",
-        ExportName = "memset",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Memset(CpuContext ctx)
-    {
-        var destination = ctx[CpuRegister.Rdi];
-        var value = (byte)(ctx[CpuRegister.Rsi] & 0xFF);
-        var length = ctx[CpuRegister.Rdx];
-        if (length == 0)
-        {
-            ctx[CpuRegister.Rax] = destination;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (destination == 0)
-        {
-            if (length <= 0x20)
-            {
-                var recoveryIndex = Interlocked.Increment(ref _nullMemsetRecoveryCount);
-                if (recoveryIndex <= 8)
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARNING] memset null-dst recovery#{recoveryIndex}: rip=0x{ctx.Rip:X16} len=0x{length:X} val=0x{value:X2}");
-                }
-
-                ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        const ulong CanonicalUserUpper = 0x0000800000000000UL;
-        if (destination >= CanonicalUserUpper && length <= 0x40)
-        {
-            var recoveryIndex = Interlocked.Increment(ref _nonCanonicalMemsetRecoveryCount);
-            if (recoveryIndex <= 8)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][WARNING] memset non-canonical-dst recovery#{recoveryIndex}: rip=0x{ctx.Rip:X16} dst=0x{destination:X16} len=0x{length:X} val=0x{value:X2}");
-            }
-
-            ctx[CpuRegister.Rax] = destination;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        const ulong MaxSane = 512UL * 1024 * 1024;
-        if (destination < 0x1000 || destination >= CanonicalUserUpper || length > MaxSane)
-        {
-            CraziiEmuLog.For("Kernel").Info("!!! CRITICAL: Bad Memset Call !!!");
-            CraziiEmuLog.For("Kernel").Info($"Called from RIP: 0x{ctx.Rip:X}");
-            CraziiEmuLog.For("Kernel").Info($"dst=0x{destination:X} val=0x{value:X2} len=0x{length:X}");
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var chunk = new byte[MemsetChunkSize];
-        Array.Fill(chunk, value);
-        var remaining = length;
-        var cursor = destination;
-        while (remaining > 0)
-        {
-            var take = (int)Math.Min((ulong)chunk.Length, remaining);
-            if (!TryWriteCompat(ctx, cursor, chunk.AsSpan(0, take)))
-            {
-                if (length <= 0x40)
-                {
-                    var recoveryIndex = Interlocked.Increment(ref _inaccessibleMemsetRecoveryCount);
-                    if (recoveryIndex <= 8)
-                    {
-                        Console.Error.WriteLine(
-                            $"[LOADER][WARNING] memset inaccessible-dst recovery#{recoveryIndex}: rip=0x{ctx.Rip:X16} dst=0x{destination:X16} len=0x{length:X} val=0x{value:X2}");
-                    }
-
-                    ctx[CpuRegister.Rax] = destination;
-                    return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-                }
-
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            cursor += (ulong)take;
-            remaining -= (ulong)take;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "j4ViWNHEgww",
-        ExportName = "strlen",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strlen(CpuContext ctx)
-    {
-        if (!TryReadCString(ctx, ctx[CpuRegister.Rdi], 1_048_576, out var bytes))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)bytes.Length);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "5jNubw4vlAA",
-        ExportName = "strnlen",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strnlen(CpuContext ctx)
-    {
-        var maxLength = ctx[CpuRegister.Rsi];
-        if (!TryReadCString(ctx, ctx[CpuRegister.Rdi], maxLength, out var bytes))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)bytes.Length);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "LHMrG7e8G78",
-        ExportName = "wcslen",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcslen(CpuContext ctx)
-    {
-        return WcslenCore(ctx, ctx[CpuRegister.Rdi]);
-    }
-
-    [SysAbiExport(
-        Nid = "WkkeywLJcgU",
-        ExportName = "wcslen",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int WcslenWkkey(CpuContext ctx)
-    {
-        return WcslenCore(ctx, ctx[CpuRegister.Rdi]);
-    }
-
-    private static int WcslenCore(CpuContext ctx, ulong address)
-    {
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_WIDE"), "1", StringComparison.Ordinal))
-        {
-            Span<byte> probe = stackalloc byte[32];
-            if (TryReadCompat(ctx, address, probe))
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][TRACE] wcslen probe @0x{address:X16}: {Convert.ToHexString(probe).ToLowerInvariant()}");
-            }
-            else
-            {
-                Console.Error.WriteLine($"[LOADER][TRACE] wcslen probe @0x{address:X16}: <unreadable>");
-            }
-        }
-
-        if (!TryReadWideCString(ctx, address, 1_048_576, out var units))
-        {
-            Console.Error.WriteLine($"[LOADER][WARN] wcslen: unreadable string at 0x{address:X16}");
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)units.Length);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Ovb2dSJOAuE",
-        ExportName = "strcmp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strcmp(CpuContext ctx)
-    {
-        var left = ctx[CpuRegister.Rdi];
-        var right = ctx[CpuRegister.Rsi];
-        if (!TryCompareStrings(ctx, left, right, limit: ulong.MaxValue, out var compare))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)compare);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "fV2xHER+bKE",
-        ExportName = "wcscoll",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcscoll(CpuContext ctx)
-    {
-        return WcscollCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi]);
-    }
-
-    [SysAbiExport(
-        Nid = "pNtJdE3x49E",
-        ExportName = "wcscmp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcscmp(CpuContext ctx)
-    {
-        return WcscmpCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi]);
-    }
-
-    private static int WcscollCore(CpuContext ctx, ulong left, ulong right)
-    {
-        return WcscmpCore(ctx, left, right);
-    }
-
-    private static int WcscmpCore(CpuContext ctx, ulong left, ulong right)
-    {
-        if (!TryCompareWideStrings(ctx, left, right, limit: ulong.MaxValue, out var compare))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)compare);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "FM5NPnLqBc8",
-        ExportName = "wcscpy",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int WcscpyFm5(CpuContext ctx)
-    {
-        return WcscpyCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi]);
-    }
-
-    private static int WcscpyCore(CpuContext ctx, ulong destination, ulong source)
-    {
-        if (source == 0)
-        {
-            var recoveryIndex = Interlocked.Increment(ref _nullWcscpyRecoveryCount);
-            if (recoveryIndex <= 8)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][WARNING] wcscpy null-src recovery#{recoveryIndex}: rip=0x{ctx.Rip:X16} dst=0x{destination:X16}");
-            }
-
-            if (!TryWriteWideTerminator(ctx, destination))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = destination;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryReadWideCString(ctx, source, 1_048_576, out var units))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        if (!TryWriteCompat(ctx, destination, EncodeWideUnitsWithTerminator(units)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "aesyjrHVWy4",
-        ExportName = "strncmp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strncmp(CpuContext ctx)
-    {
-        var left = ctx[CpuRegister.Rdi];
-        var right = ctx[CpuRegister.Rsi];
-        var limit = ctx[CpuRegister.Rdx];
-        if (!TryCompareStrings(ctx, left, right, limit, out var compare))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)compare);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "0nV21JjYCH8",
-        ExportName = "wcsncpy",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcsncpy(CpuContext ctx)
-    {
-        return WcsncpyCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
-    }
-
-    [SysAbiExport(
-        Nid = "E8wCoUEbfzk",
-        ExportName = "wcsncmp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcsncmp(CpuContext ctx)
-    {
-        return WcsncmpCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
-    }
-
-    private static int WcsncmpCore(CpuContext ctx, ulong left, ulong right, ulong limit)
-    {
-        if (!TryCompareWideStrings(ctx, left, right, limit, out var compare))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)compare);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "eLdDw6l0-bU",
-        ExportName = "snprintf",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Snprintf(CpuContext ctx)
-    {
-        return SnprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "Q2V+iqvjgC0",
-        ExportName = "vsnprintf",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Vsnprintf(CpuContext ctx)
-    {
-        return VsnprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "nJz16JE1txM",
-        ExportName = "swprintf",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Swprintf(CpuContext ctx)
-    {
-        return SwprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "u0XOsuOmOzc",
-        ExportName = "vswprintf",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Vswprintf(CpuContext ctx)
-    {
-        return VswprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "Im55VJ-Bekc",
-        ExportName = "swprintf_s",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int SwprintfS(CpuContext ctx)
-    {
-        return SwprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "oDoV9tyHTbA",
-        ExportName = "vswprintf_s",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int VswprintfS(CpuContext ctx)
-    {
-        return VswprintfCore(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "GMpvxPFW924",
-        ExportName = "vprintf",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Vprintf(CpuContext ctx)
-    {
-        var formatAddress = ctx[CpuRegister.Rdi];
-        var vaListAddress = ctx[CpuRegister.Rsi];
-        if (!TryReadCString(ctx, formatAddress, 1_048_576, out var formatBytes))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var format = Encoding.UTF8.GetString(formatBytes);
-        string rendered;
-        if (!TryCreateVaListCursor(ctx, vaListAddress, out var vaCursor))
-        {
-            rendered = format;
-        }
-        else
-        {
-            rendered = FormatString(ctx, format, ref vaCursor);
-        }
-
-        Console.Write(rendered);
-        ctx[CpuRegister.Rax] = unchecked((ulong)Encoding.UTF8.GetByteCount(rendered));
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "kiZSXIWd9vg",
-        ExportName = "strcpy",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strcpy(CpuContext ctx)
-    {
-        var destination = ctx[CpuRegister.Rdi];
-        var source = ctx[CpuRegister.Rsi];
-        if (!TryReadCString(ctx, source, 1_048_576, out var bytes))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var payload = new byte[bytes.Length + 1];
-        bytes.CopyTo(payload.AsSpan());
-        if (!TryWriteCompat(ctx, destination, payload))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "6f5f-qx4ucA",
-        ExportName = "wcscpy_s",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int WcscpyS(CpuContext ctx)
-    {
-        return WcscpySCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
-    }
-
-    [SysAbiExport(
-        Nid = "6sJWiWSRuqk",
-        ExportName = "strncpy",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Strncpy(CpuContext ctx)
-    {
-        var destination = ctx[CpuRegister.Rdi];
-        var source = ctx[CpuRegister.Rsi];
-        var count = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (count < 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        var payload = new byte[count];
-        Span<byte> one = stackalloc byte[1];
-        var copied = 0;
-        while (copied < count)
-        {
-            if (!TryReadCompat(ctx, source + (ulong)copied, one))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            payload[copied] = one[0];
-            copied++;
-            if (one[0] == 0)
-            {
-                break;
-            }
-        }
-
-        if (!TryWriteCompat(ctx, destination, payload))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Slmz4HMpNGs",
-        ExportName = "wcsncpy_s",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int WcsncpyS(CpuContext ctx)
-    {
-        return WcsncpySCore(ctx, ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx], ctx[CpuRegister.Rcx]);
-    }
-
-    private static int WcsncpyCore(CpuContext ctx, ulong destination, ulong source, ulong countValue)
-    {
-        var count = (int)Math.Min(countValue, int.MaxValue);
-        if (count < 0 || count > (int.MaxValue / WideCharSize))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        var payload = new byte[count * WideCharSize];
-        for (var copied = 0; copied < count; copied++)
-        {
-            if (!TryReadUInt16Compat(ctx, source + ((ulong)copied * WideCharSize), out var unit))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            BinaryPrimitives.WriteUInt16LittleEndian(
-                payload.AsSpan(copied * WideCharSize, WideCharSize),
-                unit);
-
-            if (unit == 0)
-            {
-                break;
-            }
-        }
-
-        if (!TryWriteCompat(ctx, destination, payload))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Ezzq78ZgHPs",
-        ExportName = "wcschr",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Wcschr(CpuContext ctx)
-    {
-        return WcschrCore(ctx, ctx[CpuRegister.Rdi], unchecked((ushort)ctx[CpuRegister.Rsi]));
-    }
-
-    private static int WcschrCore(CpuContext ctx, ulong address, ushort needle)
-    {
-        for (ulong index = 0; index < 1_048_576; index++)
-        {
-            if (!TryReadUInt16Compat(ctx, address + (index * WideCharSize), out var unit))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            if (unit == needle)
-            {
-                ctx[CpuRegister.Rax] = address + (index * WideCharSize);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            if (unit == 0)
-            {
-                break;
-            }
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    private static int WcscpySCore(CpuContext ctx, ulong destination, ulong destinationCount, ulong source)
-    {
-        if (destination == 0 || destinationCount == 0)
-        {
-            ctx[CpuRegister.Rax] = Einval;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (source == 0)
-        {
-            if (!TryZeroWideDestination(ctx, destination, destinationCount))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = Einval;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        var probeLimit = Math.Min(destinationCount, 1_048_576UL);
-        if (!TryReadWideCStringBounded(ctx, source, probeLimit, out var units, out var terminated))
-        {
-            _ = TryZeroWideDestination(ctx, destination, destinationCount);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        if (!terminated || (ulong)units.Length + 1 > destinationCount)
-        {
-            if (!TryZeroWideDestination(ctx, destination, destinationCount))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = Erange;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryWriteCompat(ctx, destination, EncodeWideUnitsWithTerminator(units)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    private static int WcsncpySCore(CpuContext ctx, ulong destination, ulong destinationCount, ulong source, ulong count)
-    {
-        if (destination == 0 || destinationCount == 0)
-        {
-            ctx[CpuRegister.Rax] = Einval;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (source == 0)
-        {
-            if (!TryZeroWideDestination(ctx, destination, destinationCount))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = Einval;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (count == 0)
-        {
-            if (!TryWriteWideTerminator(ctx, destination))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (count == ulong.MaxValue)
-        {
-            var copyLimit = Math.Min(destinationCount - 1, 1_048_576UL);
-            if (!TryReadWideCStringBounded(ctx, source, copyLimit, out var truncatedUnits, out var terminated))
-            {
-                _ = TryZeroWideDestination(ctx, destination, destinationCount);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            if (!TryWriteCompat(ctx, destination, EncodeWideUnitsWithTerminator(truncatedUnits)))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = terminated ? 0UL : Struncate;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        var boundedCount = Math.Min(count, 1_048_576UL);
-        if (!TryReadWideCStringBounded(ctx, source, boundedCount, out var units, out var sourceTerminated))
-        {
-            _ = TryZeroWideDestination(ctx, destination, destinationCount);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var requiredUnits = sourceTerminated ? (ulong)units.Length + 1 : boundedCount + 1;
-        if (requiredUnits > destinationCount)
-        {
-            if (!TryZeroWideDestination(ctx, destination, destinationCount))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            ctx[CpuRegister.Rax] = Erange;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryWriteCompat(ctx, destination, EncodeWideUnitsWithTerminator(units)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Q3VBxCXhUHs",
-        ExportName = "memcpy",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Memcpy(CpuContext ctx)
-    {
-        var destination = ctx[CpuRegister.Rdi];
-        var source = ctx[CpuRegister.Rsi];
-        var count = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (count < 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        var payload = GC.AllocateUninitializedArray<byte>(count);
-        if (count > 0 && (!TryReadCompat(ctx, source, payload) || !TryWriteCompat(ctx, destination, payload)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = destination;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "+P6FRGH4LfA",
-        ExportName = "memmove",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Memmove(CpuContext ctx)
-    {
-        return Memcpy(ctx);
-    }
-
-    [SysAbiExport(
-        Nid = "gQX+4GDQjpM",
-        ExportName = "malloc",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Malloc(CpuContext ctx)
-    {
-        ctx[CpuRegister.Rax] =
-            TryAllocateLibcHeap(ctx, ctx[CpuRegister.Rdi], DefaultLibcHeapAlignment, zeroFill: false, out var address)
-                ? address
-                : 0;
-        TraceLibcAllocation(
-            ctx,
-            "malloc",
-            size: ctx[CpuRegister.Rdi],
-            alignment: DefaultLibcHeapAlignment,
-            resultAddress: ctx[CpuRegister.Rax]);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "tIhsqj0qsFE",
-        ExportName = "free",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Free(CpuContext ctx)
-    {
-        FreeLibcHeap(ctx[CpuRegister.Rdi]);
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "2X5agFjKxMc",
-        ExportName = "calloc",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Calloc(CpuContext ctx)
-    {
-        ctx[CpuRegister.Rax] =
-            TryMultiplyAllocationSize(ctx[CpuRegister.Rdi], ctx[CpuRegister.Rsi], out var totalSize) &&
-            TryAllocateLibcHeapCore(ctx, totalSize, DefaultLibcHeapAlignment, zeroFill: true, out var address)
-                ? address
-                : 0;
-        TraceLibcAllocation(
-            ctx,
-            "calloc",
-            size: ctx[CpuRegister.Rdi],
-            count: ctx[CpuRegister.Rsi],
-            alignment: DefaultLibcHeapAlignment,
-            resultAddress: ctx[CpuRegister.Rax]);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Y7aJ1uydPMo",
-        ExportName = "realloc",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Realloc(CpuContext ctx)
-    {
-        var existingAddress = ctx[CpuRegister.Rdi];
-        var requestedSize = ctx[CpuRegister.Rsi];
-
-        if (existingAddress == 0)
-        {
-            ctx[CpuRegister.Rax] =
-                TryAllocateLibcHeap(ctx, requestedSize, DefaultLibcHeapAlignment, zeroFill: false, out var freshAddress)
-                    ? freshAddress
-                    : 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (requestedSize == 0)
-        {
-            FreeLibcHeap(existingAddress);
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] =
-            TryReallocateLibcHeap(ctx, existingAddress, requestedSize, out var resizedAddress)
-                ? resizedAddress
-                : 0;
-        TraceLibcAllocation(
-            ctx,
-            "realloc",
-            size: requestedSize,
-            existingAddress: existingAddress,
-            resultAddress: ctx[CpuRegister.Rax]);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "Ujf3KzMvRmI",
-        ExportName = "memalign",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Memalign(CpuContext ctx)
-    {
-        ctx[CpuRegister.Rax] =
-            TryAllocateAlignedLibcHeap(
-                ctx,
-                alignmentValue: ctx[CpuRegister.Rdi],
-                requestedSize: ctx[CpuRegister.Rsi],
-                requireSizeMultiple: false,
-                out var address)
-                ? address
-                : 0;
-        TraceLibcAllocation(
-            ctx,
-            "memalign",
-            size: ctx[CpuRegister.Rsi],
-            alignment: ctx[CpuRegister.Rdi],
-            resultAddress: ctx[CpuRegister.Rax]);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "2Btkg8k24Zg",
-        ExportName = "aligned_alloc",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int AlignedAlloc(CpuContext ctx)
-    {
-        ctx[CpuRegister.Rax] =
-            TryAllocateAlignedLibcHeap(
-                ctx,
-                alignmentValue: ctx[CpuRegister.Rdi],
-                requestedSize: ctx[CpuRegister.Rsi],
-                requireSizeMultiple: true,
-                out var address)
-                ? address
-                : 0;
-        TraceLibcAllocation(
-            ctx,
-            "aligned_alloc",
-            size: ctx[CpuRegister.Rsi],
-            alignment: ctx[CpuRegister.Rdi],
-            resultAddress: ctx[CpuRegister.Rax]);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "cVSk9y8URbc",
-        ExportName = "posix_memalign",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int PosixMemalign(CpuContext ctx)
-    {
-        var outPointerAddress = ctx[CpuRegister.Rdi];
-        if (outPointerAddress == 0)
-        {
-            ctx[CpuRegister.Rax] = Einval;
-            TraceLibcAllocation(
-                ctx,
-                "posix_memalign",
-                size: ctx[CpuRegister.Rdx],
-                alignment: ctx[CpuRegister.Rsi],
-                existingAddress: outPointerAddress,
-                resultAddress: 0,
-                errorCode: Einval);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryValidateAlignedAllocation(
-                ctx[CpuRegister.Rsi],
-                ctx[CpuRegister.Rdx],
-                requireSizeMultiple: false,
-                requirePointerSizedAlignment: true,
-                out var alignment,
-                out var requestedSize))
-        {
-            _ = TryWriteUInt64Compat(ctx, outPointerAddress, 0);
-            ctx[CpuRegister.Rax] = Einval;
-            TraceLibcAllocation(
-                ctx,
-                "posix_memalign",
-                size: ctx[CpuRegister.Rdx],
-                alignment: ctx[CpuRegister.Rsi],
-                existingAddress: outPointerAddress,
-                resultAddress: 0,
-                errorCode: Einval);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryAllocateLibcHeapCore(ctx, requestedSize, alignment, zeroFill: false, out var address))
-        {
-            _ = TryWriteUInt64Compat(ctx, outPointerAddress, 0);
-            ctx[CpuRegister.Rax] = Enomem;
-            TraceLibcAllocation(
-                ctx,
-                "posix_memalign",
-                size: requestedSize,
-                alignment: alignment,
-                existingAddress: outPointerAddress,
-                resultAddress: 0,
-                errorCode: Enomem);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryWriteUInt64Compat(ctx, outPointerAddress, address))
-        {
-            FreeLibcHeap(address);
-            ctx[CpuRegister.Rax] = Einval;
-            TraceLibcAllocation(
-                ctx,
-                "posix_memalign",
-                size: requestedSize,
-                alignment: alignment,
-                existingAddress: outPointerAddress,
-                resultAddress: 0,
-                errorCode: Einval);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        TraceLibcAllocation(
-            ctx,
-            "posix_memalign",
-            size: requestedSize,
-            alignment: alignment,
-            existingAddress: outPointerAddress,
-            resultAddress: address);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "DfivPArhucg",
-        ExportName = "memcmp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Memcmp(CpuContext ctx)
-    {
-        var left = ctx[CpuRegister.Rdi];
-        var right = ctx[CpuRegister.Rsi];
-        var count = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (count < 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        Span<byte> leftByte = stackalloc byte[1];
-        Span<byte> rightByte = stackalloc byte[1];
-        for (var i = 0; i < count; i++)
-        {
-            if (!TryReadCompat(ctx, left + (ulong)i, leftByte) ||
-                !TryReadCompat(ctx, right + (ulong)i, rightByte))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            var diff = leftByte[0] - rightByte[0];
-            if (diff != 0)
-            {
-                ctx[CpuRegister.Rax] = unchecked((ulong)diff);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "QrZZdJ8XsX0",
-        ExportName = "fputs",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libc")]
-    public static int Fputs(CpuContext ctx)
-    {
-        var textAddress = ctx[CpuRegister.Rdi];
-        var stream = ctx[CpuRegister.Rsi];
-        if (textAddress == 0)
-        {
-            ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryReadNullTerminatedUtf8(ctx, textAddress, MaxGuestStringLength, out var text))
-        {
-            ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        if (stream == 0)
-        {
-            Console.Error.Write(text);
-            Console.Error.Flush();
-        }
-        else
-        {
-            Console.Out.Write(text);
-            Console.Out.Flush();
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)text.Length);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "6c3rCVE-fTU",
-        ExportName = "_open",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelOpenUnderscore(CpuContext ctx)
-    {
-        var pathAddress = ctx[CpuRegister.Rdi];
-        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
-        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var hostPath = ResolveGuestPath(guestPath);
-        var access = ResolveOpenAccess(flags);
-        var mode = ResolveOpenMode(flags, access);
-        try
-        {
-            if (IsMutatingOpen(flags) && IsReadOnlyGuestMutationPath(guestPath))
-            {
-                LogOpenTrace($"_open readonly path='{guestPath}' host='{hostPath}' flags=0x{flags:X8}");
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-            }
-
-            var wantsDirectory = (flags & O_DIRECTORY) != 0;
-            if (wantsDirectory || Directory.Exists(hostPath))
-            {
-                if (!Directory.Exists(hostPath))
-                {
-                    LogOpenTrace($"_open miss path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} directory=1");
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-                }
-
-                if (access != FileAccess.Read || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0)
-                {
-                    LogOpenTrace($"_open invalid-dir path='{guestPath}' host='{hostPath}' flags=0x{flags:X8}");
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-                }
-
-                var directoryFd = (int)Interlocked.Increment(ref _nextFileDescriptor);
-                lock (_fdGate)
-                {
-                    _openDirectories[directoryFd] = new OpenDirectory
-                    {
-                        Path = hostPath,
-                        Entries = EnumerateDirectoryEntries(hostPath),
-                        NextIndex = 0
-                    };
-                }
-
-                LogOpenTrace($"_open dir path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} fd={directoryFd}");
-                ctx[CpuRegister.Rax] = unchecked((ulong)directoryFd);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            EnsureOpenParentDirectoryExists(guestPath, hostPath, flags);
-            var stream = new FileStream(hostPath, mode, access, FileShare.ReadWrite);
-            if ((flags & O_APPEND) != 0)
-            {
-                stream.Seek(0, SeekOrigin.End);
-            }
-
-            var fd = (int)Interlocked.Increment(ref _nextFileDescriptor);
-            lock (_fdGate)
-            {
-                _openFiles[fd] = stream;
-            }
-
-            if (IsMutatingOpen(flags))
-            {
-                InvalidateNegativeStatCacheForPathAndAncestors(guestPath);
-            }
-
-            LogOpenTrace($"_open file path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} fd={fd}");
-            ctx[CpuRegister.Rax] = unchecked((ulong)fd);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogOpenTrace($"_open fail path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} ex={ex.GetType().Name}: {ex.Message}");
-            return ex is UnauthorizedAccessException
-                ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT
-                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-    }
-
-    [SysAbiExport(
-        Nid = "NNtFaKJbPt0",
-        ExportName = "_close",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelCloseUnderscore(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
-
-    [SysAbiExport(
-        Nid = "bY-PO6JhzhQ",
-        ExportName = "close",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int PosixClose(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
-
-    [SysAbiExport(
-        Nid = "UK2Tl2DWUns",
-        ExportName = "sceKernelClose",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelClose(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
-
-    [SysAbiExport(
-        Nid = "eV9wAD2riIA",
-        ExportName = "sceKernelStat",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelStat(CpuContext ctx)
-    {
-        var pathAddress = ctx[CpuRegister.Rdi];
-        var statAddress = ctx[CpuRegister.Rsi];
-        if (pathAddress == 0 || statAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var hostPath = ResolveGuestPath(guestPath);
-        var statCacheKey = GetNegativeStatCacheKey(guestPath);
-        if (statCacheKey is not null && IsNegativeStatCached(statCacheKey))
-        {
-            LogUniqueStatTrace(guestPath, hostPath, found: false);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        if (!TryWriteHostPathStat(ctx, statAddress, hostPath))
-        {
-            if (statCacheKey is not null)
-            {
-                AddNegativeStatCache(statCacheKey);
-            }
-
-            LogUniqueStatTrace(guestPath, hostPath, found: false);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        if (statCacheKey is not null)
-        {
-            RemoveNegativeStatCache(statCacheKey);
-        }
-
-        LogUniqueStatTrace(guestPath, hostPath, found: true);
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "gEpBkcwxUjw",
-        ExportName = "sceKernelAprResolveFilepathsToIdsAndFileSizes",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelAprResolveFilepathsToIdsAndFileSizes(CpuContext ctx)
-    {
-        var pathListAddress = ctx[CpuRegister.Rdi];
-        var count = ctx[CpuRegister.Rsi];
-        var idsAddress = ctx[CpuRegister.Rdx];
-        var sizesAddress = ctx[CpuRegister.Rcx];
-        if (pathListAddress == 0 || count == 0 || sizesAddress == 0 || count > 1024)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, Einval);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        for (ulong i = 0; i < count; i++)
-        {
-            if (idsAddress != 0 &&
-                !TryWriteUInt32Compat(ctx, idsAddress + (i * sizeof(uint)), uint.MaxValue))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            if (!TryResolveAprFilepath(ctx, pathListAddress, i, out var guestPath))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            var hostPath = ResolveGuestPath(guestPath);
-            if (!TryGetAprFileSize(hostPath, out var fileSize))
-            {
-                LogIoTrace("apr_resolve", guestPath, $"host='{hostPath}' index={i} count={count} result=not_found");
-                KernelRuntimeCompatExports.TrySetErrno(ctx, 2);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-
-            var fileId = AmprFileRegistry.Register(guestPath, hostPath);
-            LogIoTrace("apr_resolve", guestPath, $"host='{hostPath}' index={i} count={count} id=0x{fileId:X8} size={fileSize}");
-
-            if (idsAddress != 0 &&
-                !TryWriteUInt32Compat(ctx, idsAddress + (i * sizeof(uint)), fileId))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-
-            if (!TryWriteUInt64Compat(ctx, sizesAddress + (i * sizeof(ulong)), fileSize))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-            }
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "kBwCPsYX-m4",
-        ExportName = "sceKernelFstat",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelFstat(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var statAddress = ctx[CpuRegister.Rsi];
-        if (statAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryWriteOpenDescriptorStat(ctx, fd, statAddress))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "AUXVxWeJU-A",
-        ExportName = "sceKernelUnlink",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelUnlink(CpuContext ctx)
-    {
-        var pathAddress = ctx[CpuRegister.Rdi];
-        if (pathAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var hostPath = ResolveGuestPath(guestPath);
-        if (IsReadOnlyGuestMutationPath(guestPath))
-        {
-            LogOpenTrace($"unlink readonly path='{guestPath}' host='{hostPath}'");
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-
-        try
-        {
-            if (Directory.Exists(hostPath))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-            }
-
-            if (!File.Exists(hostPath))
-            {
-                AddNegativeStatCacheForGuestPath(guestPath);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-
-            File.Delete(hostPath);
-            InvalidateNegativeStatCacheForPathAndAncestors(guestPath);
-            AddNegativeStatCacheForGuestPath(guestPath);
-            LogOpenTrace($"unlink path='{guestPath}' host='{hostPath}'");
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-        catch (IOException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
-        }
-    }
-
-    [SysAbiExport(
-        Nid = "1-LFLmRFxxM",
-        ExportName = "sceKernelMkdir",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelMkdir(CpuContext ctx)
-    {
-        var pathAddress = ctx[CpuRegister.Rdi];
-        if (pathAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var hostPath = ResolveGuestPath(guestPath);
-        if (IsReadOnlyGuestMutationPath(guestPath))
-        {
-            LogOpenTrace($"mkdir readonly path='{guestPath}' host='{hostPath}'");
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-
-        try
-        {
-            if (File.Exists(hostPath) || Directory.Exists(hostPath))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_ALREADY_EXISTS;
-            }
-
-            var parentDirectory = Path.GetDirectoryName(hostPath);
-            if (string.IsNullOrWhiteSpace(parentDirectory) || !Directory.Exists(parentDirectory))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-
-            Directory.CreateDirectory(hostPath);
-            if (!Directory.Exists(hostPath))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-
-            InvalidateNegativeStatCacheForPathAndAncestors(guestPath);
-            LogOpenTrace($"mkdir path='{guestPath}' host='{hostPath}'");
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-        catch (IOException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-    }
-
-    [SysAbiExport(
-        Nid = "naInUjYt3so",
-        ExportName = "sceKernelRmdir",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelRmdir(CpuContext ctx)
-    {
-        var pathAddress = ctx[CpuRegister.Rdi];
-        if (pathAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        var hostPath = ResolveGuestPath(guestPath);
-        if (IsReadOnlyGuestMutationPath(guestPath))
-        {
-            LogOpenTrace($"rmdir readonly path='{guestPath}' host='{hostPath}'");
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-
-        try
-        {
-            if (!Directory.Exists(hostPath))
-            {
-                AddNegativeStatCacheForGuestPath(guestPath);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-
-            Directory.Delete(hostPath, recursive: false);
-            InvalidateNegativeStatCacheForPathAndAncestors(guestPath);
-            AddNegativeStatCacheForGuestPath(guestPath);
-            LogOpenTrace($"rmdir path='{guestPath}' host='{hostPath}'");
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
-        }
-        catch (IOException)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
-        }
-    }
-
-    private static int KernelCloseCore(CpuContext ctx, int fd)
-    {
-        if (fd is 0 or 1 or 2)
-        {
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        FileStream? stream;
-        lock (_fdGate)
-        {
-            if (_openFiles.Remove(fd, out stream))
-            {
-            }
-            else if (_openDirectories.Remove(fd))
-            {
-                ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-            else
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
-        }
-
-        stream.Dispose();
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "DRuBt2pvICk",
-        ExportName = "_read",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelReadUnderscore(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var bufferAddress = ctx[CpuRegister.Rsi];
-        var requested = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (requested < 0 || (requested > 0 && bufferAddress == 0))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (requested == 0 || fd == 0)
-        {
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        FileStream? stream;
-        lock (_fdGate)
-        {
-            _openFiles.TryGetValue(fd, out stream);
-        }
-
-        if (stream is null)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        long positionBefore;
-        try
-        {
-            positionBefore = stream.Position;
-        }
-        catch (IOException)
-        {
-            positionBefore = -1;
-        }
-
-        var buffer = GC.AllocateUninitializedArray<byte>(requested);
-        var read = stream.Read(buffer, 0, requested);
-        if (read > 0 && !ctx.Memory.TryWrite(bufferAddress, buffer.AsSpan(0, read)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        long positionAfter;
-        try
-        {
-            positionAfter = stream.Position;
-        }
-        catch (IOException)
-        {
-            positionAfter = -1;
-        }
-
-        LogIoTrace(
-            "read",
-            stream.Name,
-            $"fd={fd} req={requested} read={read} pos={positionBefore}->{positionAfter} preview='{PreviewIoBytes(buffer, read, 64)}' hex={PreviewIoHex(buffer, read, 32)} guest_tail={PreviewGuestHex(ctx, bufferAddress + (ulong)Math.Max(read, 0), 32)}");
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)read);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "AqBioC2vF3I",
-        ExportName = "read",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int PosixRead(CpuContext ctx) => KernelReadUnderscore(ctx);
-
-    [SysAbiExport(
-        Nid = "Cg4srZ6TKbU",
-        ExportName = "sceKernelRead",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelRead(CpuContext ctx) => KernelReadUnderscore(ctx);
-
-    [SysAbiExport(
-        Nid = "Oy6IpwgtYOk",
-        ExportName = "lseek",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int PosixLseek(CpuContext ctx)
-    {
-        var result = KernelLseekCore(
-            unchecked((int)ctx[CpuRegister.Rdi]),
-            unchecked((long)ctx[CpuRegister.Rsi]),
-            unchecked((int)ctx[CpuRegister.Rdx]),
-            out var position);
-
-        if (result != OrbisGen2Result.ORBIS_GEN2_OK)
-        {
-            ctx[CpuRegister.Rax] = ulong.MaxValue;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)position);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "oib76F-12fk",
-        ExportName = "sceKernelLseek",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelLseek(CpuContext ctx)
-    {
-        var result = KernelLseekCore(
-            unchecked((int)ctx[CpuRegister.Rdi]),
-            unchecked((long)ctx[CpuRegister.Rsi]),
-            unchecked((int)ctx[CpuRegister.Rdx]),
-            out var position);
-
-        if (result != OrbisGen2Result.ORBIS_GEN2_OK)
-        {
-            return (int)result;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)position);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "taRWhTJFTgE",
-        ExportName = "sceKernelGetdirentries",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelGetdirentries(CpuContext ctx)
-    {
-        return KernelGetdirentriesCore(
-            ctx,
-            unchecked((int)ctx[CpuRegister.Rdi]),
-            ctx[CpuRegister.Rsi],
-            unchecked((int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue)),
-            ctx[CpuRegister.Rcx]);
-    }
-
-    [SysAbiExport(
-        Nid = "j2AIqSqJP0w",
-        ExportName = "sceKernelGetdents",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelGetdents(CpuContext ctx)
-    {
-        return KernelGetdirentriesCore(
-            ctx,
-            unchecked((int)ctx[CpuRegister.Rdi]),
-            ctx[CpuRegister.Rsi],
-            unchecked((int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue)),
-            0);
-    }
-
-    private static OrbisGen2Result KernelLseekCore(int fd, long offset, int whence, out long position)
-    {
-        position = -1;
-
-        FileStream? stream;
-        lock (_fdGate)
-        {
-            _openFiles.TryGetValue(fd, out stream);
-        }
-
-        if (stream is null)
-        {
-            LogIoTrace("lseek", $"fd:{fd}", $"offset={offset} whence={whence} result=badfd");
-            return OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        SeekOrigin origin;
-        switch (whence)
-        {
-            case SeekSet:
-                origin = SeekOrigin.Begin;
-                break;
-            case SeekCur:
-                origin = SeekOrigin.Current;
-                break;
-            case SeekEnd:
-                origin = SeekOrigin.End;
-                break;
-            default:
-                LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=invalid_whence");
-                return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        try
-        {
-            position = stream.Seek(offset, origin);
-        }
-        catch (IOException ex)
-        {
-            LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=io_error ex={ex.Message}");
-            return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-        catch (ArgumentException ex)
-        {
-            LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=invalid ex={ex.Message}");
-            return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} pos={position}");
-        return OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "FxVZqBAA7ks",
-        ExportName = "_write",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelWriteUnderscore(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var bufferAddress = ctx[CpuRegister.Rsi];
-        var requested = (int)Math.Min(ctx[CpuRegister.Rdx], int.MaxValue);
-        if (requested < 0 || (requested > 0 && bufferAddress == 0))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        var payload = requested == 0
-            ? Array.Empty<byte>()
-            : GC.AllocateUninitializedArray<byte>(requested);
-        if (requested > 0 && !ctx.Memory.TryRead(bufferAddress, payload))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        if (fd == 1 || fd == 2)
-        {
-            var text = Encoding.UTF8.GetString(payload);
-            if (fd == 1)
-            {
-                Console.Out.Write(text);
-                Console.Out.Flush();
-            }
-            else
-            {
-                Console.Error.Write(text);
-                Console.Error.Flush();
-            }
-
-            ctx[CpuRegister.Rax] = unchecked((ulong)requested);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        FileStream? stream;
-        lock (_fdGate)
-        {
-            _openFiles.TryGetValue(fd, out stream);
-        }
-
-        if (stream is null)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
-
-        stream.Write(payload, 0, requested);
-        stream.Flush();
-        ctx[CpuRegister.Rax] = unchecked((ulong)requested);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "FN4gaPmuFV8",
-        ExportName = "write",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int PosixWrite(CpuContext ctx) => KernelWriteUnderscore(ctx);
-
-    [SysAbiExport(
-        Nid = "4wSze92BhLI",
-        ExportName = "sceKernelWrite",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int KernelWrite(CpuContext ctx) => KernelWriteUnderscore(ctx);
-
-    [SysAbiExport(
-        Nid = "lLMT9vJAck0",
-        ExportName = "clock_gettime",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int ClockGettime(CpuContext ctx)
-    {
-        var clockId = unchecked((int)ctx[CpuRegister.Rdi]);
-        var timespecAddress = ctx[CpuRegister.Rsi];
-        if (timespecAddress == 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, 22); // EINVAL
-            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
-            return -1;
-        }
-
-        long seconds;
-        long nanoseconds;
-        if (!KernelRuntimeCompatExports.ResolveClockTime(clockId, out seconds, out nanoseconds))
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, 22); // EINVAL
-            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
-            return -1;
-        }
-
-        if (!ctx.TryWriteUInt64(timespecAddress, unchecked((ulong)seconds)) ||
-            !ctx.TryWriteUInt64(timespecAddress + sizeof(long), unchecked((ulong)nanoseconds)))
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, 14); // EFAULT
-            ctx[CpuRegister.Rax] = unchecked((ulong)-1);
-            return -1;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    [SysAbiExport(
-        Nid = "vNe1w4diLCs",
-        ExportName = "__tls_get_addr",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int TlsGetAddr(CpuContext ctx)
-    {
-        var tlsInfoAddress = ctx[CpuRegister.Rdi];
-        if (tlsInfoAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        if (!ctx.TryReadUInt64(tlsInfoAddress, out var moduleId) ||
-            !ctx.TryReadUInt64(tlsInfoAddress + sizeof(ulong), out var offset))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = ResolveTlsAddress(ctx, moduleId, offset);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    private static ulong ResolveTlsAddress(CpuContext ctx, ulong moduleId, ulong offset)
-    {
-        if (ctx.FsBase == 0)
-        {
-            return 0;
-        }
-
-        if (moduleId <= 1)
-        {
-            return unchecked(ctx.FsBase + offset);
-        }
-
-        var key = (ctx.FsBase << 16) ^ (moduleId & 0xFFFFUL);
-        ulong moduleBase;
-        lock (_tlsGate)
-        {
-            if (!_tlsModuleBlocks.TryGetValue(key, out moduleBase))
-            {
-                if (ctx.Memory is IGuestMemoryAllocator allocator &&
-                    allocator.TryAllocateGuestMemory(TlsModuleBlockSize, 16, out moduleBase))
-                {
-                    ctx.Memory.TryWrite(moduleBase, new byte[TlsModuleBlockSize]);
-                    _tlsModuleBlocks[key] = moduleBase;
-                }
-                else
-                {
-                    return 0;
-                }
-            }
-        }
-
-        return unchecked(moduleBase + offset);
-    }
-
-    [SysAbiExport(
         Nid = "pB-yGZ2nQ9o",
         ExportName = "_sceKernelSetThreadAtexitCount",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -2117,6 +289,31 @@ public static class KernelMemoryCompatExports
     {
         _threadDtorsCallback = ctx[CpuRegister.Rdi];
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    /// <summary>
+    /// Invokes the registered runtime thread-destructor callback (set via
+    /// <c>_sceKernelSetThreadDtors</c>) on the exiting guest thread. C++
+    /// runtimes register this to flush per-thread cleanup that would
+    /// otherwise leak.
+    /// </summary>
+    public static void RunThreadDtors(CpuContext ctx)
+    {
+        var callback = _threadDtorsCallback;
+        if (callback == 0)
+        {
+            return;
+        }
+
+        _ = GuestThreadExecution.Scheduler?.TryCallGuestFunction(
+            ctx,
+            callback,
+            0,
+            0,
+            0,
+            0,
+            "kernel_thread_dtors",
+            out _);
     }
 
     [SysAbiExport(
@@ -2311,7 +508,10 @@ public static class KernelMemoryCompatExports
             searchStart = 0;
         }
 
-        var align = alignment == 0 ? 0x1000UL : alignment;
+        // PS5 direct memory is allocated in 16 KiB pages; when the guest does
+        // not care about alignment, default to that granularity rather than the
+        // host 4 KiB page so physical offsets stay on true page boundaries.
+        var align = alignment == 0 ? OrbisPageSize : alignment;
         ulong selectedAddress;
         lock (_memoryGate)
         {
@@ -2380,7 +580,7 @@ public static class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var effectiveAlignment = alignment == 0 ? 0x1000UL : alignment;
+        var effectiveAlignment = alignment == 0 ? OrbisPageSize : alignment;
         ulong aligned;
         lock (_memoryGate)
         {
@@ -2459,20 +659,52 @@ public static class KernelMemoryCompatExports
     {
         var start = ctx[CpuRegister.Rdi];
         var length = ctx[CpuRegister.Rsi];
-        if (length == 0)
+        if (!IsAligned(start, OrbisPageSize) || !IsAligned(length, OrbisPageSize))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
+        if (length == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
         lock (_memoryGate)
         {
-            if (!_directAllocations.TryGetValue(start, out var allocation) || allocation.Length != length)
+            // The unchecked API ignores an unallocated range, matching the
+            // kernel contract used by guest pool allocators during teardown.
+            _ = TryReleaseDirectMemoryRangeLocked(start, length);
+        }
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+    Nid = "hwVSPCmp5tM",
+    ExportName = "sceKernelCheckedReleaseDirectMemory",
+    Target = Generation.Gen4 | Generation.Gen5,
+    LibraryName = "libKernel")]
+    public static int KernelCheckedReleaseDirectMemory(CpuContext ctx)
+    {
+        var start = ctx[CpuRegister.Rdi];
+        var length = ctx[CpuRegister.Rsi];
+
+        if (!IsAligned(start, OrbisPageSize) || !IsAligned(length, OrbisPageSize))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (length == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        lock (_memoryGate)
+        {
+            if (!TryReleaseDirectMemoryRangeLocked(start, length))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
             }
-
-            _directAllocations.Remove(start);
-            _nextPhysicalAddress = GetDirectMemoryHighWaterMarkLocked();
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -2509,18 +741,56 @@ public static class KernelMemoryCompatExports
         ulong mappedAddress;
         lock (_memoryGate)
         {
-            var effectiveAlignment = alignment == 0 ? 0x1000UL : alignment;
+            var effectiveAlignment = alignment == 0 ? OrbisPageSize : alignment;
             var fixedMapping = (flags & 0x10UL) != 0;
             var desiredAddress = requestedAddress != 0
                 ? requestedAddress
                 : directMemoryStart != 0
                     ? AlignUp(directMemoryStart, effectiveAlignment)
-                    : AlignUp(_nextVirtualAddress == 0 ? 0x1_0000_0000UL : _nextVirtualAddress, effectiveAlignment);
+                    : AlignUp(_nextVirtualAddress == 0 ? DefaultMapSearchBase : _nextVirtualAddress, effectiveAlignment);
 
             var reserved = false;
             if (fixedMapping && requestedAddress != 0)
             {
                 mappedAddress = requestedAddress;
+                reserved = IsGuestRangeBacked(ctx, requestedAddress, length);
+                if (!reserved)
+                {
+                    TryReserveExactGuestVirtualRange(ctx, requestedAddress, length, protection);
+                    reserved = IsGuestRangeBacked(ctx, requestedAddress, length);
+                }
+
+                if (!reserved)
+                {
+                    // Rosetta places the x86-64 process stack in the low
+                    // address window used by some fixed PS5 mappings. Do not
+                    // clobber that host memory: relocate the mapping and
+                    // return the actual address through the in/out pointer.
+                    if (OperatingSystem.IsMacOS())
+                    {
+                        var fallbackAddress = AlignUp(
+                            _nextVirtualAddress == 0 ? DefaultMapSearchBase : _nextVirtualAddress,
+                            effectiveAlignment);
+                        reserved = TryReserveGuestVirtualRange(
+                            ctx,
+                            fallbackAddress,
+                            length,
+                            protection,
+                            effectiveAlignment,
+                            out mappedAddress);
+
+                        if (reserved && ShouldTraceDirectMemory())
+                        {
+                            Console.Error.WriteLine(
+                                $"[LOADER][WARN] map_direct relocated fixed mapping: requested=0x{requestedAddress:X16} mapped=0x{mappedAddress:X16} len=0x{length:X16}");
+                        }
+                    }
+
+                    if (!reserved)
+                    {
+                        mappedAddress = 0;
+                    }
+                }
             }
             else
             {
@@ -2531,7 +801,7 @@ public static class KernelMemoryCompatExports
                 Console.Error.WriteLine(
                     $"[LOADER][TRACE] map_direct reserve: requested=0x{requestedAddress:X16} desired=0x{desiredAddress:X16} reserved={reserved} mapped=0x{mappedAddress:X16}");
             }
-            if (!reserved)
+            if (!reserved && !fixedMapping)
             {
                 if (mappedAddress == 0)
                 {
@@ -2589,8 +859,11 @@ public static class KernelMemoryCompatExports
         var length = ctx[CpuRegister.Rsi];
         var protection = unchecked((int)ctx[CpuRegister.Rdx]);
         var flags = ctx[CpuRegister.Rcx];
-        Console.Error.WriteLine(
-            $"[LOADER][TRACE] map_flexible: inout=0x{inOutAddressPointer:X16} len=0x{length:X16} prot=0x{protection:X8} flags=0x{flags:X16}");
+        if (ShouldTraceDirectMemory())
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][TRACE] map_flexible: inout=0x{inOutAddressPointer:X16} len=0x{length:X16} prot=0x{protection:X8} flags=0x{flags:X16}");
+        }
         if (inOutAddressPointer == 0 || length == 0)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
@@ -2607,21 +880,30 @@ public static class KernelMemoryCompatExports
             var fixedMapping = (flags & 0x10UL) != 0;
             var desiredAddress = requestedAddress != 0
                 ? requestedAddress
-                : AlignUp(_nextVirtualAddress == 0 ? 0x1_0000_0000UL : _nextVirtualAddress, 0x1000UL);
+                : AlignUp(_nextVirtualAddress == 0 ? DefaultMapSearchBase : _nextVirtualAddress, 0x1000UL);
 
             if (fixedMapping && requestedAddress != 0)
             {
                 mappedAddress = requestedAddress;
+                if (!IsGuestRangeBacked(ctx, requestedAddress, length))
+                {
+                    TryReserveExactGuestVirtualRange(ctx, requestedAddress, length, protection);
+                    if (!IsGuestRangeBacked(ctx, requestedAddress, length))
+                    {
+                        mappedAddress = 0;
+                    }
+                }
             }
             else if (!TryReserveGuestVirtualRange(ctx, desiredAddress, length, protection, OrbisPageSize, out mappedAddress))
             {
-                mappedAddress = requestedAddress != 0 && fixedMapping
-                    ? requestedAddress
-                    : AllocateMappedGuestAddress(ctx, length, 0x1000UL);
+                mappedAddress = AllocateMappedGuestAddress(ctx, length, 0x1000UL);
             }
 
-            Console.Error.WriteLine(
-                $"[LOADER][TRACE] map_flexible reserve: requested=0x{requestedAddress:X16} desired=0x{desiredAddress:X16} mapped=0x{mappedAddress:X16}");
+            if (ShouldTraceDirectMemory())
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][TRACE] map_flexible reserve: requested=0x{requestedAddress:X16} desired=0x{desiredAddress:X16} mapped=0x{mappedAddress:X16}");
+            }
 
             if (mappedAddress == 0)
             {
@@ -2658,6 +940,16 @@ public static class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
+        Nid = "4h6F1LLbTiw",
+        ExportName = "sceKernelMapNamedFlexibleMemoryInternal",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelMapFlexibleMemoryInternal(CpuContext ctx)
+    {
+        return KernelMapNamedFlexibleMemory(ctx);
+    }
+
+    [SysAbiExport(
         Nid = "2SKEx6bSq-4",
         ExportName = "sceKernelBatchMap",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -2678,6 +970,31 @@ public static class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
+        Nid = "yDBwVAolDgg",
+        ExportName = "sceKernelIsStack",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelIsStack(CpuContext ctx)
+    {
+        _ = ctx[CpuRegister.Rdi];
+        var startAddress = ctx[CpuRegister.Rsi];
+        var endAddress = ctx[CpuRegister.Rdx];
+
+        // The queried ranges used by libc's VM allocator are ordinary heap
+        // mappings. The kernel still initializes both outputs when a mapping
+        // is not a pthread stack; leaving them untouched makes libc consume
+        // stale stack values and issue invalid fixed-range reservations.
+        if ((startAddress != 0 && !ctx.TryWriteUInt64(startAddress, 0)) ||
+            (endAddress != 0 && !ctx.TryWriteUInt64(endAddress, 0)))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "cQke9UuBQOk",
         ExportName = "sceKernelMunmap",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -2686,27 +1003,83 @@ public static class KernelMemoryCompatExports
     {
         var address = ctx[CpuRegister.Rdi];
         var length = ctx[CpuRegister.Rsi];
-        if (address == 0 || length == 0)
+        if (address == 0 || length == 0 || ulong.MaxValue - address < length)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
+        var rangeEnd = address + length;
+        var physicallyBacked = IsGuestRangeBacked(ctx, address, length);
+        var removedAny = false;
         lock (_memoryGate)
         {
-            if (!_mappedRegions.TryGetValue(address, out var mappedRegion) || mappedRegion.Length != length)
+            var removedRegions = _mappedRegions.Values
+                .Where(region =>
+                    region.Address >= address &&
+                    region.Address < rangeEnd &&
+                    region.Length <= rangeEnd - region.Address)
+                .ToArray();
+
+            if (removedRegions.Length == 0 && !physicallyBacked)
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
             }
 
-            _mappedRegions.Remove(address);
-            if (mappedRegion.IsFlexible)
+            foreach (var mappedRegion in removedRegions)
             {
-                _allocatedFlexibleBytes = mappedRegion.Length >= _allocatedFlexibleBytes
-                    ? 0
-                    : _allocatedFlexibleBytes - mappedRegion.Length;
+                removedAny |= _mappedRegions.Remove(mappedRegion.Address);
+                if (mappedRegion.IsFlexible)
+                {
+                    _allocatedFlexibleBytes = mappedRegion.Length >= _allocatedFlexibleBytes
+                        ? 0
+                        : _allocatedFlexibleBytes - mappedRegion.Length;
+                }
             }
         }
 
+        if (physicallyBacked || removedAny)
+        {
+            KernelRuntimeCompatExports.RegisterReleasedVirtualRange(address, length);
+        }
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "DGMG3JshrZU",
+        ExportName = "sceKernelSetVirtualRangeName",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelSetVirtualRangeName(CpuContext ctx)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        var length = ctx[CpuRegister.Rsi];
+        var nameAddress = ctx[CpuRegister.Rdx];
+        if (nameAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryReadCString(ctx, nameAddress, OrbisKernelMaximumNameLength, out var nameBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        var name = Encoding.UTF8.GetString(nameBytes);
+        lock (_memoryGate)
+        {
+            if (!TryFindVirtualQueryRegionLocked(address, findNext: false, out var region) ||
+                length > region.Length ||
+                address < region.Address ||
+                length > region.Address + region.Length - address)
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            }
+
+            _mappedRegionNames[region.Address] = name;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -2767,11 +1140,16 @@ public static class KernelMemoryCompatExports
         BinaryPrimitives.WriteInt32LittleEndian(payload[28..32], memoryType);
         payload[32] = unchecked((byte)stateFlags);
 
-        var name = region.IsDirect
-            ? "direct"
-            : region.IsFlexible
-                ? "flexible"
-                : string.Empty;
+        string name;
+        lock (_memoryGate)
+        {
+            name = _mappedRegionNames.GetValueOrDefault(region.Address)
+                ?? (region.IsDirect
+                    ? "direct"
+                    : region.IsFlexible
+                        ? "flexible"
+                        : string.Empty);
+        }
         if (!string.IsNullOrEmpty(name))
         {
             var nameBytes = Encoding.ASCII.GetBytes(name);
@@ -3000,7 +1378,6 @@ public static class KernelMemoryCompatExports
         }
 
         var rendered = FormatString(ctx, format, ref vaCursor);
-
         return WriteSnprintfOutput(ctx, destination, bufferSize, rendered);
     }
 
@@ -3070,6 +1447,22 @@ public static class KernelMemoryCompatExports
             BinaryPrimitives.ReadUInt32LittleEndian(vaList[4..]),
             BinaryPrimitives.ReadUInt64LittleEndian(vaList[8..]),
             BinaryPrimitives.ReadUInt64LittleEndian(vaList[16..]));
+        return true;
+    }
+
+    internal static bool TryFormatStringFromVaList(
+        CpuContext ctx,
+        string format,
+        ulong vaListAddress,
+        out string rendered)
+    {
+        if (!TryCreateVaListCursor(ctx, vaListAddress, out var vaCursor))
+        {
+            rendered = format;
+            return false;
+        }
+
+        rendered = FormatString(ctx, format, ref vaCursor);
         return true;
     }
 
@@ -3414,19 +1807,48 @@ public static class KernelMemoryCompatExports
         return FormatStringFromVarArgs(ctx, format, firstGpArgIndex: 3);
     }
 
+    [ThreadStatic]
+    private static StringBuilder? _formatBuilder;
+
+    // printf length modifier collapsed to the widths our conversions care about.
+    // Kept as an enum rather than a per-argument substring so the hot format
+    // loop avoids a string allocation and string comparisons on every spec.
+    private enum PrintfLength
+    {
+        None,
+        Char,   // hh
+        Short,  // h
+        Long,   // l / ll / j / z / t / L
+    }
+
     private static string FormatString<TArgumentSource>(
         CpuContext ctx,
         string format,
         ref TArgumentSource argumentSource)
         where TArgumentSource : struct, IPrintfArgumentSource
     {
-        var sb = new StringBuilder(format.Length + 32);
+        // printf formatting is one of the hottest HLE paths during loading, so
+        // reuse a per-thread builder and append literal runs as spans instead of
+        // allocating a builder and appending char-by-char on every call.
+        var sb = _formatBuilder ??= new StringBuilder(256);
+        sb.Clear();
+        if (sb.Capacity < format.Length + 32)
+        {
+            sb.EnsureCapacity(format.Length + 32);
+        }
 
         for (var i = 0; i < format.Length; i++)
         {
             if (format[i] != '%')
             {
-                sb.Append(format[i]);
+                var literalStart = i;
+                while (i < format.Length && format[i] != '%')
+                {
+                    i++;
+                }
+
+                sb.Append(format.AsSpan(literalStart, i - literalStart));
+                i--;
                 continue;
             }
 
@@ -3500,19 +1922,27 @@ public static class KernelMemoryCompatExports
                 }
             }
 
-            var lengthMod = "";
+            var lengthMod = PrintfLength.None;
             if (i < format.Length)
             {
-                if (i + 1 < format.Length &&
-                    ((format[i] == 'h' && format[i + 1] == 'h') ||
-                     (format[i] == 'l' && format[i + 1] == 'l')))
+                if (i + 1 < format.Length && format[i] == 'h' && format[i + 1] == 'h')
                 {
-                    lengthMod = format.Substring(i, 2);
+                    lengthMod = PrintfLength.Char;
                     i += 2;
                 }
-                else if (format[i] is 'h' or 'l' or 'j' or 'z' or 't' or 'L')
+                else if (i + 1 < format.Length && format[i] == 'l' && format[i + 1] == 'l')
                 {
-                    lengthMod = format[i].ToString();
+                    lengthMod = PrintfLength.Long;
+                    i += 2;
+                }
+                else if (format[i] == 'h')
+                {
+                    lengthMod = PrintfLength.Short;
+                    i++;
+                }
+                else if (format[i] is 'l' or 'j' or 'z' or 't' or 'L')
+                {
+                    lengthMod = PrintfLength.Long;
                     i++;
                 }
             }
@@ -3536,17 +1966,13 @@ public static class KernelMemoryCompatExports
                     {
                         long value = lengthMod switch
                         {
-                            "hh" => unchecked((sbyte)argumentSource.NextGpArg()),
-                            "h" => unchecked((short)argumentSource.NextGpArg()),
-                            "l" => unchecked((long)argumentSource.NextGpArg()),
-                            "ll" => unchecked((long)argumentSource.NextGpArg()),
-                            "j" => unchecked((long)argumentSource.NextGpArg()),
-                            "z" => unchecked((long)argumentSource.NextGpArg()),
-                            "t" => unchecked((long)argumentSource.NextGpArg()),
+                            PrintfLength.Char => unchecked((sbyte)argumentSource.NextGpArg()),
+                            PrintfLength.Short => unchecked((short)argumentSource.NextGpArg()),
+                            PrintfLength.Long => unchecked((long)argumentSource.NextGpArg()),
                             _ => unchecked((int)argumentSource.NextGpArg())
                         };
 
-                        var formatted = value.ToString();
+                        var formatted = value.ToString(CultureInfo.InvariantCulture);
                         if (showSign && value >= 0)
                             formatted = "+" + formatted;
                         else if (spaceForSign && value >= 0)
@@ -3560,17 +1986,13 @@ public static class KernelMemoryCompatExports
                     {
                         ulong value = lengthMod switch
                         {
-                            "hh" => (byte)argumentSource.NextGpArg(),
-                            "h" => (ushort)argumentSource.NextGpArg(),
-                            "l" => argumentSource.NextGpArg(),
-                            "ll" => argumentSource.NextGpArg(),
-                            "j" => argumentSource.NextGpArg(),
-                            "z" => argumentSource.NextGpArg(),
-                            "t" => argumentSource.NextGpArg(),
+                            PrintfLength.Char => (byte)argumentSource.NextGpArg(),
+                            PrintfLength.Short => (ushort)argumentSource.NextGpArg(),
+                            PrintfLength.Long => argumentSource.NextGpArg(),
                             _ => (uint)argumentSource.NextGpArg()
                         };
 
-                        var formatted = value.ToString();
+                        var formatted = value.ToString(CultureInfo.InvariantCulture);
                         sb.Append(PadString(formatted, width, leftAlign, padWithZero && !leftAlign));
                     }
                     break;
@@ -3580,19 +2002,15 @@ public static class KernelMemoryCompatExports
                     {
                         ulong value = lengthMod switch
                         {
-                            "hh" => (byte)argumentSource.NextGpArg(),
-                            "h" => (ushort)argumentSource.NextGpArg(),
-                            "l" => argumentSource.NextGpArg(),
-                            "ll" => argumentSource.NextGpArg(),
-                            "j" => argumentSource.NextGpArg(),
-                            "z" => argumentSource.NextGpArg(),
-                            "t" => argumentSource.NextGpArg(),
+                            PrintfLength.Char => (byte)argumentSource.NextGpArg(),
+                            PrintfLength.Short => (ushort)argumentSource.NextGpArg(),
+                            PrintfLength.Long => argumentSource.NextGpArg(),
                             _ => (uint)argumentSource.NextGpArg()
                         };
 
                         var formatted = specifier == 'x'
-                            ? value.ToString("x")
-                            : value.ToString("X");
+                            ? value.ToString("x", CultureInfo.InvariantCulture)
+                            : value.ToString("X", CultureInfo.InvariantCulture);
 
                         if (alternateForm && value != 0)
                             formatted = specifier == 'x' ? "0x" + formatted : "0X" + formatted;
@@ -3605,13 +2023,9 @@ public static class KernelMemoryCompatExports
                     {
                         ulong value = lengthMod switch
                         {
-                            "hh" => (byte)argumentSource.NextGpArg(),
-                            "h" => (ushort)argumentSource.NextGpArg(),
-                            "l" => argumentSource.NextGpArg(),
-                            "ll" => argumentSource.NextGpArg(),
-                            "j" => argumentSource.NextGpArg(),
-                            "z" => argumentSource.NextGpArg(),
-                            "t" => argumentSource.NextGpArg(),
+                            PrintfLength.Char => (byte)argumentSource.NextGpArg(),
+                            PrintfLength.Short => (ushort)argumentSource.NextGpArg(),
+                            PrintfLength.Long => argumentSource.NextGpArg(),
                             _ => (uint)argumentSource.NextGpArg()
                         };
 
@@ -3636,12 +2050,12 @@ public static class KernelMemoryCompatExports
                 case 's':
                     {
                         var strAddr = argumentSource.NextGpArg();
-                        TracePrintfStringArgument(ctx, lengthMod, strAddr);
+                        TracePrintfStringArgument(ctx, lengthMod == PrintfLength.Long ? "l" : "", strAddr);
                         if (strAddr == 0)
                         {
                             sb.Append("(null)");
                         }
-                        else if (lengthMod == "l")
+                        else if (lengthMod == PrintfLength.Long)
                         {
                             if (TryReadWideCString(ctx, strAddr, 1_048_576, out var wideUnits))
                             {
@@ -3672,7 +2086,7 @@ public static class KernelMemoryCompatExports
                 case 'c':
                     {
                         string renderedChar;
-                        if (lengthMod == "l")
+                        if (lengthMod == PrintfLength.Long)
                         {
                             var scalar = unchecked((ushort)argumentSource.NextGpArg());
                             renderedChar = TryConvertWideScalarToString(scalar, out var wideCharText)
@@ -3700,7 +2114,10 @@ public static class KernelMemoryCompatExports
                         var formatStr = precision >= 0
                             ? $"{{0:{specifier}{precision}}}"
                             : $"{{0:{specifier}}}";
-                        var formatted = string.Format(formatStr, value);
+                        var formatted = string.Format(
+                            CultureInfo.InvariantCulture,
+                            formatStr,
+                            value);
 
                         if (showSign && value >= 0)
                             formatted = "+" + formatted;
@@ -3764,31 +2181,50 @@ public static class KernelMemoryCompatExports
     {
         private readonly CpuContext _ctx;
         private int _gpIndex;
+        private int _fpIndex;
+        private int _stackIndex;
 
         public RegisterPrintfArgumentSource(CpuContext ctx, int gpIndex)
         {
             _ctx = ctx;
             _gpIndex = gpIndex;
+            _fpIndex = 0;
+            _stackIndex = 0;
         }
 
         public ulong NextGpArg()
         {
-            var index = _gpIndex++;
-            return index switch
+            var index = _gpIndex;
+            if (index < 6)
             {
-                0 => _ctx[CpuRegister.Rdi],
-                1 => _ctx[CpuRegister.Rsi],
-                2 => _ctx[CpuRegister.Rdx],
-                3 => _ctx[CpuRegister.Rcx],
-                4 => _ctx[CpuRegister.R8],
-                5 => _ctx[CpuRegister.R9],
-                _ => ReadStackArg(_ctx, (ulong)(index - 6) * 8)
-            };
+                _gpIndex++;
+                return index switch
+                {
+                    0 => _ctx[CpuRegister.Rdi],
+                    1 => _ctx[CpuRegister.Rsi],
+                    2 => _ctx[CpuRegister.Rdx],
+                    3 => _ctx[CpuRegister.Rcx],
+                    4 => _ctx[CpuRegister.R8],
+                    _ => _ctx[CpuRegister.R9],
+                };
+            }
+
+            return ReadStackArg(_ctx, (ulong)(_stackIndex++) * 8);
         }
 
         public double NextFloatArg()
         {
-            return BitConverter.Int64BitsToDouble(unchecked((long)NextGpArg()));
+            ulong bits;
+            if (_fpIndex < 8)
+            {
+                _ctx.GetXmmRegister(_fpIndex++, out bits, out _);
+            }
+            else
+            {
+                bits = ReadStackArg(_ctx, (ulong)(_stackIndex++) * 8);
+            }
+
+            return BitConverter.Int64BitsToDouble(unchecked((long)bits));
         }
     }
 
@@ -3872,7 +2308,7 @@ public static class KernelMemoryCompatExports
             return 0;
         }
 
-        var effectiveAlignment = alignment == 0 ? 0x1000UL : alignment;
+        var effectiveAlignment = alignment == 0 ? OrbisPageSize : alignment;
         if (_nextVirtualAddress == 0)
         {
             _nextVirtualAddress = 0x0100_0000UL;
@@ -3913,118 +2349,48 @@ public static class KernelMemoryCompatExports
         ulong alignment,
         out ulong mappedAddress)
     {
-        mappedAddress = 0;
-        if (length == 0)
+        var executable = (protection & OrbisProtCpuExec) != 0;
+        return KernelVirtualRangeAllocator.TryReserve(
+            ctx,
+            desiredAddress,
+            length,
+            executable,
+            alignment,
+            allowSearch: true,
+            allowAllocateAtAlternative: false,
+            "reserve range",
+            out mappedAddress);
+    }
+
+    private static bool TryReserveExactGuestVirtualRange(
+        CpuContext ctx,
+        ulong desiredAddress,
+        ulong length,
+        int protection)
+    {
+        var executable = (protection & OrbisProtCpuExec) != 0;
+        return KernelVirtualRangeAllocator.TryReserve(
+            ctx,
+            desiredAddress,
+            length,
+            executable,
+            alignment: 0,
+            allowSearch: false,
+            allowAllocateAtAlternative: false,
+            "reserve fixed range",
+            out _);
+    }
+
+    internal static bool IsGuestRangeBacked(CpuContext ctx, ulong address, ulong length)
+    {
+        if (address == 0 || length == 0 || ulong.MaxValue - address < length - 1)
         {
             return false;
         }
 
-        try
-        {
-            object memoryObject = ctx.Memory;
-            MethodInfo? allocateAt = null;
-            MethodInfo? allocateAtOrAbove = null;
-            var allocateAtHasAllowAlternativeArg = false;
-            for (var depth = 0; depth < 4; depth++)
-            {
-                foreach (var candidate in memoryObject.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    var parameters = candidate.GetParameters();
-                    if (string.Equals(candidate.Name, "TryAllocateAtOrAbove", StringComparison.Ordinal) &&
-                        parameters.Length == 5 &&
-                        parameters[0].ParameterType == typeof(ulong) &&
-                        parameters[1].ParameterType == typeof(ulong) &&
-                        parameters[2].ParameterType == typeof(bool) &&
-                        parameters[3].ParameterType == typeof(ulong) &&
-                        parameters[4].ParameterType == typeof(ulong).MakeByRefType())
-                    {
-                        allocateAtOrAbove = candidate;
-                    }
-                    else if (string.Equals(candidate.Name, "AllocateAt", StringComparison.Ordinal))
-                    {
-                        if (parameters.Length == 3 &&
-                            parameters[0].ParameterType == typeof(ulong) &&
-                            parameters[1].ParameterType == typeof(ulong) &&
-                            parameters[2].ParameterType == typeof(bool))
-                        {
-                            allocateAt = candidate;
-                            allocateAtHasAllowAlternativeArg = false;
-                        }
-                        else if (parameters.Length == 4 &&
-                            parameters[0].ParameterType == typeof(ulong) &&
-                            parameters[1].ParameterType == typeof(ulong) &&
-                            parameters[2].ParameterType == typeof(bool) &&
-                            parameters[3].ParameterType == typeof(bool))
-                        {
-                            allocateAt = candidate;
-                            allocateAtHasAllowAlternativeArg = true;
-                        }
-                    }
-
-                    if (allocateAtOrAbove is not null && allocateAt is not null)
-                    {
-                        break;
-                    }
-                }
-
-                if (allocateAtOrAbove is not null || allocateAt is not null)
-                {
-                    break;
-                }
-
-                var innerProperty = memoryObject.GetType().GetProperty("Inner", BindingFlags.Public | BindingFlags.Instance);
-                if (innerProperty is null)
-                {
-                    break;
-                }
-
-                var innerValue = innerProperty.GetValue(memoryObject);
-                if (innerValue is null || ReferenceEquals(innerValue, memoryObject))
-                {
-                    break;
-                }
-
-                memoryObject = innerValue;
-            }
-
-            var executable = (protection & OrbisProtCpuExec) != 0;
-            if (allocateAtOrAbove is not null)
-            {
-                var searchArgs = new object[] { desiredAddress, length, executable, alignment, 0UL };
-                var searchResult = allocateAtOrAbove.Invoke(memoryObject, searchArgs);
-                if (searchResult is bool trueValue && trueValue &&
-                    searchArgs[4] is ulong searchedAddress && searchedAddress != 0)
-                {
-                    mappedAddress = searchedAddress;
-                    return true;
-                }
-            }
-
-            if (allocateAt is null)
-            {
-                Console.Error.WriteLine($"[LOADER][TRACE] reserve range: AllocateAt missing on {ctx.Memory.GetType().FullName}");
-                return false;
-            }
-
-            var invokeArgs = allocateAtHasAllowAlternativeArg
-                ? new object[] { desiredAddress, length, executable, false }
-                : new object[] { desiredAddress, length, executable };
-            var result = allocateAt.Invoke(memoryObject, invokeArgs);
-            if (result is not ulong allocated || allocated == 0)
-            {
-                var resultType = result?.GetType().FullName ?? "null";
-                Console.Error.WriteLine($"[LOADER][TRACE] reserve range: AllocateAt returned {resultType} value={result ?? "null"}");
-                return false;
-            }
-
-            mappedAddress = allocated;
-            return true;
-        }
-        catch
-        {
-            Console.Error.WriteLine("[LOADER][TRACE] reserve range threw while invoking AllocateAt");
-            return false;
-        }
+        Span<byte> probe = stackalloc byte[1];
+        return ctx.Memory.TryRead(address, probe) &&
+               ctx.Memory.TryRead(address + length - 1, probe);
     }
 
     private static bool IsMappedGuestRangeAvailable(
@@ -4097,7 +2463,7 @@ public static class KernelMemoryCompatExports
         return FileMode.Open;
     }
 
-    private static string ResolveGuestPath(string guestPath)
+    public static string ResolveGuestPath(string guestPath)
     {
         if (string.IsNullOrWhiteSpace(guestPath))
         {
@@ -4177,6 +2543,20 @@ public static class KernelMemoryCompatExports
         var app0Root = ResolveApp0Root();
         if (!string.IsNullOrWhiteSpace(app0Root))
         {
+            if (string.Equals(guestPath, "$", StringComparison.Ordinal) ||
+                string.Equals(guestPath, "$/", StringComparison.Ordinal) ||
+                string.Equals(guestPath, "$\\", StringComparison.Ordinal))
+            {
+                return app0Root;
+            }
+
+            if (guestPath.StartsWith("$/", StringComparison.Ordinal) ||
+                guestPath.StartsWith("$\\", StringComparison.Ordinal))
+            {
+                var relative = NormalizeMountRelativePath(guestPath[2..]);
+                return Path.Combine(app0Root, relative);
+            }
+
             if (string.Equals(guestPath, "/app0", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(guestPath, "app0", StringComparison.OrdinalIgnoreCase))
             {
@@ -4407,8 +2787,19 @@ public static class KernelMemoryCompatExports
     private static bool IsMutatingOpen(int flags) =>
         (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
 
-    private static bool IsReadOnlyGuestMutationPath(string guestPath)
+    // Dev-build dumps (unpackaged UE titles, etc.) may write their Saved/ tree under
+    // /app0, which is read-only on retail hardware. Opt in via CRAZIIEMU_WRITABLE_APP0=1
+    // to allow those writes so such dumps can boot; defaults off to keep retail semantics.
+    private static readonly bool _writableApp0 =
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_WRITABLE_APP0"), "1", StringComparison.Ordinal);
+
+    public static bool IsReadOnlyGuestMutationPath(string guestPath)
     {
+        if (_writableApp0)
+        {
+            return false;
+        }
+
         var normalized = NormalizeGuestStatCachePath(guestPath);
         return normalized is not null &&
                (string.Equals(normalized, "/app0", StringComparison.OrdinalIgnoreCase) ||
@@ -4550,35 +2941,20 @@ public static class KernelMemoryCompatExports
 
     private static bool TryReadWideCString(CpuContext ctx, ulong address, ulong maxLength, out ushort[] units)
     {
-        units = Array.Empty<ushort>();
-        if (address == 0)
-        {
-            return false;
-        }
-
-        var limit = (int)Math.Min(maxLength, 1_048_576UL);
-        var buffer = new List<ushort>(Math.Min(limit, 256));
-        for (var i = 0; i < limit; i++)
-        {
-            if (!TryReadUInt16Compat(ctx, address + ((ulong)i * WideCharSize), out var unit))
-            {
-                return false;
-            }
-
-            if (unit == 0)
-            {
-                units = buffer.ToArray();
-                return true;
-            }
-
-            buffer.Add(unit);
-        }
-
-        units = buffer.ToArray();
-        return true;
+        return TryReadWideCStringCore(ctx, address, maxLength, out units, out _);
     }
 
     private static bool TryReadWideCStringBounded(CpuContext ctx, ulong address, ulong maxLength, out ushort[] units, out bool terminated)
+    {
+        return TryReadWideCStringCore(ctx, address, maxLength, out units, out terminated);
+    }
+
+    private static bool TryReadWideCStringCore(
+        CpuContext ctx,
+        ulong address,
+        ulong maxLength,
+        out ushort[] units,
+        out bool terminated)
     {
         units = Array.Empty<ushort>();
         terminated = false;
@@ -4589,21 +2965,45 @@ public static class KernelMemoryCompatExports
 
         var limit = (int)Math.Min(maxLength, 1_048_576UL);
         var buffer = new List<ushort>(Math.Min(limit, 256));
-        for (var i = 0; i < limit; i++)
+        const int maxReadBytes = 4096;
+        var readBuffer = GC.AllocateUninitializedArray<byte>(
+            Math.Min(maxReadBytes, Math.Max(WideCharSize, limit * WideCharSize)));
+        var index = 0;
+        while (index < limit)
         {
-            if (!TryReadUInt16Compat(ctx, address + ((ulong)i * WideCharSize), out var unit))
+            var unitAddress = address + ((ulong)index * WideCharSize);
+            if (unitAddress < address)
             {
                 return false;
             }
 
-            if (unit == 0)
+            var remainingBytes = (limit - index) * WideCharSize;
+            var pageBytesRemaining = maxReadBytes -
+                (int)(unitAddress & (maxReadBytes - 1));
+            var readBytes = Math.Min(
+                readBuffer.Length,
+                Math.Min(pageBytesRemaining, remainingBytes));
+            readBytes &= ~(WideCharSize - 1);
+            if (readBytes == 0 ||
+                !TryReadCompat(ctx, unitAddress, readBuffer.AsSpan(0, readBytes)))
             {
-                terminated = true;
-                units = buffer.ToArray();
-                return true;
+                return false;
             }
 
-            buffer.Add(unit);
+            for (var offset = 0; offset < readBytes; offset += WideCharSize)
+            {
+                var unit = BinaryPrimitives.ReadUInt16LittleEndian(
+                    readBuffer.AsSpan(offset, WideCharSize));
+                if (unit == 0)
+                {
+                    terminated = true;
+                    units = buffer.ToArray();
+                    return true;
+                }
+
+                buffer.Add(unit);
+                index++;
+            }
         }
 
         units = buffer.ToArray();
@@ -4686,7 +3086,7 @@ public static class KernelMemoryCompatExports
         return destination == 0 || destinationCount == 0 || TryWriteWideTerminator(ctx, destination);
     }
 
-    internal static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
+    public static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
     {
         value = string.Empty;
         if (address == 0 || maxLength <= 0)
@@ -5019,7 +3419,9 @@ public static class KernelMemoryCompatExports
 
         var affected = new List<MappedRegion>();
         var cursor = address;
-        foreach (var region in _mappedRegions.Values.OrderBy(static region => region.Address))
+        // _mappedRegions is a SortedList keyed by address, so Values already
+        // enumerate in ascending address order.
+        foreach (var region in _mappedRegions.Values)
         {
             if (!TryAddU64(region.Address, region.Length, out var regionEnd) || regionEnd <= cursor)
             {
@@ -5180,9 +3582,33 @@ public static class KernelMemoryCompatExports
     private static bool TryFindVirtualQueryRegionLocked(ulong queryAddress, bool findNext, out MappedRegion region)
     {
         region = default;
-        var foundNext = false;
-        foreach (var candidate in _mappedRegions.Values)
+        var keys = _mappedRegions.Keys;
+        var values = _mappedRegions.Values;
+        var count = keys.Count;
+
+        // First index whose region address is >= queryAddress.
+        var lo = 0;
+        var hi = count;
+        while (lo < hi)
         {
+            var mid = (int)(((uint)lo + (uint)hi) >> 1);
+            if (keys[mid] < queryAddress)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        // Regions do not overlap, so only the one with the greatest base address
+        // <= queryAddress can contain it — index lo when it starts exactly at
+        // queryAddress, otherwise lo - 1.
+        var floorIndex = (lo < count && keys[lo] == queryAddress) ? lo : lo - 1;
+        if (floorIndex >= 0)
+        {
+            var candidate = values[floorIndex];
             if (TryAddU64(candidate.Address, candidate.Length, out var candidateEnd) &&
                 queryAddress >= candidate.Address &&
                 queryAddress < candidateEnd)
@@ -5190,20 +3616,16 @@ public static class KernelMemoryCompatExports
                 region = candidate;
                 return true;
             }
-
-            if (!findNext || candidate.Address < queryAddress)
-            {
-                continue;
-            }
-
-            if (!foundNext || candidate.Address < region.Address)
-            {
-                region = candidate;
-                foundNext = true;
-            }
         }
 
-        return foundNext;
+        // findNext: the region with the smallest base address >= queryAddress.
+        if (findNext && lo < count)
+        {
+            region = values[lo];
+            return true;
+        }
+
+        return false;
     }
 
     private static void TraceDirectMemoryCall(
@@ -5232,10 +3654,62 @@ public static class KernelMemoryCompatExports
             $"[LOADER][TRACE] {operation}: ret=0x{returnRip:X16} len=0x{length:X16} align=0x{alignment:X16} type=0x{memoryType:X8} out=0x{outAddress:X16} selected=0x{selectedAddress:X16} result={result?.ToString() ?? "<pending>"}");
     }
 
-    private static bool ShouldTraceDirectMemory()
+    // Cached once so the ~8 direct-memory call sites don't each do a
+    // GetEnvironmentVariable P/Invoke per operation.
+    private static readonly bool _traceDirectMemory = string.Equals(
+        Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DIRECT_MEMORY"), "1", StringComparison.Ordinal);
+
+    private static bool ShouldTraceDirectMemory() => _traceDirectMemory;
+
+    private static bool TryReleaseDirectMemoryRangeLocked(ulong start, ulong length)
     {
-        return string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_DIRECT_MEMORY"), "1", StringComparison.Ordinal);
+        if (!TryAddU64(start, length, out var releaseEnd))
+        {
+            return false;
+        }
+
+        DirectAllocation? owner = null;
+        ulong ownerEnd = 0;
+        foreach (var allocation in _directAllocations.Values)
+        {
+            if (TryAddU64(allocation.Start, allocation.Length, out var allocationEnd) &&
+                start >= allocation.Start &&
+                releaseEnd <= allocationEnd)
+            {
+                owner = allocation;
+                ownerEnd = allocationEnd;
+                break;
+            }
+        }
+
+        if (owner is not { } releasedFrom)
+        {
+            return false;
+        }
+
+        _directAllocations.Remove(releasedFrom.Start);
+        if (start > releasedFrom.Start)
+        {
+            _directAllocations[releasedFrom.Start] = releasedFrom with
+            {
+                Length = start - releasedFrom.Start,
+            };
+        }
+
+        if (releaseEnd < ownerEnd)
+        {
+            _directAllocations[releaseEnd] = new DirectAllocation(
+                releaseEnd,
+                ownerEnd - releaseEnd,
+                releasedFrom.MemoryType);
+        }
+
+        _nextPhysicalAddress = GetDirectMemoryHighWaterMarkLocked();
+        return true;
     }
+
+    private static bool IsAligned(ulong value, ulong alignment) =>
+        alignment != 0 && value % alignment == 0;
 
     private static bool TryAllocateDirectMemoryLocked(
         ulong searchStart,
@@ -5252,7 +3726,7 @@ public static class KernelMemoryCompatExports
             return false;
         }
 
-        var effectiveAlignment = alignment == 0 ? 0x1000UL : alignment;
+        var effectiveAlignment = alignment == 0 ? OrbisPageSize : alignment;
         if (!TryFindAllocatableDirectMemoryRangeLocked(searchStart, searchEnd, length, effectiveAlignment, allocationLimit, out var freePosition) ||
             !TryAddU64(freePosition, length, out var endAddress))
         {
@@ -5460,6 +3934,55 @@ public static class KernelMemoryCompatExports
         }
 
         return false;
+    }
+
+    internal static bool TryReadTrackedLibcHeapGpuAlias(
+        ulong packedAddress,
+        Span<byte> destination)
+    {
+        if (destination.IsEmpty)
+        {
+            return true;
+        }
+
+        // Gen5 texture descriptors retain 46 bits of the byte address.  Host
+        // libc allocations can live at 0x7F... on Linux, so recover the full
+        // tracked allocation address when the descriptor contains its packed
+        // low-bit alias.
+        const ulong textureAddressMask = (1UL << 46) - 1;
+        var length = (ulong)destination.Length;
+        ulong resolvedAddress = 0;
+        lock (_libcAllocGate)
+        {
+            foreach (var (allocationAddress, allocation) in _libcAllocations)
+            {
+                var packedBase = allocationAddress & textureAddressMask;
+                if (packedAddress < packedBase)
+                {
+                    continue;
+                }
+
+                var offset = packedAddress - packedBase;
+                var allocationSize = (ulong)allocation.Size;
+                if (offset > allocationSize || length > allocationSize - offset)
+                {
+                    continue;
+                }
+
+                var candidate = allocationAddress + offset;
+                if (resolvedAddress != 0 && resolvedAddress != candidate)
+                {
+                    // Do not guess if two live host allocations collide after
+                    // descriptor address packing.
+                    return false;
+                }
+
+                resolvedAddress = candidate;
+            }
+
+            return resolvedAddress != 0 &&
+                   TryReadHostMemory(resolvedAddress, destination);
+        }
     }
 
     private static bool TryAllocateLibcHeap(CpuContext ctx, ulong requestedSize, nuint alignment, bool zeroFill, out ulong address)
@@ -5748,6 +4271,91 @@ public static class KernelMemoryCompatExports
         return ctx.Memory.TryWrite(address, bytes);
     }
 
+    internal static int KernelOpenUnderscore(CpuContext ctx)
+    {
+        var pathAddress = ctx[CpuRegister.Rdi];
+        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
+        var mode = unchecked((int)ctx[CpuRegister.Rdx]);
+        if (pathAddress == 0 || !TryReadCString(ctx, pathAddress, 1024, out var guestPathBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+        var guestPath = Encoding.UTF8.GetString(guestPathBytes);
+
+        var hostPath = ResolveGuestPath(guestPath);
+        if (string.IsNullOrWhiteSpace(hostPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if ((flags & O_DIRECTORY) != 0 || Directory.Exists(hostPath))
+        {
+            if (!Directory.Exists(hostPath))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            }
+
+            var dirFd = AllocateGuestFileDescriptor();
+            var entries = Directory.GetFileSystemEntries(hostPath)
+                .Select(Path.GetFileName)
+                .Where(e => e is not null)
+                .Select(e => e!)
+                .ToArray();
+
+            lock (_fdGate)
+            {
+                _openDirectories[dirFd] = new OpenDirectory { Path = hostPath, Entries = entries };
+            }
+
+            LogOpenTrace($"open dir guest='{guestPath}' host='{hostPath}' fd={dirFd}");
+            return dirFd;
+        }
+
+        try
+        {
+            EnsureOpenParentDirectoryExists(guestPath, hostPath, flags);
+            var access = ResolveOpenAccess(flags);
+            var fileMode = ResolveOpenMode(flags, access);
+            var stream = new FileStream(hostPath, fileMode, access, FileShare.ReadWrite);
+            var fd = AllocateGuestFileDescriptor();
+            lock (_fdGate)
+            {
+                _openFiles[fd] = stream;
+            }
+
+            LogOpenTrace($"open file guest='{guestPath}' host='{hostPath}' fd={fd} mode={fileMode} access={access}");
+            return fd;
+        }
+        catch (FileNotFoundException)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+        catch (IOException)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_ACCESS_DENIED;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_ACCESS_DENIED;
+        }
+    }
+
+    internal static int KernelFstat(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var statAddress = ctx[CpuRegister.Rsi];
+        if (TryWriteOpenDescriptorStat(ctx, fd, statAddress))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BAD_FILE_DESCRIPTOR;
+    }
+
     private static bool TryWriteOpenDescriptorStat(CpuContext ctx, int fd, ulong statAddress)
     {
         if (fd is 0 or 1 or 2)
@@ -5807,22 +4415,40 @@ public static class KernelMemoryCompatExports
     private static bool TryGetAprFileSize(string hostPath, out ulong size)
     {
         size = 0;
+
+        string cachePath;
         try
         {
-            var fileInfo = new FileInfo(hostPath);
+            cachePath = Path.GetFullPath(hostPath);
+        }
+        catch
+        {
+            cachePath = hostPath;
+        }
+
+        if (_aprFileSizeCache.TryGetValue(cachePath, out size))
+        {
+            return true;
+        }
+
+        try
+        {
+            var fileInfo = new FileInfo(cachePath);
             if (fileInfo.Exists)
             {
                 var length = fileInfo.Length;
                 size = length < 0 ? 0UL : unchecked((ulong)length);
+                _aprFileSizeCache.TryAdd(cachePath, size);
                 return true;
             }
 
-            if (!new DirectoryInfo(hostPath).Exists)
+            if (!new DirectoryInfo(cachePath).Exists)
             {
                 return false;
             }
 
             size = 65536;
+            _aprFileSizeCache.TryAdd(cachePath, size);
             return true;
         }
         catch
@@ -6121,6 +4747,20 @@ public static class KernelMemoryCompatExports
         }
     }
 
+    private static void InvalidateAprFileSizeCache(string hostPath)
+    {
+        try
+        {
+            hostPath = Path.GetFullPath(hostPath);
+        }
+        catch
+        {
+            // The cache key remains the original path when normalization fails.
+        }
+
+        _aprFileSizeCache.TryRemove(hostPath, out _);
+    }
+
     private static string PreviewIoBytes(byte[] buffer, int count, int maxBytes)
     {
         if (count <= 0)
@@ -6187,6 +4827,398 @@ public static class KernelMemoryCompatExports
         sum = left + right;
         return sum >= left;
     }
+
+    [SysAbiExport(
+        Nid = "AV6ipCNa4Rw",
+        ExportName = "strcasecmp",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strcasecmp(CpuContext ctx)
+    {
+        var left = ctx[CpuRegister.Rdi];
+        var right = ctx[CpuRegister.Rsi];
+        if (left == 0 || right == 0)
+        {
+            var recoveryIndex = Interlocked.Increment(ref _nullStrcasecmpRecoveryCount);
+            if (recoveryIndex <= 16)
+            {
+                var otherAddress = left == 0 ? right : left;
+                var otherText = otherAddress != 0 && TryReadNullTerminatedUtf8(ctx, otherAddress, 256, out var text)
+                    ? text
+                    : "<unreadable>";
+                _ = ctx.TryReadUInt64(ctx[CpuRegister.Rsp], out var returnRip);
+                Console.Error.WriteLine(
+                    $"[LOADER][WARNING] strcasecmp null-arg recovery#{recoveryIndex}: ret=0x{returnRip:X16} left=0x{left:X16} right=0x{right:X16} other=\"{otherText}\"");
+            }
+
+            // Real strcasecmp(NULL, x) is undefined behaviour and previously crashed inside the
+            // LLE-routed implementation. Treat it as "not equal" instead so callers doing
+            // `if (strcasecmp(a, b) == 0)` degrade gracefully rather than taking down the guest.
+            ctx[CpuRegister.Rax] = left == right ? 0uL : 1uL;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        if (!TryCompareStringsCaseInsensitive(ctx, left, right, limit: ulong.MaxValue, out var compare))
+        {
+            ctx[CpuRegister.Rax] = 1;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = unchecked((ulong)compare);
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    // sprintf/vsprintf are served from the same HLE formatting engine as snprintf/vsnprintf
+    // instead of falling through to the game's bundled libc.
+    [SysAbiExport(
+        Nid = "tcVi5SivF7Q",
+        ExportName = "sprintf",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Sprintf(CpuContext ctx)
+    {
+        var destination = ctx[CpuRegister.Rdi];
+        var formatAddress = ctx[CpuRegister.Rsi];
+
+        if (!TryReadCString(ctx, formatAddress, 1_048_576, out var formatBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var format = Encoding.UTF8.GetString(formatBytes);
+        var rendered = FormatStringFromVarArgs(ctx, format, firstGpArgIndex: 2);
+        return WriteSnprintfOutput(ctx, destination, ulong.MaxValue, rendered);
+    }
+
+    [SysAbiExport(
+        Nid = "jbz9I9vkqkk",
+        ExportName = "vsprintf",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Vsprintf(CpuContext ctx)
+    {
+        var destination = ctx[CpuRegister.Rdi];
+        var formatAddress = ctx[CpuRegister.Rsi];
+        var vaListAddress = ctx[CpuRegister.Rdx];
+
+        if (!TryReadCString(ctx, formatAddress, 1_048_576, out var formatBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var format = Encoding.UTF8.GetString(formatBytes);
+        if (!TryCreateVaListCursor(ctx, vaListAddress, out var vaCursor))
+        {
+            return WriteSnprintfOutput(ctx, destination, ulong.MaxValue, formatBytes);
+        }
+
+        var rendered = FormatString(ctx, format, ref vaCursor);
+        return WriteSnprintfOutput(ctx, destination, ulong.MaxValue, rendered);
+    }
+
+    // Was unresolved (returning the 0x80020002 sentinel, then crashing when the guest
+    // dereferenced it) - the game's own heap instrumentation calls this hook when it
+    // detects a corrupted/invalid block, not the emulator's allocator, so this is purely
+    // a diagnostic sink: log what was reported and return success so the caller continues.
+    [SysAbiExport(
+        Nid = "al3JzFI9MQ0",
+        ExportName = "sceLibcInternalHeapErrorReportForGame",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceLibcInternal")]
+    public static int LibcInternalHeapErrorReportForGame(CpuContext ctx)
+    {
+        Console.Error.WriteLine(
+            $"[LOADER][WARN] sceLibcInternalHeapErrorReportForGame: rdi=0x{ctx[CpuRegister.Rdi]:X16} " +
+            $"rsi=0x{ctx[CpuRegister.Rsi]:X16} rdx=0x{ctx[CpuRegister.Rdx]:X16} rcx=0x{ctx[CpuRegister.Rcx]:X16}");
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "ob5xAW4ln-0",
+        ExportName = "strchr",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strchr(CpuContext ctx)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        var needle = unchecked((byte)ctx[CpuRegister.Rsi]);
+        if (address == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        // The terminator counts as part of the scanned range, so strchr(s, '\0')
+        // returns a pointer to the string's null byte just like a native libc.
+        Span<byte> current = stackalloc byte[1];
+        for (ulong index = 0; index < 1_048_576; index++)
+        {
+            if (!TryReadCompat(ctx, address + index, current))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            if (current[0] == needle)
+            {
+                ctx[CpuRegister.Rax] = address + index;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            if (current[0] == 0)
+            {
+                break;
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "9yDWMxEFdJU",
+        ExportName = "strrchr",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strrchr(CpuContext ctx)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        var needle = unchecked((byte)ctx[CpuRegister.Rsi]);
+        if (address == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ulong match = 0;
+        var found = false;
+        Span<byte> current = stackalloc byte[1];
+        for (ulong index = 0; index < 1_048_576; index++)
+        {
+            if (!TryReadCompat(ctx, address + index, current))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            if (current[0] == needle)
+            {
+                match = address + index;
+                found = true;
+            }
+
+            if (current[0] == 0)
+            {
+                break;
+            }
+        }
+
+        ctx[CpuRegister.Rax] = found ? match : 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "8u8lPzUEq+U",
+        ExportName = "memchr",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Memchr(CpuContext ctx)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        var needle = unchecked((byte)ctx[CpuRegister.Rsi]);
+        var count = ctx[CpuRegister.Rdx];
+
+        Span<byte> current = stackalloc byte[1];
+        for (ulong index = 0; index < count; index++)
+        {
+            if (!TryReadCompat(ctx, address + index, current))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            if (current[0] == needle)
+            {
+                ctx[CpuRegister.Rax] = address + index;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "Ls4tzzhimqQ",
+        ExportName = "strcat",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strcat(CpuContext ctx)
+    {
+        var destination = ctx[CpuRegister.Rdi];
+        var source = ctx[CpuRegister.Rsi];
+        if (!TryReadCString(ctx, source, 1_048_576, out var sourceBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryReadCString(ctx, destination, 1_048_576, out var destinationBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        // Overwrite the destination terminator and re-terminate after the copied bytes.
+        var appendAddress = destination + (ulong)destinationBytes.Length;
+        var payload = new byte[sourceBytes.Length + 1];
+        sourceBytes.CopyTo(payload.AsSpan());
+        if (!TryWriteCompat(ctx, appendAddress, payload))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = destination;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "kHg45qPC6f0",
+        ExportName = "strncat",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strncat(CpuContext ctx)
+    {
+        var destination = ctx[CpuRegister.Rdi];
+        var source = ctx[CpuRegister.Rsi];
+        var limit = ctx[CpuRegister.Rdx];
+
+        // Bounding the source read by the count yields strncat's "at most n bytes"
+        // semantics while still stopping early at the source terminator.
+        if (!TryReadCString(ctx, source, limit, out var sourceBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryReadCString(ctx, destination, 1_048_576, out var destinationBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var appendAddress = destination + (ulong)destinationBytes.Length;
+        var payload = new byte[sourceBytes.Length + 1];
+        sourceBytes.CopyTo(payload.AsSpan());
+        if (!TryWriteCompat(ctx, appendAddress, payload))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = destination;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "viiwFMaNamA",
+        ExportName = "strstr",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libc")]
+    public static int Strstr(CpuContext ctx)
+    {
+        var haystack = ctx[CpuRegister.Rdi];
+        var needle = ctx[CpuRegister.Rsi];
+        if (!TryReadCString(ctx, haystack, 1_048_576, out var haystackBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryReadCString(ctx, needle, 1_048_576, out var needleBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        // An empty needle matches at the start of the haystack.
+        if (needleBytes.Length == 0)
+        {
+            ctx[CpuRegister.Rax] = haystack;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        var matchIndex = haystackBytes.AsSpan().IndexOf(needleBytes.AsSpan());
+        ctx[CpuRegister.Rax] = matchIndex >= 0 ? haystack + (ulong)matchIndex : 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "fgIsQ10xYVA",
+        ExportName = "sceKernelChmod",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelChmod(CpuContext ctx)
+    {
+        var pathAddress = ctx[CpuRegister.Rdi];
+        var mode = unchecked((uint)ctx[CpuRegister.Rsi]);
+        if (pathAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var hostPath = ResolveGuestPath(guestPath);
+        if (IsReadOnlyGuestMutationPath(guestPath))
+        {
+            LogOpenTrace($"chmod readonly path='{guestPath}' host='{hostPath}' mode=0x{mode:X}");
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+        }
+
+        if (!File.Exists(hostPath) && !Directory.Exists(hostPath))
+        {
+            AddNegativeStatCacheForGuestPath(guestPath);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        // POSIX permission bits have no host equivalent on Windows; accept the call
+        // so guests that chmod their freshly created files/directories can proceed.
+        LogOpenTrace($"chmod path='{guestPath}' host='{hostPath}' mode=0x{mode:X}");
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+    private static bool TryCompareStringsCaseInsensitive(
+        CpuContext ctx,
+        ulong left,
+        ulong right,
+        ulong limit,
+        out int compare)
+    {
+        compare = 0;
+        Span<byte> leftBuffer = stackalloc byte[1];
+        Span<byte> rightBuffer = stackalloc byte[1];
+        for (ulong index = 0; index < limit; index++)
+        {
+            if (!TryReadCompat(ctx, left + index, leftBuffer) ||
+                !TryReadCompat(ctx, right + index, rightBuffer))
+            {
+                return false;
+            }
+
+            var leftValue = leftBuffer[0];
+            var rightValue = rightBuffer[0];
+            var leftLower = ToAsciiLower(leftValue);
+            var rightLower = ToAsciiLower(rightValue);
+            if (leftLower != rightLower)
+            {
+                compare = leftLower - rightLower;
+                return true;
+            }
+
+            if (leftValue == 0)
+            {
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    private static byte ToAsciiLower(byte value) =>
+        value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
 }
 
 

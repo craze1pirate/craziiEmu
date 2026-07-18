@@ -9,4 +9,6 @@ public interface ICpuMemory
     bool TryRead(ulong virtualAddress, Span<byte> destination);
 
     bool TryWrite(ulong virtualAddress, ReadOnlySpan<byte> source);
+
+    bool TryCompare(ulong virtualAddress, ReadOnlySpan<byte> expected) => false;
 }

@@ -2,8 +2,6 @@
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System;
-using System.Threading;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Np;
@@ -26,12 +24,37 @@ public static class NpWebApi2Exports
 
         if (httpContextId <= 0 || poolSize == 0)
         {
-            return SetReturn(ctx, NpWebApi2ErrorInvalidArgument);
+            return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
         }
 
         Interlocked.Exchange(ref _initialized, 1);
         TraceNpWebApi2("init", httpContextId, poolSize);
-        return SetReturn(ctx, 0);
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "WV1GwM32NgY",
+        ExportName = "sceNpWebApi2PushEventCreateHandle",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2InitializeAlt(CpuContext ctx)
+    {
+        Interlocked.Exchange(ref _initialized, 1);
+        TraceNpWebApi2("init-alt", unchecked((int)ctx[CpuRegister.Rdi]), ctx[CpuRegister.Rsi]);
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "sk54bi6FtYM",
+        ExportName = "sceNpWebApi2CreateUserContext",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2CreateUserContext(CpuContext ctx)
+    {
+        // No PSN backend: refuse user-context creation so the title's online
+        // layer backs off instead of driving a half-created context handle.
+        TraceNpWebApi2("create-user-context", unchecked((int)ctx[CpuRegister.Rdi]), ctx[CpuRegister.Rsi]);
+        return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
     }
 
     [SysAbiExport(
@@ -44,13 +67,7 @@ public static class NpWebApi2Exports
         var libraryContextId = unchecked((int)ctx[CpuRegister.Rdi]);
         Interlocked.Exchange(ref _initialized, 0);
         TraceNpWebApi2("term", libraryContextId, 0);
-        return SetReturn(ctx, 0);
-    }
-
-    private static int SetReturn(CpuContext ctx, int result)
-    {
-        ctx[CpuRegister.Rax] = unchecked((ulong)result);
-        return result;
+        return ctx.SetReturn(0);
     }
 
     private static void TraceNpWebApi2(string operation, int id, ulong arg0)

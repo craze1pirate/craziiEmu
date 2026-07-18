@@ -4,6 +4,7 @@
 
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using CraziiEmu.HLE;
 
@@ -23,6 +24,10 @@ public static class FiberExports
     private const uint FiberStateIdle = 2;
     private const uint FiberStateTerminated = 3;
     private const uint FiberFlagContextSizeCheck = 0x10;
+    private const uint FiberFlagSetFpuRegs = 0x100;
+    private const uint Firmware350BuildVersion = 0x03500000;
+    private const ushort InitialFpuControlWord = 0x037F;
+    private const uint InitialMxcsr = 0x9FC0;
 
     private const int FiberErrorNull = unchecked((int)0x80590001);
     private const int FiberErrorAlignment = unchecked((int)0x80590002);
@@ -46,13 +51,26 @@ public static class FiberExports
 
     private static int _contextSizeCheck;
 
-    [ThreadStatic]
-    private static ulong _currentFiberAddress;
-
     private static readonly object _fiberGate = new();
     private static readonly ConcurrentDictionary<ulong, FiberContinuation> _continuations = new();
-    private static readonly ConcurrentDictionary<ulong, FiberReturnTarget> _returnTargets = new();
     private static readonly ConcurrentDictionary<ulong, FiberStackRange> _stackRanges = new();
+    private static readonly ConcurrentDictionary<ulong, FiberThreadState> _threadStates = new();
+
+    static FiberExports()
+    {
+        RunFiberSelfChecks();
+    }
+
+    public static void ResetRuntimeState()
+    {
+        lock (_fiberGate)
+        {
+            _continuations.Clear();
+            _stackRanges.Clear();
+            _threadStates.Clear();
+            Volatile.Write(ref _contextSizeCheck, 0);
+        }
+    }
 
     [SysAbiExport(
         Nid = "hVYD7Ou2pCQ",
@@ -62,6 +80,7 @@ public static class FiberExports
     public static int FiberInitialize(CpuContext ctx)
     {
         var optParam = ReadStackArg64(ctx, 0);
+        var buildVersion = unchecked((uint)ReadStackArg64(ctx, 1));
         return FiberInitializeCore(
             ctx,
             ctx[CpuRegister.Rdi],
@@ -71,7 +90,8 @@ public static class FiberExports
             ctx[CpuRegister.R8],
             ctx[CpuRegister.R9],
             optParam,
-            flags: 0);
+            flags: 0,
+            buildVersion);
     }
 
     [SysAbiExport(
@@ -83,6 +103,7 @@ public static class FiberExports
     {
         var optParam = ReadStackArg64(ctx, 0);
         var flags = unchecked((uint)ReadStackArg64(ctx, 1));
+        var buildVersion = unchecked((uint)ReadStackArg64(ctx, 2));
         return FiberInitializeCore(
             ctx,
             ctx[CpuRegister.Rdi],
@@ -92,7 +113,8 @@ public static class FiberExports
             ctx[CpuRegister.R8],
             ctx[CpuRegister.R9],
             optParam,
-            flags);
+            flags,
+            buildVersion);
     }
 
     [SysAbiExport(
@@ -142,7 +164,6 @@ public static class FiberExports
         }
 
         _continuations.TryRemove(fiber, out _);
-        _returnTargets.TryRemove(fiber, out _);
         _stackRanges.TryRemove(fiber, out _);
         _ = TryWriteUInt32(ctx, fiber + FiberStateOffset, FiberStateTerminated);
         return SetReturn(ctx, 0);
@@ -241,61 +262,34 @@ public static class FiberExports
 
         var returnArgument = ctx[CpuRegister.Rdi];
         var argOnRunAddress = ctx[CpuRegister.Rsi];
-        if (argOnRunAddress != 0 && !TryWriteUInt64(ctx, argOnRunAddress, 0))
-        {
-            return SetReturn(ctx, FiberErrorInvalid);
-        }
-
         GuestCpuContinuation transferTarget;
-        ulong previousFiber;
         lock (_fiberGate)
         {
             _continuations[fiberAddress] = new FiberContinuation(
                 CaptureContinuation(ctx, frame.ReturnRip, frame.ResumeRsp, frame.ReturnSlotAddress),
                 argOnRunAddress);
 
-            if (!_returnTargets.TryRemove(fiberAddress, out var returnTarget))
+            var threadKey = GetThreadKey(ctx);
+            if (!_threadStates.TryGetValue(threadKey, out var threadState) ||
+                !TryWriteResumeArgument(ctx, threadState.RootContinuation, returnArgument))
             {
                 _continuations.TryRemove(fiberAddress, out _);
                 return SetReturn(ctx, FiberErrorPermission);
-            }
-
-            previousFiber = returnTarget.PreviousFiber;
-            if (previousFiber != 0)
-            {
-                if (!_continuations.TryRemove(previousFiber, out var previousContinuation) ||
-                    !TryWriteResumeArgument(ctx, previousContinuation, returnArgument) ||
-                    !TryWriteUInt32(ctx, previousFiber + FiberStateOffset, FiberStateRun))
-                {
-                    _continuations.TryRemove(fiberAddress, out _);
-                    return SetReturn(ctx, FiberErrorState);
-                }
-
-                transferTarget = previousContinuation.Context with { Rax = 0 };
-            }
-            else
-            {
-                if (!returnTarget.ThreadContinuation.HasValue ||
-                    !TryWriteResumeArgument(ctx, returnTarget.ThreadContinuation.Value, returnArgument))
-                {
-                    _continuations.TryRemove(fiberAddress, out _);
-                    return SetReturn(ctx, FiberErrorState);
-                }
-
-                transferTarget = returnTarget.ThreadContinuation.Value.Context with { Rax = 0 };
             }
 
             if (!TryWriteUInt32(ctx, fiberAddress + FiberStateOffset, FiberStateIdle))
             {
                 return SetReturn(ctx, FiberErrorInvalid);
             }
+
+            transferTarget = threadState.RootContinuation.Context with { Rax = 0 };
+            _threadStates.TryRemove(threadKey, out _);
         }
 
-        _currentFiberAddress = previousFiber;
-        _ = GuestThreadExecution.EnterFiber(previousFiber);
+        _ = GuestThreadExecution.EnterFiber(0);
         GuestThreadExecution.RequestCurrentContextTransfer(transferTarget);
         TraceFiber(
-            $"return fiber=0x{fiberAddress:X16} to=0x{previousFiber:X16} " +
+            $"return-to-thread fiber=0x{fiberAddress:X16} " +
             $"resume=0x{transferTarget.Rip:X16} rsp=0x{transferTarget.Rsp:X16} arg=0x{returnArgument:X16}");
         return SetReturn(ctx, 0);
     }
@@ -437,12 +431,13 @@ public static class FiberExports
             return SetReturn(ctx, FiberErrorNull);
         }
 
-        if (ResolveCurrentFiberAddress(ctx) == 0)
+        if (ResolveCurrentFiberAddress(ctx) == 0 ||
+            !_threadStates.TryGetValue(GetThreadKey(ctx), out var threadState))
         {
             return SetReturn(ctx, FiberErrorPermission);
         }
 
-        return TryWriteUInt64(ctx, outAddress, ctx[CpuRegister.Rbp])
+        return TryWriteUInt64(ctx, outAddress, threadState.RootContinuation.Context.Rbp)
             ? SetReturn(ctx, 0)
             : SetReturn(ctx, FiberErrorInvalid);
     }
@@ -456,7 +451,8 @@ public static class FiberExports
         ulong contextAddress,
         ulong contextSize,
         ulong optParam,
-        uint flags)
+        uint flags,
+        uint buildVersion)
     {
         if (fiber == 0 || nameAddress == 0 || entry == 0)
         {
@@ -493,10 +489,10 @@ public static class FiberExports
             return SetReturn(ctx, FiberErrorInvalid);
         }
 
-        if (Volatile.Read(ref _contextSizeCheck) != 0)
-        {
-            flags |= FiberFlagContextSizeCheck;
-        }
+        flags = ApplyInitializationFlags(
+            flags,
+            buildVersion,
+            Volatile.Read(ref _contextSizeCheck) != 0);
 
         if (!TryWriteUInt32(ctx, fiber + FiberMagicStartOffset, FiberSignature0) ||
             !TryWriteUInt32(ctx, fiber + FiberStateOffset, FiberStateIdle) ||
@@ -532,7 +528,9 @@ public static class FiberExports
             _stackRanges[fiber] = new FiberStackRange(contextAddress, contextSize);
         }
 
-        TraceFiber($"init fiber=0x{fiber:X16} entry=0x{entry:X16} ctx=0x{contextAddress:X16} size=0x{contextSize:X} name='{name}'");
+        TraceFiber(
+            $"init fiber=0x{fiber:X16} entry=0x{entry:X16} ctx=0x{contextAddress:X16} " +
+            $"size=0x{contextSize:X} flags=0x{flags:X} build=0x{buildVersion:X8} name='{name}'");
         return SetReturn(ctx, 0);
     }
 
@@ -585,6 +583,7 @@ public static class FiberExports
         var resumed = false;
         lock (_fiberGate)
         {
+            var threadKey = GetThreadKey(ctx);
             if (!TryReadFiberFields(ctx, fiber, out fields))
             {
                 return SetReturn(ctx, FiberErrorInvalid);
@@ -595,25 +594,35 @@ public static class FiberExports
                 return SetReturn(ctx, FiberErrorState);
             }
 
-            FiberContinuation targetContinuation;
+            FiberContinuation targetContinuation = default;
             if (_continuations.TryGetValue(fiber, out var savedContinuation))
             {
                 targetContinuation = savedContinuation;
                 resumed = true;
             }
-            else if (!TryCreateInitialContinuation(ctx, fields, argOnRun, out targetContinuation))
-            {
-                return SetReturn(ctx, FiberErrorInvalid);
-            }
-
-            if (resumed && !TryWriteResumeArgument(ctx, targetContinuation, argOnRun))
-            {
-                return SetReturn(ctx, FiberErrorInvalid);
-            }
-
             var callerContinuation = new FiberContinuation(
                 CaptureContinuation(ctx, frame.ReturnRip, frame.ResumeRsp, frame.ReturnSlotAddress),
                 outArgumentAddress);
+
+            if (!resumed)
+            {
+                var rootStackTop = _threadStates.TryGetValue(threadKey, out var existingThreadState)
+                    ? existingThreadState.RootContinuation.Context.Rsp
+                    : callerContinuation.Context.Rsp;
+                if (!TryCreateInitialContinuation(
+                        ctx,
+                        fields,
+                        argOnRun,
+                        rootStackTop,
+                        out targetContinuation))
+                {
+                    return SetReturn(ctx, FiberErrorInvalid);
+                }
+            }
+            else if (!TryWriteResumeArgument(ctx, targetContinuation, argOnRun))
+            {
+                return SetReturn(ctx, FiberErrorInvalid);
+            }
 
             if (previousFiber != 0)
             {
@@ -625,11 +634,15 @@ public static class FiberExports
                 }
 
                 _continuations[previousFiber] = callerContinuation;
-                _returnTargets[fiber] = new FiberReturnTarget(previousFiber, null);
             }
             else
             {
-                _returnTargets[fiber] = new FiberReturnTarget(0, callerContinuation);
+                if (_threadStates.ContainsKey(threadKey))
+                {
+                    return SetReturn(ctx, FiberErrorPermission);
+                }
+
+                _threadStates[threadKey] = new FiberThreadState(callerContinuation, fiber, previousFiber);
             }
 
             if (!TryWriteUInt32(ctx, fiber + FiberStateOffset, FiberStateRun))
@@ -639,7 +652,10 @@ public static class FiberExports
                     _continuations.TryRemove(previousFiber, out _);
                     _ = TryWriteUInt32(ctx, previousFiber + FiberStateOffset, FiberStateRun);
                 }
-                _returnTargets.TryRemove(fiber, out _);
+                else
+                {
+                    _threadStates.TryRemove(threadKey, out _);
+                }
                 return SetReturn(ctx, FiberErrorInvalid);
             }
 
@@ -649,9 +665,16 @@ public static class FiberExports
             }
 
             transferTarget = targetContinuation.Context with { Rax = 0 };
+            if (_threadStates.TryGetValue(threadKey, out var activeState))
+            {
+                _threadStates[threadKey] = activeState with
+                {
+                    CurrentFiber = fiber,
+                    PreviousFiber = previousFiber,
+                };
+            }
         }
 
-        _currentFiberAddress = fiber;
         _ = GuestThreadExecution.EnterFiber(fiber);
         GuestThreadExecution.RequestCurrentContextTransfer(transferTarget);
         TraceFiber(
@@ -664,20 +687,44 @@ public static class FiberExports
         CpuContext ctx,
         FiberFields fields,
         ulong argOnRun,
+        ulong rootStackTop,
         out FiberContinuation continuation)
     {
         continuation = default;
-        if (fields.ContextAddress == 0 || fields.ContextSize < FiberContextMinimumSize)
+        ulong stackEnd;
+        if (fields.ContextAddress == 0)
+        {
+            if (rootStackTop < 32)
+            {
+                return false;
+            }
+
+            // Contextless fibers are specified to execute on the root
+            // sceFiberRun stack.  Keep the suspended import return record
+            // above the entry stack and use a synthetic transfer slot below it.
+            stackEnd = rootStackTop & ~15UL;
+        }
+        else
+        {
+            if (fields.ContextSize < FiberContextMinimumSize)
+            {
+                return false;
+            }
+
+            stackEnd = fields.ContextAddress + fields.ContextSize;
+        }
+
+        if (!TryCalculateInitialStackLayout(stackEnd, out var entryRsp, out var transferSlot))
+        {
+            return false;
+        }
+        if (!TryWriteUInt64(ctx, transferSlot, fields.Entry) ||
+            !TryWriteUInt64(ctx, entryRsp, 0))
         {
             return false;
         }
 
-        var stackEnd = fields.ContextAddress + fields.ContextSize;
-        var entryRsp = (stackEnd & ~15UL) - sizeof(ulong);
-        if (!TryWriteUInt64(ctx, entryRsp, 0))
-        {
-            return false;
-        }
+        var setFpuRegisters = (fields.Flags & FiberFlagSetFpuRegs) != 0;
 
         continuation = new FiberContinuation(
             new GuestCpuContinuation(
@@ -699,7 +746,12 @@ public static class FiberExports
                 0,
                 0,
                 0,
-                0),
+                0,
+                0,
+                0,
+                setFpuRegisters ? InitialFpuControlWord : ctx.FpuControlWord,
+                setFpuRegisters ? InitialMxcsr : ctx.Mxcsr,
+                RestoreFullFpuState: setFpuRegisters),
             0);
         return true;
     }
@@ -732,24 +784,97 @@ public static class FiberExports
             ctx[CpuRegister.Rdi],
             ctx[CpuRegister.R8],
             ctx[CpuRegister.R9],
+            ctx[CpuRegister.R10],
+            ctx[CpuRegister.R11],
             ctx[CpuRegister.R12],
             ctx[CpuRegister.R13],
             ctx[CpuRegister.R14],
-            ctx[CpuRegister.R15]);
+            ctx[CpuRegister.R15],
+            ctx.FpuControlWord,
+            ctx.Mxcsr,
+            RestoreFullFpuState: false);
 
     private static ulong ResolveCurrentFiberAddress(CpuContext ctx)
     {
-        if (_currentFiberAddress != 0)
-        {
-            return _currentFiberAddress;
-        }
-
         if (GuestThreadExecution.CurrentFiberAddress != 0)
         {
             return GuestThreadExecution.CurrentFiberAddress;
         }
 
+        if (_threadStates.TryGetValue(GetThreadKey(ctx), out var threadState) &&
+            threadState.CurrentFiber != 0)
+        {
+            return threadState.CurrentFiber;
+        }
+
         return TryFindFiberByStack(ctx, out var fiberAddress) ? fiberAddress : 0;
+    }
+
+    private static ulong GetThreadKey(CpuContext ctx)
+    {
+        var handle = GuestThreadExecution.CurrentGuestThreadHandle;
+        if (handle != 0)
+        {
+            return handle;
+        }
+
+        // The main guest thread does not always have a scheduler handle.  Its
+        // ABI thread pointer is stable across native/managed transitions.
+        return ctx.FsBase != 0 ? ctx.FsBase : 1;
+    }
+
+    private static uint ApplyInitializationFlags(
+        uint flags,
+        uint buildVersion,
+        bool contextSizeCheck)
+    {
+        if (buildVersion >= Firmware350BuildVersion)
+        {
+            flags |= FiberFlagSetFpuRegs;
+        }
+        if (contextSizeCheck)
+        {
+            flags |= FiberFlagContextSizeCheck;
+        }
+
+        return flags;
+    }
+
+    private static bool TryCalculateInitialStackLayout(
+        ulong stackEnd,
+        out ulong entryRsp,
+        out ulong transferSlot)
+    {
+        var alignedEnd = stackEnd & ~15UL;
+        if (alignedEnd < 2 * sizeof(ulong))
+        {
+            entryRsp = 0;
+            transferSlot = 0;
+            return false;
+        }
+
+        entryRsp = alignedEnd - sizeof(ulong);
+        transferSlot = entryRsp - sizeof(ulong);
+        return true;
+    }
+
+    [Conditional("DEBUG")]
+    private static void RunFiberSelfChecks()
+    {
+        Debug.Assert(
+            ApplyInitializationFlags(0, Firmware350BuildVersion - 1, false) == 0,
+            "Pre-3.50 fibers unexpectedly enable SetFpuRegs.");
+        Debug.Assert(
+            ApplyInitializationFlags(0, Firmware350BuildVersion, false) == FiberFlagSetFpuRegs,
+            "3.50+ fibers must initialize x87/MXCSR control state.");
+        Debug.Assert(
+            ApplyInitializationFlags(1, Firmware350BuildVersion, true) ==
+                (1u | FiberFlagSetFpuRegs | FiberFlagContextSizeCheck),
+            "Fiber initialization discarded caller/internal flags.");
+        Debug.Assert(
+            TryCalculateInitialStackLayout(0x1017, out var rsp, out var slot) &&
+            rsp == 0x1008 && slot == 0x1000 && (rsp & 15) == 8,
+            "Initial fiber transfer slot does not produce SysV entry alignment.");
     }
 
     internal static ulong GetCurrentFiberAddressForDiagnostics(CpuContext ctx) =>
@@ -1018,9 +1143,10 @@ public static class FiberExports
         GuestCpuContinuation Context,
         ulong ArgOnRunAddress);
 
-    private readonly record struct FiberReturnTarget(
-        ulong PreviousFiber,
-        FiberContinuation? ThreadContinuation);
+    private sealed record FiberThreadState(
+        FiberContinuation RootContinuation,
+        ulong CurrentFiber,
+        ulong PreviousFiber);
 
     private readonly record struct FiberStackRange(ulong Start, ulong Size)
     {

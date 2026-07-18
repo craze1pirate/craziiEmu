@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
+using CraziiEmu.HLE.Host;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -28,7 +29,7 @@ public static class AudioOutExports
             int channels,
             int bytesPerSample,
             bool isFloat,
-            WinMmAudioPort? backend)
+            IHostAudioStream? backend)
         {
             UserId = userId;
             Type = type;
@@ -49,7 +50,8 @@ public static class AudioOutExports
         public int Channels { get; }
         public int BytesPerSample { get; }
         public bool IsFloat { get; }
-        public WinMmAudioPort? Backend { get; }
+        public IHostAudioStream? Backend { get; }
+        public volatile float Volume = 1.0f;
         public int BufferByteLength =>
             checked((int)BufferLength * Channels * BytesPerSample);
 
@@ -104,12 +106,13 @@ public static class AudioOutExports
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        WinMmAudioPort? backend = null;
+        IHostAudioStream? backend = null;
         string backendName;
         try
         {
-            backend = new WinMmAudioPort(frequency);
-            backendName = "winmm";
+            var audio = HostPlatform.Current.Audio;
+            backend = audio.OpenStereoPcm16Stream(frequency);
+            backendName = audio.BackendName;
         }
         catch (Exception exception)
         {
@@ -181,15 +184,32 @@ public static class AudioOutExports
                 return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
             }
 
-            if (port.Backend is null ||
-                !port.Backend.Submit(
-                    source,
-                    port.BufferLength,
-                    port.Channels,
-                    port.BytesPerSample,
-                    port.IsFloat))
+            if (port.Backend is null)
             {
                 port.PaceSilence();
+                return ctx.SetReturn(0);
+            }
+
+            var outputLength = checked((int)port.BufferLength * AudioPcmConversion.OutputFrameSize);
+            var output = ArrayPool<byte>.Shared.Rent(outputLength);
+            try
+            {
+                AudioPcmConversion.ConvertToStereoPcm16(
+                    source,
+                    output.AsSpan(0, outputLength),
+                    checked((int)port.BufferLength),
+                    port.Channels,
+                    port.BytesPerSample,
+                    port.IsFloat,
+                    port.Volume);
+                if (!port.Backend.Submit(output.AsSpan(0, outputLength)))
+                {
+                    port.PaceSilence();
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(output);
             }
 
             return ctx.SetReturn(0);
@@ -208,10 +228,54 @@ public static class AudioOutExports
     public static int AudioOutSetVolume(CpuContext ctx)
     {
         var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        return ctx.SetReturn(
-            Ports.ContainsKey(handle)
-                ? 0
-                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        var channelFlags = unchecked((uint)ctx[CpuRegister.Rsi]);
+        var volumeArrayAddress = ctx[CpuRegister.Rdx];
+        if (!Ports.TryGetValue(handle, out var port))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        const int unityVolume = 32768;
+        var maxVolume = 0;
+        var found = false;
+        if (volumeArrayAddress != 0)
+        {
+            Span<byte> raw = stackalloc byte[sizeof(int)];
+            for (var channel = 0; channel < 8; channel++)
+            {
+                if ((channelFlags & (1u << channel)) == 0)
+                {
+                    continue;
+                }
+
+                if (!ctx.Memory.TryRead(volumeArrayAddress + (ulong)(channel * sizeof(int)), raw))
+                {
+                    return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+                }
+
+                var value = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(raw);
+                maxVolume = Math.Max(maxVolume, value);
+                found = true;
+            }
+        }
+
+        if (found)
+        {
+            port.Volume = Math.Clamp(maxVolume / (float)unityVolume, 0f, 1f);
+        }
+
+        return ctx.SetReturn(0);
+    }
+
+    public static void ShutdownAllPorts()
+    {
+        foreach (var handle in Ports.Keys)
+        {
+            if (Ports.TryRemove(handle, out var port))
+            {
+                port.Dispose();
+            }
+        }
     }
 
     private static bool TryGetFormat(

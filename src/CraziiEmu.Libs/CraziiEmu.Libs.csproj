@@ -1,5 +1,5 @@
 <!--
-Copyright (C) 2026 SharpEmu Emulator Project
+Copyright (C) 2026 CraziiEmu Emulator Project
 Copyright (C) 2026 craze1pirate - CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
@@ -7,15 +7,34 @@ SPDX-License-Identifier: GPL-2.0-or-later
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
-    <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
+    <ProjectReference Include="..\CraziiEmu.ShaderCompiler\CraziiEmu.ShaderCompiler.csproj" />
+    <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Vulkan\CraziiEmu.ShaderCompiler.Vulkan.csproj" />
+    <!-- SysAbi export generator + analyzers (compile-time registry, NID validation). -->
+    <ProjectReference Include="..\CraziiEmu.SourceGenerators\CraziiEmu.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The PS5 symbol catalog: lets the analyzer flag export names it doesn't know. -->
+    <AdditionalFiles Include="..\..\scripts\ps5_names.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CraziiEmu.Libs.Tests" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Silk.NET.Input" />
     <PackageReference Include="Silk.NET.Vulkan" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" />
     <PackageReference Include="Silk.NET.Windowing" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

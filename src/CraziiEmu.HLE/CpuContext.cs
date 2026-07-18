@@ -26,6 +26,10 @@ public sealed class CpuContext(ICpuMemory memory, Generation generation)
 
     public ulong GsBase { get; set; }
 
+    public ushort FpuControlWord { get; set; } = 0x037F;
+
+    public uint Mxcsr { get; set; } = 0x1F80;
+
     public ulong Rax { get => this[CpuRegister.Rax]; set => this[CpuRegister.Rax] = value; }
     public ulong Rdi { get => this[CpuRegister.Rdi]; set => this[CpuRegister.Rdi] = value; }
     public ulong Rsi { get => this[CpuRegister.Rsi]; set => this[CpuRegister.Rsi] = value; }

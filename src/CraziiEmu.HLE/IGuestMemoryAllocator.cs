@@ -7,4 +7,6 @@ namespace CraziiEmu.HLE;
 public interface IGuestMemoryAllocator
 {
     bool TryAllocateGuestMemory(ulong size, ulong alignment, out ulong address);
+
+    bool TryFreeGuestMemory(ulong address);
 }

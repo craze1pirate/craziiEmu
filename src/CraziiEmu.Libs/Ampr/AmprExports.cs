@@ -25,6 +25,7 @@ public static class AmprExports
     private const uint KernelEventQueueRecordType = 2;
     private const uint WriteAddressRecordType = 3;
     private static readonly ConcurrentDictionary<ulong, CommandBufferState> _commandBuffers = new();
+    private static readonly ConcurrentDictionary<string, Lazy<CachedHostFile>> _hostFileCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly bool _traceAmpr =
         string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AMPR"), "1", StringComparison.Ordinal);
     private static readonly bool _traceAmprReads =
@@ -36,6 +37,24 @@ public static class AmprExports
         public ulong Buffer;
         public ulong Size;
         public ulong WriteOffset;
+        public ulong CommandCount;
+    }
+
+    private sealed class CachedHostFile
+    {
+        public CachedHostFile(string path)
+        {
+            Stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 1024 * 1024,
+                FileOptions.RandomAccess);
+        }
+
+        public object Gate { get; } = new();
+        public FileStream Stream { get; }
     }
 
     [SysAbiExport(
@@ -250,7 +269,7 @@ public static class AmprExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
-        if (!AmprFileRegistry.TryGetHostPath(fileId, out var hostPath) || !File.Exists(hostPath))
+        if (!AmprFileRegistry.TryGetHostPath(fileId, out var hostPath))
         {
             TraceAmprRead(ctx, commandBuffer, fileId, destination, size, fileOffset, bytesRead: 0, hostPath, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -293,6 +312,18 @@ public static class AmprExports
     public static int MeasureCommandSizeWriteKernelEventQueue0400(CpuContext ctx)
     {
         TraceAmpr(ctx, "measure_write_equeue", 0, KernelEventQueueRecordSize, 0);
+        ctx[CpuRegister.Rax] = KernelEventQueueRecordSize;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "Zi3dBUjgyXI",
+        ExportName = "sceAmprMeasureCommandSizeWriteKernelEventQueueOnCompletion",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAmpr")]
+    public static int MeasureCommandSizeWriteKernelEventQueueOnCompletion(CpuContext ctx)
+    {
+        TraceAmpr(ctx, "measure_write_equeue_complete", 0, KernelEventQueueRecordSize, 0);
         ctx[CpuRegister.Rax] = KernelEventQueueRecordSize;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -356,6 +387,35 @@ public static class AmprExports
     }
 
     [SysAbiExport(
+        Nid = "gzndltBEzWc",
+        ExportName = "sceAmprCommandBufferGetNumCommands",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAmpr")]
+    public static int CommandBufferGetNumCommands(CpuContext ctx)
+    {
+        var commandBuffer = ctx[CpuRegister.Rdi];
+        if (commandBuffer == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryGetCommandBufferState(ctx, commandBuffer, out _, out _, out var state) || state is null)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ulong commandCount;
+        lock (state)
+        {
+            commandCount = state.CommandCount;
+        }
+
+        TraceAmpr(ctx, "get_num_commands", commandBuffer, commandCount, 0);
+        ctx[CpuRegister.Rax] = commandCount;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "H896Pt-yB4I",
         ExportName = "sceAmprCommandBufferWriteKernelEventQueue_04_00",
         Target = Generation.Gen5,
@@ -385,6 +445,40 @@ public static class AmprExports
         }
 
         TraceAmpr(ctx, "write_equeue", commandBuffer, ident, completionToken);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "o67gODLFpls",
+        ExportName = "sceAmprCommandBufferWriteKernelEventQueueOnCompletion",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAmpr")]
+    public static int CommandBufferWriteKernelEventQueueOnCompletion(CpuContext ctx)
+    {
+        var commandBuffer = ctx[CpuRegister.Rdi];
+        var equeue = ctx[CpuRegister.Rsi];
+        var ident = ctx[CpuRegister.Rdx];
+        var completionToken = ctx[CpuRegister.Rcx];
+        var userData = ctx[CpuRegister.R8];
+
+        if (commandBuffer == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!AppendKernelEventQueueRecord(
+                ctx,
+                commandBuffer,
+                equeue,
+                ident,
+                completionToken,
+                userData))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        TraceAmpr(ctx, "write_equeue_complete", commandBuffer, ident, completionToken);
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -552,6 +646,7 @@ public static class AmprExports
             state.Buffer = buffer;
             state.Size = size;
             state.WriteOffset = writeOffset;
+            state.CommandCount = 0;
         }
     }
 
@@ -584,6 +679,7 @@ public static class AmprExports
                 state.Buffer = buffer;
                 state.Size = size;
                 state.WriteOffset = 0;
+                state.CommandCount = 0;
             }
 
             return true;
@@ -635,24 +731,43 @@ public static class AmprExports
 
         try
         {
-            using var stream = new FileStream(
-                hostPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                ChunkSize,
-                FileOptions.SequentialScan);
-            if (fileOffset >= (ulong)stream.Length)
+            if (!TryGetCachedHostFile(hostPath, out var cachedFile, out var openResult))
+            {
+                return openResult;
+            }
+
+            long fileLength;
+            lock (cachedFile.Gate)
+            {
+                fileLength = cachedFile.Stream.Length;
+            }
+
+            if (fileOffset >= (ulong)fileLength)
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
 
-            stream.Position = unchecked((long)fileOffset);
-
             while (bytesRead < size)
             {
+                if (bytesRead > ulong.MaxValue - fileOffset)
+                {
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+                }
+
+                var absoluteOffset = fileOffset + bytesRead;
+                if (absoluteOffset > long.MaxValue)
+                {
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+                }
+
                 var request = (int)Math.Min((ulong)buffer.Length, size - bytesRead);
-                var read = stream.Read(buffer, 0, request);
+                int read;
+                lock (cachedFile.Gate)
+                {
+                    cachedFile.Stream.Position = unchecked((long)absoluteOffset);
+                    read = cachedFile.Stream.Read(buffer, 0, request);
+                }
+
                 if (read <= 0)
                 {
                     break;
@@ -680,6 +795,44 @@ public static class AmprExports
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static bool TryGetCachedHostFile(string hostPath, out CachedHostFile file, out int result)
+    {
+        file = null!;
+        result = (int)OrbisGen2Result.ORBIS_GEN2_OK;
+
+        string cachePath;
+        try
+        {
+            cachePath = Path.GetFullPath(hostPath);
+        }
+        catch
+        {
+            cachePath = hostPath;
+        }
+
+        var lazy = _hostFileCache.GetOrAdd(
+            cachePath,
+            static path => new Lazy<CachedHostFile>(() => new CachedHostFile(path), isThreadSafe: true));
+
+        try
+        {
+            file = lazy.Value;
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _hostFileCache.TryRemove(cachePath, out _);
+            result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+            return false;
+        }
+        catch (IOException)
+        {
+            _hostFileCache.TryRemove(cachePath, out _);
+            result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            return false;
+        }
     }
 
     private static bool AppendReadFileRecord(
@@ -757,6 +910,7 @@ public static class AmprExports
             }
 
             state.WriteOffset += recordSize;
+            state.CommandCount++;
         }
 
         return true;

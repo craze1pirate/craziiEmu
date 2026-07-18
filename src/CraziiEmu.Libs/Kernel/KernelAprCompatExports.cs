@@ -4,7 +4,6 @@
 
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Ampr;
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Threading;
 
@@ -51,7 +50,7 @@ public static class KernelAprCompatExports
             return completionResult;
         }
 
-        if (outSubmissionId != 0 && !TryWriteUInt32(ctx, outSubmissionId, submissionId))
+        if (outSubmissionId != 0 && !ctx.TryWriteUInt32(outSubmissionId, submissionId))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -82,14 +81,8 @@ public static class KernelAprCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
 
-        var resultAddress = ResolveWaitResultAddress(waitArg1, waitArg2, submission.ResultAddress);
-        if (resultAddress != 0 && !TryWriteAprResult(ctx, resultAddress))
-        {
-            TraceAprWaitFailure(ctx, "wait_result_fault", submissionId, submission.CommandBuffer, waitArg1, waitArg2);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        TraceApr(ctx, "wait", submissionId, submission.CommandBuffer, waitArg1, resultAddress);
+        // Completion output was written when the command was submitted.
+        TraceApr(ctx, "wait", submissionId, submission.CommandBuffer, waitArg1, waitArg2);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -142,7 +135,7 @@ public static class KernelAprCompatExports
             return completionResult;
         }
 
-        if (!TryWriteUInt32(ctx, outSubmissionId, submissionId))
+        if (!ctx.TryWriteUInt32(outSubmissionId, submissionId))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -151,39 +144,24 @@ public static class KernelAprCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    // Success stub: the argument layout is unknown and callers tolerate the
+    // empty answer (Quake streams fine), so no output payload is written until
+    // the real signature is reversed.
+    [SysAbiExport(
+        Nid = "WvEu7yl3Ivg",
+        ExportName = "sceKernelAprGetFileSize",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelAprGetFileSize(CpuContext ctx)
+    {
+        return ctx.SetReturn(0);
+    }
+
     private static bool TryWriteAprResult(CpuContext ctx, ulong resultAddress)
     {
         Span<byte> result = stackalloc byte[sizeof(ulong)];
         result.Clear();
         return ctx.Memory.TryWrite(resultAddress, result);
-    }
-
-    private static ulong ResolveWaitResultAddress(ulong waitArg1, ulong waitArg2, ulong submittedResultAddress)
-    {
-        if (waitArg2 == 0)
-        {
-            return submittedResultAddress;
-        }
-
-        if (IsAmprCompletionToken(waitArg1) && waitArg2 <= 0xFFFF)
-        {
-            return submittedResultAddress;
-        }
-
-        return waitArg2;
-    }
-
-    private static bool IsAmprCompletionToken(ulong value)
-    {
-        var tag = value >> 56;
-        return tag is 0x0C or 0x10;
-    }
-
-    private static bool TryWriteUInt32(CpuContext ctx, ulong address, uint value)
-    {
-        Span<byte> buffer = stackalloc byte[sizeof(uint)];
-        BinaryPrimitives.WriteUInt32LittleEndian(buffer, value);
-        return ctx.Memory.TryWrite(address, buffer);
     }
 
     private static void TraceApr(

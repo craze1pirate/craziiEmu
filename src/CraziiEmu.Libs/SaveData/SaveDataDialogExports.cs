@@ -4,7 +4,6 @@
 
 using CraziiEmu.HLE;
 using System.Buffers.Binary;
-using System.Threading;
 
 namespace CraziiEmu.Libs.SaveData;
 
@@ -23,6 +22,7 @@ public static class SaveDataDialogExports
     private const int ErrorArgNull = unchecked((int)0x80B8000D);
 
     private const int ResultSize = 0x48;
+    private const int ButtonIdAffirmative = 1;
     private static int _status;
     private static int _lastMode;
     private static ulong _lastUserData;
@@ -36,10 +36,10 @@ public static class SaveDataDialogExports
     {
         if (Interlocked.CompareExchange(ref _status, StatusInitialized, StatusNone) != StatusNone)
         {
-            return SetReturn(ctx, ErrorAlreadyInitialized);
+            return ctx.SetReturn(ErrorAlreadyInitialized);
         }
 
-        return SetReturn(ctx, ErrorOk);
+        return ctx.SetReturn(ErrorOk);
     }
 
     [SysAbiExport(
@@ -52,22 +52,22 @@ public static class SaveDataDialogExports
         var paramAddress = ctx[CpuRegister.Rdi];
         if (paramAddress == 0)
         {
-            return SetReturn(ctx, ErrorArgNull);
+            return ctx.SetReturn(ErrorArgNull);
         }
 
         if (_status is not (StatusInitialized or StatusFinished))
         {
-            return SetReturn(ctx, ErrorNotInitialized);
+            return ctx.SetReturn(ErrorNotInitialized);
         }
 
         _lastMode = TryReadInt32(ctx, paramAddress, out var mode) ? mode : 0;
-        _lastUserData = TryReadUInt64(ctx, paramAddress + 0xC8, out var userData) ? userData : 0;
+        _lastUserData = ctx.TryReadUInt64(paramAddress + 0xC8, out var userData) ? userData : 0;
 
-        // There is no host save dialog yet. Complete immediately with OK so
-        // guest polling sees a finished dialog instead of spinning forever.
-        Interlocked.Exchange(ref _status, StatusFinished);
-        TraceSaveDataDialog($"open mode={_lastMode} userData=0x{_lastUserData:X16} -> finished");
-        return SetReturn(ctx, ErrorOk);
+        // There is no host save dialog yet. Enter RUNNING so the close path sees a live
+        // dialog; the guest's next status poll auto-dismisses it (see PollStatus).
+        Interlocked.Exchange(ref _status, StatusRunning);
+        TraceSaveDataDialog($"open mode={_lastMode} userData=0x{_lastUserData:X16} -> running");
+        return ctx.SetReturn(ErrorOk);
     }
 
     [SysAbiExport(
@@ -75,21 +75,31 @@ public static class SaveDataDialogExports
         ExportName = "sceSaveDataDialogGetStatus",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSaveDataDialog")]
-    public static int SaveDataDialogGetStatus(CpuContext ctx) => SetReturn(ctx, Volatile.Read(ref _status));
+    public static int SaveDataDialogGetStatus(CpuContext ctx) => ctx.SetReturn(PollStatus());
 
     [SysAbiExport(
         Nid = "KK3Bdg1RWK0",
         ExportName = "sceSaveDataDialogUpdateStatus",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSaveDataDialog")]
-    public static int SaveDataDialogUpdateStatus(CpuContext ctx) => SetReturn(ctx, Volatile.Read(ref _status));
+    public static int SaveDataDialogUpdateStatus(CpuContext ctx) => ctx.SetReturn(PollStatus());
+
+    // With no host UI the dialog cannot wait for user input: the first status poll after
+    // Open observes the dialog as already dismissed. Advancing on both UpdateStatus and
+    // GetStatus keeps every guest polling pattern free of infinite RUNNING loops, while
+    // an Open -> Close sequence with no poll in between still exercises the close path.
+    private static int PollStatus()
+    {
+        Interlocked.CompareExchange(ref _status, StatusFinished, StatusRunning);
+        return Volatile.Read(ref _status);
+    }
 
     [SysAbiExport(
         Nid = "en7gNVnh878",
         ExportName = "sceSaveDataDialogIsReadyToDisplay",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSaveDataDialog")]
-    public static int SaveDataDialogIsReadyToDisplay(CpuContext ctx) => SetReturn(ctx, 1);
+    public static int SaveDataDialogIsReadyToDisplay(CpuContext ctx) => ctx.SetReturn(1);
 
     [SysAbiExport(
         Nid = "yEiJ-qqr6Cg",
@@ -101,27 +111,29 @@ public static class SaveDataDialogExports
         var resultAddress = ctx[CpuRegister.Rdi];
         if (resultAddress == 0)
         {
-            return SetReturn(ctx, ErrorArgNull);
+            return ctx.SetReturn(ErrorArgNull);
         }
 
         if (Volatile.Read(ref _status) != StatusFinished)
         {
-            return SetReturn(ctx, ErrorNotFinished);
+            return ctx.SetReturn(ErrorNotFinished);
         }
 
+        // Report the affirmative button so save prompts take the confirming branch;
+        // buttonId 0 is the "invalid" sentinel and games may treat it as an error.
         Span<byte> result = stackalloc byte[ResultSize];
         result.Clear();
         BinaryPrimitives.WriteInt32LittleEndian(result[0x00..], _lastMode);
         BinaryPrimitives.WriteInt32LittleEndian(result[0x04..], 0);
-        BinaryPrimitives.WriteInt32LittleEndian(result[0x08..], 0);
+        BinaryPrimitives.WriteInt32LittleEndian(result[0x08..], ButtonIdAffirmative);
         BinaryPrimitives.WriteUInt64LittleEndian(result[0x20..], _lastUserData);
 
         if (!ctx.Memory.TryWrite(resultAddress, result))
         {
-            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
-        return SetReturn(ctx, ErrorOk);
+        return ctx.SetReturn(ErrorOk);
     }
 
     [SysAbiExport(
@@ -133,10 +145,10 @@ public static class SaveDataDialogExports
     {
         if (Interlocked.CompareExchange(ref _status, StatusFinished, StatusRunning) != StatusRunning)
         {
-            return SetReturn(ctx, ErrorNotRunning);
+            return ctx.SetReturn(ErrorNotRunning);
         }
 
-        return SetReturn(ctx, ErrorOk);
+        return ctx.SetReturn(ErrorOk);
     }
 
     [SysAbiExport(
@@ -148,12 +160,12 @@ public static class SaveDataDialogExports
     {
         if (Interlocked.Exchange(ref _status, StatusNone) == StatusNone)
         {
-            return SetReturn(ctx, ErrorNotInitialized);
+            return ctx.SetReturn(ErrorNotInitialized);
         }
 
         _lastMode = 0;
         _lastUserData = 0;
-        return SetReturn(ctx, ErrorOk);
+        return ctx.SetReturn(ErrorOk);
     }
 
     [SysAbiExport(
@@ -161,14 +173,14 @@ public static class SaveDataDialogExports
         ExportName = "sceSaveDataDialogProgressBarInc",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSaveDataDialog")]
-    public static int SaveDataDialogProgressBarInc(CpuContext ctx) => SetReturn(ctx, ErrorOk);
+    public static int SaveDataDialogProgressBarInc(CpuContext ctx) => ctx.SetReturn(ErrorOk);
 
     [SysAbiExport(
         Nid = "hay1CfTmLyA",
         ExportName = "sceSaveDataDialogProgressBarSetValue",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSaveDataDialog")]
-    public static int SaveDataDialogProgressBarSetValue(CpuContext ctx) => SetReturn(ctx, ErrorOk);
+    public static int SaveDataDialogProgressBarSetValue(CpuContext ctx) => ctx.SetReturn(ErrorOk);
 
     private static bool TryReadInt32(CpuContext ctx, ulong address, out int value)
     {
@@ -181,25 +193,6 @@ public static class SaveDataDialogExports
 
         value = BinaryPrimitives.ReadInt32LittleEndian(bytes);
         return true;
-    }
-
-    private static bool TryReadUInt64(CpuContext ctx, ulong address, out ulong value)
-    {
-        value = 0;
-        Span<byte> bytes = stackalloc byte[sizeof(ulong)];
-        if (!ctx.Memory.TryRead(address, bytes))
-        {
-            return false;
-        }
-
-        value = BinaryPrimitives.ReadUInt64LittleEndian(bytes);
-        return true;
-    }
-
-    private static int SetReturn(CpuContext ctx, int result)
-    {
-        ctx[CpuRegister.Rax] = unchecked((ulong)result);
-        return result;
     }
 
     private static void TraceSaveDataDialog(string message)

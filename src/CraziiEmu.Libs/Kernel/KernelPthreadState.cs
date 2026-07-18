@@ -25,7 +25,7 @@ internal static class KernelPthreadState
 
     internal readonly record struct ThreadIdentity(ulong UniqueId, string Name);
 
-    internal static ulong GetCurrentThreadHandle(CpuContext ctx)
+    internal static ulong GetCurrentThreadHandle(CpuContext? ctx = null)
     {
         var guestThreadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
         if (guestThreadHandle != 0 && TryGetThreadIdentity(guestThreadHandle, out _))
@@ -37,7 +37,7 @@ internal static class KernelPthreadState
         return _currentThreadHandle;
     }
 
-    internal static ulong GetCurrentThreadUniqueId(CpuContext ctx)
+    internal static ulong GetCurrentThreadUniqueId(CpuContext? ctx = null)
     {
         var guestThreadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
         if (guestThreadHandle != 0 && TryGetThreadIdentity(guestThreadHandle, out var identity))
@@ -49,7 +49,7 @@ internal static class KernelPthreadState
         return _currentThreadUniqueId;
     }
 
-    internal static ulong CreateThreadHandle(CpuContext ctx, string name)
+    internal static ulong CreateThreadHandle(CpuContext? ctx, string name)
     {
         var uniqueId = unchecked((ulong)Interlocked.Increment(ref _nextUniqueThreadId));
         return AllocateThreadHandle(ctx, uniqueId, name);
@@ -60,7 +60,7 @@ internal static class KernelPthreadState
         return Threads.TryGetValue(handle, out identity);
     }
 
-    private static void EnsureCurrentThreadRegistered(CpuContext ctx)
+    private static void EnsureCurrentThreadRegistered(CpuContext? ctx)
     {
         if (_currentThreadHandle != 0)
         {
@@ -73,10 +73,10 @@ internal static class KernelPthreadState
         _currentThreadUniqueId = uniqueId;
     }
 
-    private static ulong AllocateThreadHandle(CpuContext ctx, ulong uniqueId, string name)
+    private static ulong AllocateThreadHandle(CpuContext? ctx, ulong uniqueId, string name)
     {
         ulong handle = 0;
-        if (ctx.Memory is IGuestMemoryAllocator allocator &&
+        if (ctx?.Memory is IGuestMemoryAllocator allocator &&
             allocator.TryAllocateGuestMemory(ThreadObjectSize, 16, out var guestAddr))
         {
             ctx.Memory.TryWrite(guestAddr, ZeroThreadObject);

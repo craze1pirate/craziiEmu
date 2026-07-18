@@ -2,13 +2,12 @@
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System.Reflection;
-
 namespace CraziiEmu.HLE;
 
 public interface IModuleManager
 {
-    int RegisterFromAssembly(Assembly assembly, Generation generation, ISymbolCatalog? symbolCatalog = null);
+    /// <summary>Registers pre-built exports (the compile-time generated registry).</summary>
+    int RegisterExports(IReadOnlyList<ExportedFunction> exports);
 
     void Freeze();
 

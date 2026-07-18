@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Text;
-using System.Threading;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Share;
@@ -27,13 +26,13 @@ public static class ShareExports
         var affinityMask = ctx[CpuRegister.Rdx];
         if (memorySize == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         Interlocked.Exchange(ref _initialized, 1);
 
         TraceShare($"initialize memory=0x{memorySize:X} priority={priority} affinity=0x{affinityMask:X}");
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -46,12 +45,12 @@ public static class ShareExports
         var contentParamAddress = ctx[CpuRegister.Rdi];
         if (contentParamAddress == 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (!TryReadNullTerminatedUtf8(ctx, contentParamAddress, MaxContentParamBytes, out var contentParam))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         _contentParam = contentParam;
@@ -61,13 +60,7 @@ public static class ShareExports
         }
 
         TraceShare($"set_content_param len={contentParam.Length} preview='{FormatTraceString(contentParam)}'");
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
-    }
-
-    private static int SetReturn(CpuContext ctx, OrbisGen2Result result)
-    {
-        ctx[CpuRegister.Rax] = unchecked((ulong)(int)result);
-        return (int)result;
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     private static bool TryReadNullTerminatedUtf8(CpuContext ctx, ulong address, int maxLength, out string value)
