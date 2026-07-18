@@ -427,6 +427,25 @@ public sealed partial class DirectExecutionBackend
 
 			Console.Error.WriteLine("[LOADER][INFO] =========================================");
 			Console.Error.Flush();
+
+			if (exceptionCode == 3221225477u)
+			{
+				var hostExit = ActiveEntryReturnSentinelRip;
+				if (hostExit < 0x10000)
+				{
+					hostExit = unchecked((ulong)_guestReturnStub);
+				}
+				if (hostExit >= 0x10000)
+				{
+					Console.Error.WriteLine("[LOADER][WARN] Forcing graceful abort of guest execution to prevent process crash...");
+					_ = TryPatchActiveGuestReturnSlot(hostExit);
+					WriteCtxU64(contextRecord, 120, 0);
+					WriteCtxU64(contextRecord, 248, hostExit);
+					Console.Error.Flush();
+					return -1;
+				}
+			}
+
 			return 0;
 		}
 		finally
