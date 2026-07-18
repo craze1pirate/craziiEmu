@@ -414,6 +414,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 		public bool IsExternalExecutor { get; init; }
 
+		public int ManagedThreadId { get; init; }
+
 		public ulong StackBase { get; init; }
 
 		public ulong StackSize { get; init; }
@@ -3146,6 +3148,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 					Context = context,
 					Name = $"guest-extern-{threadHandle:X}",
 					IsExternalExecutor = true,
+					ManagedThreadId = Environment.CurrentManagedThreadId,
 					State = GuestThreadRunState.Running,
 				};
 			}
@@ -3680,10 +3683,23 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				_nestedGuestCallbackDepth--;
 			}
 			LastError = previousLastError;
-			var currentGuestHandle = GuestThreadExecution.CurrentGuestThreadHandle;
-			if (currentGuestHandle != 0)
+			
+			ulong foundHandle = 0;
+			using (LockGate("TryCallGuestFunction.Cleanup"))
 			{
-				UnregisterGuestThreadContext(currentGuestHandle);
+				foreach (var thread in _guestThreads.Values)
+				{
+					if (thread.IsExternalExecutor && thread.ManagedThreadId == Environment.CurrentManagedThreadId)
+					{
+						foundHandle = thread.ThreadHandle;
+						break;
+					}
+				}
+			}
+
+			if (foundHandle != 0)
+			{
+				UnregisterGuestThreadContext(foundHandle);
 			}
 		}
 	}
