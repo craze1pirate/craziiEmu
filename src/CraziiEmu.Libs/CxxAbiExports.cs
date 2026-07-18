@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -200,7 +199,7 @@ public static class CxaGuardExports
 
     private static void LogGuardState(CpuContext ctx, string op, ulong guardPtr, bool initialized, bool inProgress)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_GUARDS"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_GUARDS"), "1", StringComparison.Ordinal))
         {
             return;
         }
@@ -212,7 +211,7 @@ public static class CxaGuardExports
 
     private static void LogGuardResult(string op, ulong guardPtr, int result, bool initialized, bool inProgress, int ownerThreadId)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_GUARDS"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_GUARDS"), "1", StringComparison.Ordinal))
         {
             return;
         }

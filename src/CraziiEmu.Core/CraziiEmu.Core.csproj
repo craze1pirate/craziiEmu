@@ -1,6 +1,5 @@
 <!--
 Copyright (C) 2026 CraziiEmu Emulator Project
-Copyright (C) 2026 craze1pirate - CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -16,9 +15,19 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <PackageReference Include="Silk.NET.OpenGL" />
     <PackageReference Include="Silk.NET.Windowing" />
     <PackageReference Include="Silk.NET.Input" />
+    <PackageReference Include="Silk.NET.Maths" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CraziiEmu.Libs.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
 
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>
+

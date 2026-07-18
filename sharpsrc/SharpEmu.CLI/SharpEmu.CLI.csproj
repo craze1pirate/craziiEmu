@@ -1,0 +1,91 @@
+<!--
+Copyright (C) 2026 SharpEmu Emulator Project
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpEmu.Core\SharpEmu.Core.csproj" />
+    <ProjectReference Include="..\SharpEmu.Debugger\SharpEmu.Debugger.csproj" />
+    <ProjectReference Include="..\SharpEmu.GUI\SharpEmu.GUI.csproj" />
+    <ProjectReference Include="..\SharpEmu.Logging\SharpEmu.Logging.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- GUI subsystem so starting without arguments opens the frontend with no
+         console window; CLI mode re-attaches to the parent terminal's console. -->
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>SharpEmu</AssemblyName>
+    <!-- osx-x64 is the macOS target: the CPU backend executes guest x86-64
+         natively, so on Apple Silicon it runs under Rosetta 2. -->
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Server GC reserves one large heap range per logical processor. On
+         high-core-count hosts those ranges can overlap fixed PS5 image bases
+         before the guest address space is established. Workstation GC avoids
+         that collision and keeps the emulator's required mappings available. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <!-- Background GC's write-watch revisit calls FlushProcessWriteBuffers,
+       which on macOS uses thread_get_register_pointer_values; under Rosetta 2
+       that Mach call can stall indefinitely on threads executing translated
+       guest code, wedging the whole runtime (every allocating thread then
+       blocks behind the never-finishing GC). Non-concurrent GC never takes
+       that path. Windows and Linux keep concurrent GC. -->
+  <PropertyGroup Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))">
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' Or '$(RuntimeIdentifier)' == ''">
+    <ApplicationIcon>..\..\assets\images\SharpEmu.ico</ApplicationIcon>
+    <Win32Icon>..\..\assets\images\SharpEmu.ico</Win32Icon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <Content Include="..\..\LICENSE.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <TargetPath>LICENSE.txt</TargetPath>
+      <Visible>False</Visible>
+    </Content>
+    <Content Include="..\SharpEmu.GUI\Languages\*.json" Condition="'$(Configuration)' != 'Release'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>Languages\%(Filename)%(Extension)</TargetPath>
+      <Visible>False</Visible>
+    </Content>
+  </ItemGroup>
+
+  <!-- Keep glfw as a loose file next to the executable; every other native
+       library is embedded into the single-file bundle. -->
+  <Target Name="KeepGlfwOutsideSingleFile" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <_GlfwPublishFiles Include="@(ResolvedFileToPublish)"
+                         Condition="$([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('glfw')) Or $([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('libglfw'))" />
+      <ResolvedFileToPublish Remove="@(_GlfwPublishFiles)" />
+      <ResolvedFileToPublish Include="@(_GlfwPublishFiles)">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -681,7 +680,7 @@ public static class PlayGoExports
 
     private static PlayGoMetadata LoadPlayGoMetadata()
     {
-        var app0Root = Environment.GetEnvironmentVariable("CraziiEmu_APP0_DIR");
+        var app0Root = Environment.GetEnvironmentVariable("CRAZIIEMU_APP0_DIR");
         if (string.IsNullOrWhiteSpace(app0Root))
         {
             // No app0 override to probe for sidecar files: same fully-installed
@@ -766,7 +765,7 @@ public static class PlayGoExports
 
     private static void TracePlayGo(string message)
     {
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PLAYGO"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PLAYGO"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine($"[LOADER][TRACE] playgo.{message}");
         }
@@ -774,7 +773,7 @@ public static class PlayGoExports
 
     private static void TracePlayGoLocus(CpuContext ctx, uint entries, ulong chunkIds, ulong outLoci)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PLAYGO"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PLAYGO"), "1", StringComparison.Ordinal))
         {
             return;
         }

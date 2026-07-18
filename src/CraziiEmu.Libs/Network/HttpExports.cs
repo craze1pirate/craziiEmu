@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -105,7 +104,7 @@ public static class HttpExports
 
     private static void TraceHttp(string operation, int id, ulong arg0, ulong arg1, ulong arg2, ulong arg3)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_HTTP"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_HTTP"), "1", StringComparison.Ordinal))
         {
             return;
         }

@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -27,10 +26,10 @@ public static class AmprExports
     private static readonly ConcurrentDictionary<ulong, CommandBufferState> _commandBuffers = new();
     private static readonly ConcurrentDictionary<string, Lazy<CachedHostFile>> _hostFileCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly bool _traceAmpr =
-        string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AMPR"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AMPR"), "1", StringComparison.Ordinal);
     private static readonly bool _traceAmprReads =
         _traceAmpr ||
-        string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AMPR_READS"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AMPR_READS"), "1", StringComparison.Ordinal);
 
     private sealed class CommandBufferState
     {

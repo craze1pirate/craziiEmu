@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -664,7 +663,7 @@ public static class JsonExports
 
     private static void TraceJson(string operation, ulong thisAddress, ulong argument)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_JSON"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_JSON"), "1", StringComparison.Ordinal))
         {
             return;
         }

@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace CraziiEmu.ShaderCompiler;
@@ -237,6 +236,17 @@ public sealed record Gen5SdwaControl(
     uint OutputModifier,
     bool Clamp,
     uint? ScalarDestination) : Gen5InstructionControl;
+
+// Packed (VOP3P) source and destination modifiers. Each mask holds one bit per
+// source operand. OpSel/OpSelHi pick which 16-bit half of a source feeds the low
+// and high result lanes respectively; NegLo/NegHi negate the value routed to each
+// lane. Clamp saturates each output half to [0, 1].
+public sealed record Gen5Vop3pControl(
+    uint OpSelMask,
+    uint OpSelHiMask,
+    uint NegLoMask,
+    uint NegHiMask,
+    bool Clamp) : Gen5InstructionControl;
 
 public sealed record Gen5DppControl(
     uint Control,

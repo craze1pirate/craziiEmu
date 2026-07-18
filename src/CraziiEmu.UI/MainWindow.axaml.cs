@@ -77,6 +77,10 @@ public partial class MainWindow : Window
         CraziiEmuLog.Sink = _logSink;
         CraziiEmuLog.MinimumLevel = LogLevel.Debug;
 
+        var consoleWriter = new ConsoleTextWriter(line => InsertConsoleLine(line));
+        Console.SetOut(consoleWriter);
+        Console.SetError(consoleWriter);
+
         BtnCopyConsole.Click += OnBtnCopyConsole;
         BtnExportConsole.Click += OnBtnExportConsole;
 
@@ -731,6 +735,7 @@ public partial class MainWindow : Window
                 // Can configure more options based on UI later if needed
             };
 
+            _runtime?.Dispose();
             _runtime = CraziiEmuRuntime.CreateDefault(options);
 
             _cpuThread = new Thread(() =>
@@ -859,6 +864,8 @@ public partial class MainWindow : Window
         }
     }
 
+
+
     // Removed SetWallpaper
 
     private void InitializeConfigBindings()
@@ -929,5 +936,34 @@ public partial class MainWindow : Window
     {
         base.OnClosed(e);
         _runtime?.Dispose();
+    }
+}
+
+public class ConsoleTextWriter : System.IO.TextWriter
+{
+    private readonly Action<ConsoleLine> _onLine;
+    public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+
+    public ConsoleTextWriter(Action<ConsoleLine> onLine)
+    {
+        _onLine = onLine;
+    }
+
+    public override void WriteLine(string? value)
+    {
+        if (value != null)
+        {
+            var color = "Gray";
+            if (value.Contains("[ERROR]")) color = "Red";
+            else if (value.Contains("[WARNING]")) color = "Yellow";
+            else if (value.Contains("[INFO]")) color = "White";
+
+            var line = new ConsoleLine { Text = value, Color = color };
+            
+            if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+                _onLine(line);
+            else
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => _onLine(line));
+        }
     }
 }

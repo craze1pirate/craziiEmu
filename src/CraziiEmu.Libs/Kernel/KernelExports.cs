@@ -1,8 +1,5 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-
-using CraziiEmu.Logging;
 
 using CraziiEmu.HLE;
 using System.Threading;
@@ -207,7 +204,7 @@ public static class KernelExports
         var entryAddress = ctx[CpuRegister.Rdx];
         var argument = ctx[CpuRegister.Rcx];
         var name = nameAddress == 0 ? string.Empty : ReadCString(ctx, nameAddress, 256);
-        var threadHandle = KernelPthreadState.CreateThreadHandle(ctx, name);
+        var threadHandle = KernelPthreadState.CreateThreadHandle(name);
         KernelPthreadExtendedCompatExports.GetThreadStartScheduling(
             ctx,
             attrAddress,
@@ -397,7 +394,7 @@ public static class KernelExports
         }
         else
         {
-            CraziiEmuLog.For("Kernel").Info($"[DEBUG][PRINF] {outStr}");
+            Console.WriteLine($"[DEBUG][PRINF] {outStr}");
         }
 
         ctx[CpuRegister.Rax] = (ulong)System.Text.Encoding.UTF8.GetByteCount(outStr);
@@ -424,7 +421,7 @@ public static class KernelExports
             msg = $"perror(\"{msg}\")";
         }
 
-        CraziiEmuLog.For("Kernel").Info(msg);
+        Console.WriteLine(msg);
 
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -452,7 +449,7 @@ public static class KernelExports
 
     private static bool ShouldTracePthread()
     {
-        return string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PTHREADS"), "1", StringComparison.Ordinal);
+        return string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PTHREADS"), "1", StringComparison.Ordinal);
     }
 
     [SysAbiExport(
@@ -470,5 +467,3 @@ public static class KernelExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 }
-
-

@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace CraziiEmu.HLE;
@@ -35,21 +34,6 @@ public enum OrbisGen2Result : int
     /// Indicates that an item already exists.
     /// </summary>
     ORBIS_GEN2_ERROR_ALREADY_EXISTS = unchecked((int)0x80020004),
-
-    /// <summary>
-    /// Indicates that a file descriptor is bad or closed.
-    /// </summary>
-    ORBIS_GEN2_ERROR_BAD_FILE_DESCRIPTOR = unchecked((int)0x80020009),
-
-    /// <summary>
-    /// Indicates that the operation ran out of memory.
-    /// </summary>
-    ORBIS_GEN2_ERROR_OUT_OF_MEMORY = unchecked((int)0x8002000C),
-
-    /// <summary>
-    /// Indicates that access was denied.
-    /// </summary>
-    ORBIS_GEN2_ERROR_ACCESS_DENIED = unchecked((int)0x8002000D),
 
     /// <summary>
     /// Indicates that completing the operation would deadlock.

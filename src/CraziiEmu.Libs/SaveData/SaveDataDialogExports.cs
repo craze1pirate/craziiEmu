@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -197,7 +196,7 @@ public static class SaveDataDialogExports
 
     private static void TraceSaveDataDialog(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_SAVEDATA"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_SAVEDATA"), "1", StringComparison.Ordinal))
         {
             return;
         }

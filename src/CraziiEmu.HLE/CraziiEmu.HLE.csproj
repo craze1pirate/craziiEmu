@@ -1,4 +1,4 @@
-<!--
+﻿<!--
 Copyright (C) 2026 CraziiEmu Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
@@ -33,13 +33,13 @@ SPDX-License-Identifier: GPL-2.0-or-later
        embedded from the intermediate directory, and never committed. Replaces
        scripts/generate_aerolib_binary.py. -->
   <PropertyGroup>
-    <SharpEmuAerolibNamesFile>$(MSBuildThisFileDirectory)..\..\scripts\ps5_names.txt</SharpEmuAerolibNamesFile>
-    <SharpEmuAerolibTaskAssembly>$(MSBuildThisFileDirectory)..\..\artifacts\bin\$(Configuration)\netstandard2.0\CraziiEmu.SourceGenerators.dll</SharpEmuAerolibTaskAssembly>
+    <CraziiEmuAerolibNamesFile>$(MSBuildThisFileDirectory)..\..\scripts\ps5_names.txt</CraziiEmuAerolibNamesFile>
+    <CraziiEmuAerolibTaskAssembly>$(MSBuildThisFileDirectory)..\..\artifacts\bin\$(Configuration)\netstandard2.0\CraziiEmu.SourceGenerators.dll</CraziiEmuAerolibTaskAssembly>
   </PropertyGroup>
 
   <UsingTask TaskName="CraziiEmu.SourceGenerators.GenerateAerolibBinaryTask"
              TaskFactory="TaskHostFactory"
-             AssemblyFile="$(SharpEmuAerolibTaskAssembly)" />
+             AssemblyFile="$(CraziiEmuAerolibTaskAssembly)" />
 
   <!-- Runs after ResolveProjectReferences (which builds the task assembly) and before
        resource processing embeds the output. Skipped for design-time builds: the IDE
@@ -47,9 +47,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
        assembly does not exist yet and loading it would break the design-time build. -->
   <Target Name="GenerateAerolibBinary"
           DependsOnTargets="ResolveProjectReferences"
-          Inputs="$(SharpEmuAerolibNamesFile);$(SharpEmuAerolibTaskAssembly)"
+          Inputs="$(CraziiEmuAerolibNamesFile);$(CraziiEmuAerolibTaskAssembly)"
           Outputs="$(IntermediateOutputPath)aerolib.bin">
-    <GenerateAerolibBinaryTask NamesFile="$(SharpEmuAerolibNamesFile)"
+    <GenerateAerolibBinaryTask NamesFile="$(CraziiEmuAerolibNamesFile)"
                                OutputFile="$(IntermediateOutputPath)aerolib.bin" />
   </Target>
 

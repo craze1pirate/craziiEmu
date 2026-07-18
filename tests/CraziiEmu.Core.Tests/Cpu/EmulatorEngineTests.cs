@@ -1,3 +1,4 @@
+using CraziiEmu.HLE;
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -47,7 +48,7 @@ public class EmulatorEngineTests
 
         // Assert
         Assert.Equal(entryPoint + 7, engine.Context.Rip);
-        Assert.Equal(1UL, engine.Context.Rax);
+        Assert.Equal(1UL, engine.Context[CpuRegister.Rax]);
     }
 
     /// <summary>
@@ -138,14 +139,14 @@ public class EmulatorEngineTests
         }
 
         engine.Context.Rip = entryPoint;
-        engine.Context.Rax = 10;
-        engine.Context.Rdi = 5;
+        engine.Context[CpuRegister.Rax] = 10;
+        engine.Context[CpuRegister.Rdi] = 5;
 
         // Act
         engine.Step();
 
         // Assert
         Assert.Equal(entryPoint + 3, engine.Context.Rip);
-        Assert.Equal(15UL, engine.Context.Rax);
+        Assert.Equal(15UL, engine.Context[CpuRegister.Rax]);
     }
 }

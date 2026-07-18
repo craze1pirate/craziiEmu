@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -14,6 +13,12 @@ public static class AudioOutExports
 {
     private static readonly ConcurrentDictionary<int, PortState> Ports = new();
     private static int _nextPortHandle;
+
+    // Diagnostic: confirm sceAudioOutOutput is actually called and whether the
+    // guest submits real samples or silence. Gated so it costs nothing when off.
+    private static readonly bool _traceOutput = string.Equals(
+        Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AUDIO_OUT"), "1", StringComparison.Ordinal);
+    private static long _outputCount;
 
     private sealed class PortState : IDisposable
     {
@@ -157,6 +162,37 @@ public static class AudioOutExports
     }
 
     [SysAbiExport(
+        Nid = "GrQ9s4IrNaQ",
+        ExportName = "sceAudioOutGetPortState",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceAudioOut")]
+    public static int AudioOutGetPortState(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var stateAddress = ctx[CpuRegister.Rsi];
+        if (stateAddress == 0 || !Ports.TryGetValue(handle, out var port))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        // SceAudioOutPortState: report a connected primary output at full volume
+        // so pacing/mixing code sees a live port. We do no host rerouting, so
+        // rerouteCounter and flag stay zero.
+        Span<byte> state = stackalloc byte[16];
+        state.Clear();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(state, 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(
+            state[2..], (ushort)port.Channels);
+        state[7] = 127;
+        if (!ctx.Memory.TryWrite(stateAddress, state))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
         Nid = "QOQtbeDqsT4",
         ExportName = "sceAudioOutOutput",
         Target = Generation.Gen5,
@@ -167,7 +203,12 @@ public static class AudioOutExports
         var sourceAddress = ctx[CpuRegister.Rsi];
         if (!Ports.TryGetValue(handle, out var port))
         {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            // Host shutdown disposes the ports while guest audio threads are
+            // still draining their last buffers; report success so the guest
+            // winds down without a per-buffer error (and its WARN log flood).
+            return ctx.SetReturn(_shutdown
+                ? 0
+                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (sourceAddress == 0)
@@ -182,6 +223,17 @@ public static class AudioOutExports
             if (!ctx.Memory.TryRead(sourceAddress, source))
             {
                 return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            if (_traceOutput)
+            {
+                var n = Interlocked.Increment(ref _outputCount);
+                if (n <= 8 || n % 200 == 0)
+                {
+                    var peak = PeakAmplitude(source, port.IsFloat, port.BytesPerSample);
+                    Console.Error.WriteLine(
+                        $"[LOADER][TRACE] audioout.output#{n} handle={handle} bytes={source.Length} ch={port.Channels} float={port.IsFloat} vol={port.Volume:F2} peak={peak:F4} backend={(port.Backend is null ? "none" : "coreaudio")}");
+                }
             }
 
             if (port.Backend is null)
@@ -267,8 +319,40 @@ public static class AudioOutExports
         return ctx.SetReturn(0);
     }
 
+    // Peak normalized amplitude [0,1] of an interleaved PCM buffer, used only by
+    // the CRAZIIEMU_LOG_AUDIO_OUT diagnostic to distinguish real audio from silence.
+    private static float PeakAmplitude(ReadOnlySpan<byte> source, bool isFloat, int bytesPerSample)
+    {
+        var peak = 0f;
+        if (isFloat && bytesPerSample == 4)
+        {
+            for (var i = 0; i + 4 <= source.Length; i += 4)
+            {
+                var v = Math.Abs(System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(source.Slice(i, 4)));
+                if (v > peak)
+                {
+                    peak = v;
+                }
+            }
+        }
+        else if (bytesPerSample == 2)
+        {
+            for (var i = 0; i + 2 <= source.Length; i += 2)
+            {
+                var v = Math.Abs(System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(source.Slice(i, 2)) / 32768f);
+                if (v > peak)
+                {
+                    peak = v;
+                }
+            }
+        }
+
+        return peak;
+    }
+
     public static void ShutdownAllPorts()
     {
+        Volatile.Write(ref _shutdown, true);
         foreach (var handle in Ports.Keys)
         {
             if (Ports.TryRemove(handle, out var port))
@@ -277,6 +361,8 @@ public static class AudioOutExports
             }
         }
     }
+
+    private static bool _shutdown;
 
     private static bool TryGetFormat(
         int rawFormat,

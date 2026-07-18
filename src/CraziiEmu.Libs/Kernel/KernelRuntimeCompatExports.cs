@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -53,8 +52,10 @@ public static class KernelRuntimeCompatExports
     private static readonly RdtscDelegate? _rdtscReader = CreateRdtscReader();
     private static readonly ulong _kernelTscFrequency = ResolveKernelTscFrequency();
     private static readonly ulong _stackChkGuardValue = 0xC0DEC0DECAFEBA00UL;
-    private static nint _stackChkGuardObjectAddress;
-    private static bool _stackChkGuardInitialized;
+    private static readonly nint _stackChkGuardObjectAddress =
+        HleDataSymbols.TryGetAddress("f7uOxY9mM1U", out var stackChkGuardAddress)
+            ? unchecked((nint)stackChkGuardAddress)
+            : AllocateStackChkGuardObject();
     private static ulong _applicationHeapApiAddress;
     private static ulong _processProcParamAddress;
     private static ulong _nextReservedVirtualBase = 0x6000_0000_0UL;
@@ -66,9 +67,9 @@ public static class KernelRuntimeCompatExports
     private static int _stackChkFailCount;
     private static long _usleepTraceCount;
     private static readonly bool _traceUsleep =
-        string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_USLEEP"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_USLEEP"), "1", StringComparison.Ordinal);
     private static readonly bool _traceGuestThreads =
-        string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_GUEST_THREADS"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_GUEST_THREADS"), "1", StringComparison.Ordinal);
 
     [ThreadStatic]
     private static int _shortUsleepCount;
@@ -395,24 +396,6 @@ public static class KernelRuntimeCompatExports
             {
                 _ = ctx.Memory.TryWrite(address, new byte[0x80]);
             }
-            else
-            {
-                var bytes = new byte[32];
-                ctx.Memory.TryRead(address, bytes);
-                var hex = BitConverter.ToString(bytes);
-                Console.Error.WriteLine($"[KERNEL] sceKernelGetProcParam returning 0x{address:X}. Bytes: {hex}");
-                
-                // Search for 0x60
-                for (ulong p = address - 0x1000; p < address + 0x10000; p += 8)
-                {
-                    if (KernelMemoryCompatExports.TryReadUInt32Compat(ctx, p, out uint val) && val == 0x60)
-                    {
-                        var b = new byte[16];
-                        ctx.Memory.TryRead(p, b);
-                        Console.Error.WriteLine($"[KERNEL] Found possible ProcParam at 0x{p:X}. Bytes: {BitConverter.ToString(b)}");
-                    }
-                }
-            }
         }
 
         TraceProcParam(ctx, address);
@@ -431,7 +414,7 @@ public static class KernelRuntimeCompatExports
 
     private static void TraceProcParam(CpuContext ctx, ulong address)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PROC_PARAM"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PROC_PARAM"), "1", StringComparison.Ordinal))
         {
             return;
         }
@@ -463,7 +446,7 @@ public static class KernelRuntimeCompatExports
 
     private static void TraceProcParamPointers(CpuContext ctx, ulong baseAddress, ReadOnlySpan<byte> buffer)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_PROC_PARAM_PTRS"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PROC_PARAM_PTRS"), "1", StringComparison.Ordinal))
         {
             return;
         }
@@ -664,47 +647,6 @@ public static class KernelRuntimeCompatExports
         return address != 0 && TryWriteInt32(ctx, address, value);
     }
 
-    internal static bool ResolveClockTime(int clockId, out long seconds, out long nanoseconds)
-    {
-        switch (clockId)
-        {
-            case 0: // CLOCK_REALTIME
-            case 123: // CLOCK_REALTIME_PRECISE
-            case 124: // CLOCK_REALTIME_FAST
-            case 1: // CLOCK_VIRTUAL
-            case 2: // CLOCK_PROF
-            {
-                var now = DateTimeOffset.UtcNow;
-                seconds = now.ToUnixTimeSeconds();
-                nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
-                return true;
-            }
-
-            case 13: // CLOCK_SECOND
-                seconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                nanoseconds = 0;
-                return true;
-
-            case 4: // CLOCK_MONOTONIC
-            case 125: // CLOCK_MONOTONIC_PRECISE
-            case 126: // CLOCK_MONOTONIC_FAST
-            case 5: // CLOCK_UPTIME
-            case 127: // CLOCK_UPTIME_PRECISE
-            case 128: // CLOCK_UPTIME_FAST
-            case 14: // CLOCK_THREAD_CPUTIME_ID
-            case 15: // CLOCK_PROCESS_CPUTIME_ID
-                var elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - _processStartCounter;
-                seconds = elapsedTicks / System.Diagnostics.Stopwatch.Frequency;
-                nanoseconds = (elapsedTicks % System.Diagnostics.Stopwatch.Frequency) * 1_000_000_000L / System.Diagnostics.Stopwatch.Frequency;
-                return true;
-
-            default:
-                seconds = 0;
-                nanoseconds = 0;
-                return false;
-        }
-    }
-
     [SysAbiExport(
         Nid = "bnZxYgAFeA0",
         ExportName = "sceKernelGetSanitizerNewReplaceExternal",
@@ -778,7 +720,7 @@ public static class KernelRuntimeCompatExports
     public static int KernelGetGpi(CpuContext ctx)
     {
         var bitMask = _gpoStateBits;
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_ALLOC_IMPORTS"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_ALLOC_IMPORTS"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine(
                 $"[LOADER][TRACE] get_gpi: mask=0x{bitMask:X8}");
@@ -976,7 +918,7 @@ public static class KernelRuntimeCompatExports
 
         Console.Error.WriteLine(
             $"[LOADER][TRACE] set_prt_aperture: id={apertureId} base=0x{apertureBase:X16} size=0x{apertureSize:X16}");
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_ALLOC_IMPORTS"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_ALLOC_IMPORTS"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine(
                 $"[LOADER][TRACE] set_prt_aperture raw: rdi=0x{rawId:X16} rsi=0x{apertureBase:X16} rdx=0x{apertureSize:X16} rcx=0x{ctx[CpuRegister.Rcx]:X16} r8=0x{ctx[CpuRegister.R8]:X16} r9=0x{ctx[CpuRegister.R9]:X16}");
@@ -1168,17 +1110,7 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelDebugRaiseException(CpuContext ctx)
     {
-        var reason = ctx[CpuRegister.Rdi];
-        var fmtPtr = ctx[CpuRegister.Rsi];
-        var str = "null";
-        if (fmtPtr != 0 && KernelMemoryCompatExports.TryReadNullTerminatedUtf8(ctx, fmtPtr, 1024, out var readStr))
-        {
-            str = readStr;
-        }
-        Console.Error.WriteLine($"[KERNEL] sceKernelDebugRaiseException called! reason=0x{reason:X} ({reason}), fmt={str}");
-        // On a real console this halts the process; in HLE we log and return 0
-        // so execution can continue (the game checks proc-param validity before calling this).
-        ctx[CpuRegister.Rax] = 0;
+        _ = ctx;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -1189,8 +1121,8 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelDebugRaiseExceptionOnReleaseMode(CpuContext ctx)
     {
-        Console.Error.WriteLine("[KERNEL] sceKernelDebugRaiseExceptionOnReleaseMode called!");
-        throw new InvalidOperationException("sceKernelDebugRaiseExceptionOnReleaseMode called!");
+        _ = ctx;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
     [SysAbiExport(
@@ -1200,20 +1132,6 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int StackCheckGuard(CpuContext ctx)
     {
-        if (!_stackChkGuardInitialized)
-        {
-            if (HleDataSymbols.TryGetAddress("f7uOxY9mM1U", out var stackChkGuardAddress))
-            {
-                _stackChkGuardObjectAddress = unchecked((nint)stackChkGuardAddress);
-            }
-            else if (ctx.Memory is IGuestMemoryAllocator allocator &&
-                     allocator.TryAllocateGuestMemory(16, 8, out var allocAddr))
-            {
-                _stackChkGuardObjectAddress = unchecked((nint)allocAddr);
-            }
-            _stackChkGuardInitialized = true;
-        }
-
         var baseAddress = _stackChkGuardObjectAddress != 0
             ? unchecked((ulong)_stackChkGuardObjectAddress)
             : GetTlsScratchAddress(ctx, TlsStackChkGuardBaseOffset);
@@ -1224,10 +1142,14 @@ public static class KernelRuntimeCompatExports
 
         if (_stackChkGuardObjectAddress != 0)
         {
-            Span<byte> bytes = stackalloc byte[16];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes.Slice(0, 8), _stackChkGuardValue);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes.Slice(8, 8), _stackChkGuardValue);
-            ctx.Memory.TryWrite(unchecked((ulong)_stackChkGuardObjectAddress), bytes);
+            try
+            {
+                Marshal.WriteInt64(_stackChkGuardObjectAddress, unchecked((long)_stackChkGuardValue));
+                Marshal.WriteInt64(IntPtr.Add(_stackChkGuardObjectAddress, (int)sizeof(ulong)), unchecked((long)_stackChkGuardValue));
+            }
+            catch
+            {
+            }
         }
 
         if (ctx.FsBase != 0)
@@ -1859,7 +1781,20 @@ public static class KernelRuntimeCompatExports
         return ctx.Memory.TryWrite(address, bytes);
     }
 
-
+    private static nint AllocateStackChkGuardObject()
+    {
+        try
+        {
+            var memory = Marshal.AllocHGlobal(sizeof(ulong) * 2);
+            Marshal.WriteInt64(memory, unchecked((long)_stackChkGuardValue));
+            Marshal.WriteInt64(IntPtr.Add(memory, sizeof(ulong)), unchecked((long)_stackChkGuardValue));
+            return memory;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
 
     private static ulong ResolveKernelTscFrequency()
     {
@@ -1890,7 +1825,6 @@ public static class KernelRuntimeCompatExports
         long stopwatchFrequency)
     {
         const ulong minSane = 1_000_000UL;
-
 
         if (!string.IsNullOrWhiteSpace(overrideHzText) &&
             ulong.TryParse(overrideHzText, out var overrideHz) &&

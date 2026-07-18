@@ -1,3 +1,4 @@
+using CraziiEmu.HLE;
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -95,8 +96,8 @@ public class StackAndLoopInstructionTests
         }
 
         engine.Context.Rip = codeBase;
-        engine.Context.Rdi = 5;
-        engine.Context.Rax = 10; // Not equal → jne should fire
+        engine.Context[CpuRegister.Rdi] = 5;
+        engine.Context[CpuRegister.Rax] = 10; // Not equal → jne should fire
 
         // Act — step cmp, then step jne
         engine.Step(); // cmp rdi, rax → sets ZF=false

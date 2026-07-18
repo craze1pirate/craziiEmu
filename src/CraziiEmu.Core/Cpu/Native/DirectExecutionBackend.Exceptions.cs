@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -118,15 +117,6 @@ public sealed partial class DirectExecutionBackend
 			if (TryRecoverAuxiliaryThreadExecuteFault(exceptionRecord, contextRecord, rip))
 			{
 				return -1;
-			}
-
-			// Thread-mode probe: a hardware exception raised while this thread is inside
-			// the managed import gateway means the VEH->managed reentry happened from
-			// cooperative GC mode ΓÇö a ReversePInvokeBadTransition candidate.
-			if (LogThreadMode && _threadModeGatewayDepth > 0)
-			{
-				TraceThreadMode(
-					$"veh_in_gateway code=0x{exceptionCode:X8} rip=0x{rip:X16} gateway_depth={_threadModeGatewayDepth}");
 			}
 
 			if (exceptionCode == 3221225477u && TryHandleLazyCommittedPage(exceptionRecord, rip, rsp))

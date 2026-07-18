@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -12,7 +11,6 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
-using CraziiEmu.Logging;
 
 namespace CraziiEmu.Libs.VideoOut;
 
@@ -25,6 +23,7 @@ public static class VideoOutExports
     private const int OrbisVideoOutErrorInvalidHandle = unchecked((int)0x8029000B);
     private const int OrbisVideoOutErrorInvalidEventQueue = unchecked((int)0x8029000C);
     private const int OrbisVideoOutErrorInvalidEvent = unchecked((int)0x8029000D);
+    private const int OrbisVideoOutErrorUnsupportedOutputMode = unchecked((int)0x80290016);
     private const int OrbisVideoOutErrorInvalidOption = unchecked((int)0x8029001A);
     private const int SceVideoOutBusTypeMain = 0;
     private const int SceVideoOutBufferAttributeOptionNone = 0;
@@ -36,8 +35,11 @@ public static class VideoOutExports
     private const int VideoOutBufferAttributeSize = 0x28;
     private const int VideoOutBufferAttribute2Size = 0x50;
     private const int VideoOutBuffersEntrySize = 0x20;
+    private const int VideoOutOutputOptionsSize = 0x40;
     private const int VideoOutOutputStatusSize = 0x30;
     private const int VideoOutVblankStatusSize = 0x28;
+    private const ulong SceVideoOutOutputModeDefault = 1;
+    private const ulong SceVideoOutOutputMode119_88Hz = 0xF;
     private const ulong SceVideoOutPixelFormatA8R8G8B8Srgb = 0x80000000;
     private const ulong SceVideoOutPixelFormatA8B8G8R8Srgb = 0x80002200;
     private const ulong SceVideoOutPixelFormatA2R10G10B10 = 0x88060000;
@@ -129,9 +131,14 @@ public static class VideoOutExports
             return;
         }
 
+        // macOS can run either backend (Vulkan through MoltenVK, or Metal), so
+        // name the active one in the title to make which is in use unambiguous.
+        var backendSuffix = OperatingSystem.IsMacOS()
+            ? $" ({GuestGpu.Current.BackendName})"
+            : string.Empty;
         lock (_stateGate)
         {
-            _windowTitle = $"{_windowTitle} · {gpuName.Trim()}";
+            _windowTitle = $"{_windowTitle} · {gpuName.Trim()}{backendSuffix}";
         }
     }
 
@@ -158,11 +165,21 @@ public static class VideoOutExports
     private static void RequestHostShutdown(string reason)
     {
         Console.Error.WriteLine($"[LOADER][INFO] Host shutdown requested: {reason}");
-        VulkanVideoPresenter.RequestClose();
+        var embedded = VulkanVideoHost.IsEmbedded;
         AudioOutExports.ShutdownAllPorts();
         Interlocked.Exchange(ref _vblankStopRequested, 1);
         HostSessionControl.RequestShutdown(reason);
-        // Removed aggressive Environment.Exit(0) to allow UI recovery.
+
+        // A hosted game can still be issuing AGC work after it requests its
+        // own shutdown. Keep the presenter's resources alive until the GUI
+        // session reaches its guest-safe exit path and disposes the host
+        // surface.
+        if (!embedded)
+        {
+            GuestGpu.Current?.RequestClose();
+        }
+
+
     }
 
     private sealed class VideoOutPortState
@@ -178,8 +195,8 @@ public static class VideoOutExports
         public float Gamma { get; set; } = 1.0f;
         public VideoOutBufferGroup?[] Groups { get; } = new VideoOutBufferGroup?[MaxDisplayBufferGroups];
         public VideoOutBufferSlot[] BufferSlots { get; } = CreateBufferSlots();
-        public List<FlipEventRegistration> VblankEvents { get; } = new();
         public List<FlipEventRegistration> FlipEvents { get; } = new();
+        public List<FlipEventRegistration> VblankEvents { get; } = new();
         public long OpenTimestamp;
         public long LastVblankTimestamp;
     }
@@ -260,17 +277,46 @@ public static class VideoOutExports
     [SysAbiExport(
         Nid = "Nv8c-Kb+DUM",
         ExportName = "sceVideoOutIsOutputSupported",
-        Target = Generation.Gen4 | Generation.Gen5,
+        Target = Generation.Gen5,
         LibraryName = "libSceVideoOut")]
     public static int VideoOutIsOutputSupported(CpuContext ctx)
     {
-        var busType = unchecked((int)ctx[CpuRegister.Rdi]);
-        _ = ctx[CpuRegister.Rsi]; // pixelFormat
-        _ = ctx[CpuRegister.Rdx]; // aspectRatio
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var mode = ctx[CpuRegister.Rsi];
+        var optionsAddress = ctx[CpuRegister.Rdx];
+        var reservedPointer = ctx[CpuRegister.Rcx];
+        var reserved = ctx[CpuRegister.R8];
 
-        // The emulator supports any output configuration on the main bus.
-        // Return 1 (supported) for SceVideoOutBusTypeMain, 0 otherwise.
-        return busType == SceVideoOutBusTypeMain ? 1 : 0;
+        if (!TryGetPort(handle, out var port))
+        {
+            return OrbisVideoOutErrorInvalidHandle;
+        }
+
+        if (reservedPointer != 0 || reserved != 0)
+        {
+            return OrbisVideoOutErrorInvalidValue;
+        }
+
+        if (optionsAddress != 0)
+        {
+            Span<byte> options = stackalloc byte[VideoOutOutputOptionsSize];
+            if (!ctx.Memory.TryRead(optionsAddress, options))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            if (options.ContainsAnyExcept((byte)0))
+            {
+                return OrbisVideoOutErrorInvalidOption;
+            }
+        }
+
+        if (mode != SceVideoOutOutputModeDefault && mode != SceVideoOutOutputMode119_88Hz)
+        {
+            return OrbisVideoOutErrorUnsupportedOutputMode;
+        }
+
+        return mode == SceVideoOutOutputModeDefault || port.RefreshRate >= 119 ? 1 : 0;
     }
 
     [SysAbiExport(
@@ -332,7 +378,18 @@ public static class VideoOutExports
         LibraryName = "libSceVideoOut")]
     public static int VideoOutInitializeOutputOptions(CpuContext ctx)
     {
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        const int outputOptionsSize = 0x40;
+        var optionsAddress = ctx[CpuRegister.Rdi];
+        if (optionsAddress == 0)
+        {
+            return OrbisVideoOutErrorInvalidAddress;
+        }
+
+        Span<byte> options = stackalloc byte[outputOptionsSize];
+        options.Clear();
+        return ctx.Memory.TryWrite(optionsAddress, options)
+            ? (int)OrbisGen2Result.ORBIS_GEN2_OK
+            : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
     }
 
     [SysAbiExport(
@@ -453,8 +510,11 @@ public static class VideoOutExports
             HostTiming.SleepUntil(target);
             Interlocked.CompareExchange(ref port.LastVblankTimestamp, target, last);
         }
+        lock (_stateGate)
+        {
+            port.VblankCount++;
+        }
 
-        SignalVblank(port);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -579,7 +639,6 @@ public static class VideoOutExports
         // A guest that parks its main/render loop on a vblank event needs a
         // steady tick to advance; start the emulated vblank cadence on demand.
         StartVblankThreadOnce();
-        SignalVblank(port);
         TraceVideoOut($"videoout.add_vblank_event eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16}");
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -621,7 +680,6 @@ public static class VideoOutExports
         return SubmitFlip(ctx, handle, bufferIndex, flipMode, flipArg, submitGpuImage: true);
     }
 
-
     [SysAbiExport(
         Nid = "SbU3dwp80lQ",
         ExportName = "sceVideoOutGetFlipStatus",
@@ -642,12 +700,10 @@ public static class VideoOutExports
         }
 
         ulong count;
-
         uint currentBuffer;
         lock (_stateGate)
         {
             count = port.FlipCount;
-
             currentBuffer = unchecked((uint)port.CurrentBuffer);
         }
 
@@ -1011,6 +1067,12 @@ public static class VideoOutExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
+        // SceVideoOutBufferCategory is a 32-bit enum passed on the stack; the
+        // upper 32 bits of the slot are stale (games leave GNM magic there), so
+        // mask before validating. UNCOMPRESSED (0) and COMPRESSED (1) are both
+        // valid — we present either identically, so accept both.
+        var category = (uint)categoryRaw;
+
         if (!TryGetPort(handle, out var port))
         {
             return OrbisVideoOutErrorInvalidHandle;
@@ -1031,7 +1093,7 @@ public static class VideoOutExports
             return OrbisVideoOutErrorInvalidValue;
         }
 
-        if (categoryRaw != 0 || option != 0)
+        if (category > 1 || option != 0)
         {
             return OrbisVideoOutErrorInvalidValue;
         }
@@ -1054,40 +1116,6 @@ public static class VideoOutExports
 
         var groupIndex = RegisterBufferRange(port, bufferIndexStart, addresses[..bufferNum], attribute, setIndex);
         return groupIndex < 0 ? groupIndex : setIndex;
-    }
-
-    private static long _vblankSignalCount;
-
-    private static void SignalVblank(VideoOutPortState port)
-    {
-        List<FlipEventRegistration> vblankEvents;
-        ulong eventHint;
-        lock (_stateGate)
-        {
-            port.VblankCount++;
-            eventHint = SceVideoOutInternalEventVblank |
-                ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
-            vblankEvents = new List<FlipEventRegistration>(port.VblankEvents);
-        }
-
-        var signalCount = Interlocked.Increment(ref _vblankSignalCount);
-
-        foreach (var vblankEvent in vblankEvents)
-        {
-            _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
-                vblankEvent.Equeue,
-                SceVideoOutInternalEventVblank,
-                OrbisKernelEventFilterVideoOut,
-                eventHint,
-                vblankEvent.UserData);
-        }
-
-        if (signalCount <= 8 || signalCount % 60 == 0)
-        {
-            CraziiEmuLog.For("VideoOut").Info(
-                $"[LOADER][SYNC] vblank#{signalCount} handle={port.Handle} count={port.VblankCount} " +
-                $"queues={vblankEvents.Count} hint=0x{eventHint:X16}");
-        }
     }
 
     private static int SubmitFlip(
@@ -1184,7 +1212,7 @@ public static class VideoOutExports
         {
             TriggerFlipEvents();
         }
-        else if (VulkanVideoPresenter.SubmitOrderedGuestAction(
+        else if (GuestGpu.Current.SubmitOrderedGuestAction(
                      TriggerFlipEvents,
                      $"videoout flip complete handle={handle} index={bufferIndex}") == 0)
         {
@@ -1238,7 +1266,7 @@ public static class VideoOutExports
         var elapsedSeconds = (double)elapsedTicks / Stopwatch.Frequency;
         var submitted = Interlocked.Exchange(ref _submittedFrameCount, 0);
         var presentedCount = Interlocked.Exchange(ref _presentedFrameCount, 0);
-        var (draws, drawMs, pipelines, spirvCompiles) = VulkanVideoPresenter.ReadAndResetPerfCounters();
+        var (draws, drawMs, pipelines, spirvCompiles) = GuestGpu.Current.ReadAndResetPerfCounters();
         Console.Error.WriteLine(
             $"[LOADER][PERF] videoout submitted_fps={submitted / elapsedSeconds:F1} " +
             $"presented_fps={presentedCount / elapsedSeconds:F1} " +
@@ -1448,9 +1476,9 @@ public static class VideoOutExports
     private static bool TryReadBufferAttribute(CpuContext ctx, ulong attributeAddress, bool attribute2, out BufferAttribute attribute)
     {
         attribute = default;
-        if (!ctx.TryReadUInt32(attributeAddress + 0x04, out var tilingMode) ||
-            !ctx.TryReadUInt32(attributeAddress + 0x0C, out var width) ||
-            !ctx.TryReadUInt32(attributeAddress + 0x10, out var height))
+        if (!TryReadUInt32(ctx, attributeAddress + 0x04, out var tilingMode) ||
+            !TryReadUInt32(ctx, attributeAddress + 0x0C, out var width) ||
+            !TryReadUInt32(ctx, attributeAddress + 0x10, out var height))
         {
             return false;
         }
@@ -1467,10 +1495,10 @@ public static class VideoOutExports
             return true;
         }
 
-        if (!ctx.TryReadUInt32(attributeAddress + 0x00, out var pixelFormat32) ||
-            !ctx.TryReadUInt32(attributeAddress + 0x08, out var aspectRatio) ||
-            !ctx.TryReadUInt32(attributeAddress + 0x14, out var pitchInPixel) ||
-            !ctx.TryReadUInt32(attributeAddress + 0x18, out var option32))
+        if (!TryReadUInt32(ctx, attributeAddress + 0x00, out var pixelFormat32) ||
+            !TryReadUInt32(ctx, attributeAddress + 0x08, out var aspectRatio) ||
+            !TryReadUInt32(ctx, attributeAddress + 0x14, out var pitchInPixel) ||
+            !TryReadUInt32(ctx, attributeAddress + 0x18, out var option32))
         {
             return false;
         }
@@ -1677,7 +1705,7 @@ public static class VideoOutExports
             SceVideoOutPixelFormat2B10G10R10A2Bt2100Pq;
 
     // Maps the PS5 VideoOut pixel format space to the AGC "guest texture format" tags
-    // the backend keys its guest-image registry on (see VulkanVideoPresenter.
+    // the backend keys its guest-image registry on (see the presenter's
     // GetGuestTextureFormat: format=10 => 56 for 8-bit RGBA variants, format=9 => 9 for 10-bit).
     // Unknown formats default to 56 (8-bit RGBA) with a logged warning so games
     // display something rather than silently failing the flip pipeline.
@@ -1998,6 +2026,19 @@ public static class VideoOutExports
         return true;
     }
 
+    private static bool TryReadUInt32(CpuContext ctx, ulong address, out uint value)
+    {
+        Span<byte> buffer = stackalloc byte[sizeof(uint)];
+        if (!ctx.Memory.TryRead(address, buffer))
+        {
+            value = 0;
+            return false;
+        }
+
+        value = BinaryPrimitives.ReadUInt32LittleEndian(buffer);
+        return true;
+    }
+
     private static bool TryReadInt16(CpuContext ctx, ulong address, out short value)
     {
         Span<byte> buffer = stackalloc byte[sizeof(short)];
@@ -2027,8 +2068,6 @@ public static class VideoOutExports
             return;
         }
 
-        CraziiEmuLog.For("VideoOut").Info($"[LOADER][TRACE] {message}");
+        Console.Error.WriteLine($"[LOADER][TRACE] {message}");
     }
 }
-
-

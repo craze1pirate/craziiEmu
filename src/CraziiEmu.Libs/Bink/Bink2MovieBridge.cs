@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Runtime.InteropServices;
@@ -287,15 +286,15 @@ internal static class Bink2MovieBridge
         var baseDirectory = AppContext.BaseDirectory;
         if (OperatingSystem.IsMacOS())
         {
-            yield return Path.Combine(baseDirectory, "libsharpemu_bink2_bridge.dylib");
+            yield return Path.Combine(baseDirectory, "libcraziiemu_bink2_bridge.dylib");
         }
         else if (OperatingSystem.IsWindows())
         {
-            yield return Path.Combine(baseDirectory, "sharpemu_bink2_bridge.dll");
+            yield return Path.Combine(baseDirectory, "craziiemu_bink2_bridge.dll");
         }
         else
         {
-            yield return Path.Combine(baseDirectory, "libsharpemu_bink2_bridge.so");
+            yield return Path.Combine(baseDirectory, "libcraziiemu_bink2_bridge.so");
         }
     }
 
@@ -369,9 +368,9 @@ internal static class Bink2MovieBridge
         internal static bool TryCreate(IntPtr library, out NativeAdapter? adapter)
         {
             adapter = null;
-            if (!NativeLibrary.TryGetExport(library, "sharpemu_bink2_open_utf8", out var open) ||
-                !NativeLibrary.TryGetExport(library, "sharpemu_bink2_decode_next_bgra", out var decode) ||
-                !NativeLibrary.TryGetExport(library, "sharpemu_bink2_close", out var close))
+            if (!NativeLibrary.TryGetExport(library, "craziiemu_bink2_open_utf8", out var open) ||
+                !NativeLibrary.TryGetExport(library, "craziiemu_bink2_decode_next_bgra", out var decode) ||
+                !NativeLibrary.TryGetExport(library, "craziiemu_bink2_close", out var close))
             {
                 return false;
             }

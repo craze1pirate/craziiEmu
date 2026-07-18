@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -561,6 +560,22 @@ public static class Gen5ShaderTranslator
                 _ => Gen5ShaderEncoding.Sop2,
             };
             return DecodeSop(word, out name, out sizeDwords, out error);
+        }
+
+        // gfx10 moved VOP3P (packed 16-bit math) to its own 0b110011000 prefix
+        // (word0 top byte 0xCC), separate from the VOP3 block. Match the full
+        // 9-bit prefix here, before the coarse major-opcode switch, so packed
+        // instructions are not misread as one of the neighbouring encodings.
+        if ((word & 0xFF800000u) == 0xCC000000u)
+        {
+            encoding = Gen5ShaderEncoding.Vop3p;
+            if (!ctx.TryReadUInt32(baseAddress + pc + sizeof(uint), out var vop3pExtra))
+            {
+                error = $"vop3p-extra-read-failed pc=0x{pc:X}";
+                return false;
+            }
+
+            return DecodeVop3p(word, vop3pExtra, out name, out sizeDwords, out error);
         }
 
         switch (word >> 26)
@@ -1161,6 +1176,37 @@ public static class Gen5ShaderTranslator
         return true;
     }
 
+    private static bool DecodeVop3p(
+        uint word,
+        uint extra,
+        out string name,
+        out uint sizeDwords,
+        out string error)
+    {
+        var opcode = (word >> 16) & 0x7F;
+        var src0 = extra & 0x1FF;
+        var src1 = (extra >> 9) & 0x1FF;
+        var src2 = (extra >> 18) & 0x1FF;
+        sizeDwords = src0 == 0xFF || src1 == 0xFF || src2 == 0xFF ? 3u : 2u;
+        error = string.Empty;
+
+        // Opcode numbers taken from LLVM's AMDGPU VOP3PInstructions.td and the
+        // gfx9/gfx10 MC test encodings; they are unchanged across gfx9 and gfx10.
+        // Unhandled packed opcodes (integer, fma_mix, ...) stay opaque here and
+        // fail loudly at emission rather than being silently mis-emitted.
+        name = opcode switch
+        {
+            0x0E => "VPkFmaF16",
+            0x0F => "VPkAddF16",
+            0x10 => "VPkMulF16",
+            0x11 => "VPkMinF16",
+            0x12 => "VPkMaxF16",
+            _ => $"Vop3pRaw{opcode:X2}",
+        };
+
+        return true;
+    }
+
     private static bool DecodeDs(
         uint word,
         out string name,
@@ -1530,10 +1576,36 @@ public static class Gen5ShaderTranslator
     private static bool IsMimgInstruction(string name) =>
         name.StartsWith("Image", StringComparison.Ordinal);
 
+    public static bool IsImageLoadOperation(string name) =>
+        name.StartsWith("ImageLoad", StringComparison.Ordinal);
+
     public static bool IsStorageImageOperation(string name) =>
-        name.StartsWith("ImageLoad", StringComparison.Ordinal) ||
         name.StartsWith("ImageStore", StringComparison.Ordinal) ||
         name.StartsWith("ImageAtomic", StringComparison.Ordinal);
+
+    public static bool RequiresStorageImage(
+        Gen5ImageBinding binding,
+        IReadOnlyList<Gen5ImageBinding> stageBindings)
+    {
+        if (IsStorageImageOperation(binding.Opcode))
+        {
+            return true;
+        }
+
+        if (!IsImageLoadOperation(binding.Opcode))
+        {
+            return false;
+        }
+
+        // IMAGE_LOAD itself is read-only and maps naturally to OpImageFetch,
+        // including for block-compressed textures which Vulkan cannot expose
+        // as storage images. Keep it as storage only when the same resolved
+        // descriptor is also written in this shader stage, preserving coherent
+        // read/write access through one storage-image representation.
+        return stageBindings.Any(candidate =>
+            IsStorageImageOperation(candidate.Opcode) &&
+            binding.ResourceDescriptor.SequenceEqual(candidate.ResourceDescriptor));
+    }
 
     public static bool IsDataShareAtomic(string name) => name switch
     {
@@ -1826,8 +1898,9 @@ public static class Gen5ShaderTranslator
                 destinations = [Gen5Operand.Vector(word & 0xFF)];
                 if (opcode == "VReadlaneB32")
                 {
-                    // The scalar destination lives in the low vdst byte (bits 0-7);
-                    // bits 8-14 are the VOP3B carry-out sdst, which readlane lacks.
+                    // V_READLANE uses the VOP3A vdst byte even though the
+                    // destination register is scalar. Bits 8-14 are the
+                    // distinct sdst field used by VOP3B encodings.
                     destinations = [Gen5Operand.Scalar(word & 0xFF)];
                 }
                 var isVop3B = IsVop3BOpcode((word >> 16) & 0x3FF);
@@ -1838,6 +1911,28 @@ public static class Gen5ShaderTranslator
                     ((word >> 15) & 1) != 0,
                     isVop3B ? 0 : (word >> 11) & 0xF,
                     isVop3B ? (word >> 8) & 0x7F : null);
+                break;
+            }
+            case Gen5ShaderEncoding.Vop3p:
+            {
+                var extra = words[1];
+                sources =
+                [
+                    Gen5Operand.Source(extra & 0x1FF, literal),
+                    Gen5Operand.Source((extra >> 9) & 0x1FF, literal),
+                    Gen5Operand.Source((extra >> 18) & 0x1FF, literal),
+                ];
+                destinations = [Gen5Operand.Vector(word & 0xFF)];
+
+                // op_sel_hi is split across both dwords: bits [1:0] live in word1
+                // [28:27], bit [2] in word0 [14].
+                var opSelHi = ((extra >> 27) & 0x3) | (((word >> 14) & 0x1) << 2);
+                control = new Gen5Vop3pControl(
+                    (word >> 11) & 0x7,
+                    opSelHi,
+                    (extra >> 29) & 0x7,
+                    (word >> 8) & 0x7,
+                    ((word >> 15) & 1) != 0);
                 break;
             }
             case Gen5ShaderEncoding.Ds:

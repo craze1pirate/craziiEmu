@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.Core;
@@ -69,6 +68,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             CpuEngine = cpuExecutionOptions.CpuEngine,
             StrictDynlibResolution = cpuExecutionOptions.StrictDynlibResolution,
             ImportTraceLimit = Math.Max(0, cpuExecutionOptions.ImportTraceLimit),
+            DebugHook = cpuExecutionOptions.DebugHook,
         };
         _fileSystem = fileSystem ?? new PhysicalFileSystem();
     }
@@ -80,6 +80,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             CpuEngine = options.CpuEngine,
             StrictDynlibResolution = options.StrictDynlibResolution,
             ImportTraceLimit = Math.Max(0, options.ImportTraceLimit),
+            DebugHook = options.DebugHook,
         };
         var moduleManager = new ModuleManager();
         // The compile-time generated registry (CraziiEmu.SourceGenerators) is the sole
@@ -177,20 +178,11 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return failedInitializerResult;
         }
 
-        _cpuDispatcher.ApplyInlineHleDetours();
-
-        var activeEntryPoint = image.EntryPoint;
-        if (activeRuntimeSymbols.TryGetValue("module_start", out var modStart))
-        {
-            activeEntryPoint = modStart;
-            Console.Error.WriteLine($"[RUNTIME] Overriding entry point with module_start: 0x{activeEntryPoint:X16}");
-        }
-
         Console.Error.WriteLine($"[RUNTIME] Dispatching, gen: {generation}");
-        Console.Error.WriteLine($"[RUNTIME] About to call DispatchEntry with entryPoint=0x{activeEntryPoint:X16}");
+        Console.Error.WriteLine($"[RUNTIME] About to call DispatchEntry with entryPoint=0x{image.EntryPoint:X16}");
 
         var result = _cpuDispatcher.DispatchEntry(
-            activeEntryPoint,
+            image.EntryPoint,
             generation,
             activeImportStubs,
             activeRuntimeSymbols,
@@ -199,6 +191,16 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 
         Console.Error.WriteLine($"[RUNTIME] DispatchEntry returned: {result}");
         Console.Error.WriteLine($"[RUNTIME] Dispatch result: {result}");
+
+        // Stop is a host operation, not an emulation failure. The detailed
+        // trace and session-summary builders can traverse a partially torn
+        // down native backend, delaying the GUI exit callback indefinitely.
+        if (HostSessionControl.IsShutdownRequested)
+        {
+            Console.Error.WriteLine("[RUNTIME] Skipping post-exit diagnostics for host shutdown.");
+            return result;
+        }
+
         LastExecutionTrace = _cpuDispatcher.LastImportResolutionTrace;
         LastMilestoneLog = _cpuDispatcher.LastMilestoneLog;
         LastSessionSummary = BuildSessionSummary(_cpuDispatcher.LastSessionSummary);
@@ -371,7 +373,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 
     private static App0BindingScope? BindApp0Root(string normalizedEbootPath)
     {
-        const string app0VariableName = "CraziiEmu_APP0_DIR";
+        const string app0VariableName = "CRAZIIEMU_APP0_DIR";
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(app0VariableName)))
         {
             return null;
@@ -442,33 +444,6 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return null;
     }
 
-    private static int GetModuleInitPriority(string path)
-    {
-        var name = Path.GetFileName(path);
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return 50;
-        }
-
-        if (name.Equals("libc.prx", StringComparison.OrdinalIgnoreCase) ||
-            name.Equals("libkernel.prx", StringComparison.OrdinalIgnoreCase))
-        {
-            return 0; // Core C/system runtime MUST initialize before anything else
-        }
-
-        if (name.StartsWith("libSce", StringComparison.OrdinalIgnoreCase))
-        {
-            return 10; // PS5 SDK system libraries
-        }
-
-        if (name.Equals("Il2cppUserAssemblies.prx", StringComparison.OrdinalIgnoreCase))
-        {
-            return 100; // User game assemblies must run last when all system & middleware plugins are initialized
-        }
-
-        return 50; // Standard middleware & game plugins (AkUnitySoundEngine, PSN, SaveData, CommonDialog, PS5Util)
-    }
-
     private bool TryGetEhFrameInfo(
         SelfImage image,
         ulong imageSize,
@@ -525,24 +500,16 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         IReadOnlyDictionary<ulong, string> activeImportStubs,
         IReadOnlyDictionary<string, ulong> activeRuntimeSymbols)
     {
-        var orderedModules = loadedModuleImages
-            .OrderBy(m => GetModuleInitPriority(m.Path))
-            .ThenBy(m => m.Path, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        for (var i = 0; i < orderedModules.Count; i++)
+        for (var i = 0; i < loadedModuleImages.Count; i++)
         {
-            var loadedModule = orderedModules[i];
+            var loadedModule = loadedModuleImages[i];
             if (!loadedModule.StartAtBoot)
             {
                 continue;
             }
 
-            var image = loadedModule.Image;
-            var initEntryPoint = image.InitFunctionEntryPoint;
-            var hasPreInit = image.PreInitializerFunctions.Count > 0;
-            var hasInit = image.InitializerFunctions.Count > 0;
-            if (initEntryPoint < 0x10000 && !hasPreInit && !hasInit)
+            var initEntryPoint = loadedModule.Image.InitFunctionEntryPoint;
+            if (initEntryPoint < 0x10000)
             {
                 continue;
             }
@@ -558,59 +525,29 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
                 moduleName = $"module#{i}";
             }
 
-            Console.Error.WriteLine($"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
+            Console.Error.WriteLine(
+                $"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
 
-            // 1. DT_PREINIT_ARRAY
-            var preInitResult = RunInitializerList(
-                $"{moduleName}:preinit",
-                image.PreInitializerFunctions,
+            var result = _cpuDispatcher.DispatchModuleInitializer(
+                initEntryPoint,
                 generation,
                 activeImportStubs,
                 activeRuntimeSymbols,
-                moduleName);
-            if (preInitResult is not null && preInitResult != OrbisGen2Result.ORBIS_GEN2_OK)
+                moduleName,
+                _cpuExecutionOptions);
+            KernelModuleRegistry.CompleteModuleStart(
+                loadedModule.Handle,
+                result == OrbisGen2Result.ORBIS_GEN2_OK);
+            if (result != OrbisGen2Result.ORBIS_GEN2_OK)
             {
-                KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
-                return preInitResult;
+                Console.Error.WriteLine(
+                    $"[RUNTIME] Module start failed: {moduleName} -> {result}");
+                return result;
             }
-
-            // 2. DT_INIT
-            if (initEntryPoint >= 0x10000)
-            {
-                var r = _cpuDispatcher.DispatchModuleInitializer(
-                    initEntryPoint,
-                    generation,
-                    activeImportStubs,
-                    activeRuntimeSymbols,
-                    moduleName,
-                    _cpuExecutionOptions);
-                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
-                {
-                    KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
-                    return r;
-                }
-            }
-
-            // 3. DT_INIT_ARRAY
-            var initResult = RunInitializerList(
-                $"{moduleName}:init",
-                image.InitializerFunctions,
-                generation,
-                activeImportStubs,
-                activeRuntimeSymbols,
-                moduleName);
-            if (initResult is not null && initResult != OrbisGen2Result.ORBIS_GEN2_OK)
-            {
-                KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
-                return initResult;
-            }
-
-            KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, true);
         }
 
         return null;
     }
-
 
     private OrbisGen2Result? RunImageInitializers(
         string label,
@@ -696,8 +633,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return loadedImages;
         }
 
-        var configFirmware = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.DecryptedFirmwarePath;
-        var rawDirectories = new List<(string Path, bool StartAtBoot)>()
+        var moduleDirectories = new[]
         {
             (Path: Path.Combine(ebootDirectory, "sce_module"), StartAtBoot: true),
             (Path: Path.Combine(ebootDirectory, "sce_modules"), StartAtBoot: true),
@@ -706,18 +642,11 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             // them up front so the HLE loader can return a real module handle and dlsym
             // can resolve their exports, but defer DT_INIT until the guest requests them.
             (Path: Path.Combine(ebootDirectory, "Media", "Plugins"), StartAtBoot: false),
-        };
-        if (!string.IsNullOrWhiteSpace(configFirmware))
-        {
-            rawDirectories.Add((Path: Path.Combine(configFirmware, "common", "lib"), StartAtBoot: true));
-            rawDirectories.Add((Path: Path.Combine(configFirmware, "system", "common", "lib"), StartAtBoot: true));
         }
-
-        var moduleDirectories = rawDirectories
-            .GroupBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .Where(entry => Directory.Exists(entry.Path))
-            .ToArray();
+        .GroupBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+        .Select(group => group.First())
+        .Where(entry => Directory.Exists(entry.Path))
+        .ToArray();
 
         if (moduleDirectories.Length == 0)
         {
@@ -869,7 +798,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 
         var rebound = 0;
         var logRebind = string.Equals(
-            Environment.GetEnvironmentVariable("CraziiEmu_LOG_DATA_REBIND"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DATA_REBIND"),
             "1",
             StringComparison.Ordinal);
         for (var i = 0; i < image.ImportedRelocations.Count; i++)
@@ -918,13 +847,8 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return rebound;
     }
 
-    private void MergeKnownHleDataSymbols(IDictionary<string, ulong> runtimeSymbols)
+    private static void MergeKnownHleDataSymbols(IDictionary<string, ulong> runtimeSymbols)
     {
-        if (_virtualMemory is IGuestMemoryAllocator allocator)
-        {
-            HleDataSymbols.InitializeGuestMemory(allocator, _virtualMemory);
-        }
-
         foreach (var nid in HleDataSymbols.EnumerateKnownNids())
         {
             if (runtimeSymbols.ContainsKey(nid) ||
@@ -1031,7 +955,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 
     private static bool ShouldPreloadModule(string modulePath)
     {
-        if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_PRELOAD_ALL_SCE_MODULES"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_PRELOAD_ALL_SCE_MODULES"), "1", StringComparison.Ordinal))
         {
             return true;
         }
@@ -1238,6 +1162,16 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         if (_cpuDispatcher is IDisposable disposableDispatcher)
         {
             disposableDispatcher.Dispose();
+        }
+
+        if (_cpuDispatcher is CpuDispatcher { NativeSessionLeaked: true })
+        {
+            // A guest worker is still inside guest code; unmapping the guest
+            // address space under it would fault the whole process, which
+            // hosts the GUI launcher in embedded sessions.
+            Console.Error.WriteLine(
+                "[RUNTIME] Guest workers were still active at teardown; keeping the guest address space mapped.");
+            return;
         }
 
         if (_virtualMemory is IDisposable disposableMemory)

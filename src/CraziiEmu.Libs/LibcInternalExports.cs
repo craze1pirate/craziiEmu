@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Runtime.InteropServices;
@@ -32,7 +31,7 @@ public static class LibcInternalExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var storage = EnsureHeapTraceStorage(ctx);
+        var storage = EnsureHeapTraceStorage();
         if (storage == 0)
         {
             ctx[CpuRegister.Rax] = 0;
@@ -52,7 +51,7 @@ public static class LibcInternalExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    private static nint EnsureHeapTraceStorage(CpuContext ctx)
+    private static nint EnsureHeapTraceStorage()
     {
         lock (_heapTraceGate)
         {
@@ -61,15 +60,19 @@ public static class LibcInternalExports
                 return _heapTraceStorage;
             }
 
-            if (ctx.Memory is IGuestMemoryAllocator allocator &&
-                allocator.TryAllocateGuestMemory(HeapTraceStorageSize, 16, out var storage))
+            var storage = Marshal.AllocHGlobal(HeapTraceStorageSize);
+            if (storage == 0)
             {
-                ctx.Memory.TryWrite(storage, new byte[HeapTraceStorageSize]);
-                _heapTraceStorage = unchecked((nint)storage);
-                return _heapTraceStorage;
+                return 0;
             }
 
-            return 0;
+            unsafe
+            {
+                NativeMemory.Clear((void*)storage, (nuint)HeapTraceStorageSize);
+            }
+
+            _heapTraceStorage = storage;
+            return storage;
         }
     }
 }

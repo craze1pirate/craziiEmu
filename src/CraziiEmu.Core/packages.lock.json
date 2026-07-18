@@ -18,6 +18,12 @@
           "Silk.NET.Input.Glfw": "2.23.0"
         }
       },
+      "Silk.NET.Maths": {
+        "type": "Direct",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
+      },
       "Silk.NET.OpenGL": {
         "type": "Direct",
         "requested": "[2.23.0, )",
@@ -82,11 +88,6 @@
           "Silk.NET.Input.Common": "2.23.0",
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
-      },
-      "Silk.NET.Maths": {
-        "type": "Transitive",
-        "resolved": "2.23.0",
-        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
       },
       "Silk.NET.Windowing.Common": {
         "type": "Transitive",

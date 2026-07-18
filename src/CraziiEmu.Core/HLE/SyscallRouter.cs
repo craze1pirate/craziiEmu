@@ -41,7 +41,7 @@ public class SyscallRouter
 
     private void SetSuccess(CpuContext ctx, ulong result)
     {
-        ctx.Rax = result;
+        ctx[CpuRegister.Rax] = result;
         if (ActiveAbi == SyscallAbi.FreeBsd)
         {
             ctx.CarryFlag = false;
@@ -52,12 +52,12 @@ public class SyscallRouter
     {
         if (ActiveAbi == SyscallAbi.FreeBsd)
         {
-            ctx.Rax = errorCode;
+            ctx[CpuRegister.Rax] = errorCode;
             ctx.CarryFlag = true;
         }
         else
         {
-            ctx.Rax = unchecked((ulong)-(long)errorCode);
+            ctx[CpuRegister.Rax] = unchecked((ulong)-(long)errorCode);
         }
     }
 
@@ -87,13 +87,13 @@ public class SyscallRouter
     {
         var handlers = ActiveAbi == SyscallAbi.Linux ? _linuxHandlers : _freeBsdHandlers;
 
-        if (handlers.TryGetValue(ctx.Rax, out var handler))
+        if (handlers.TryGetValue(ctx[CpuRegister.Rax], out var handler))
         {
             handler(ctx);
         }
         else
         {
-            CraziiEmuLog.For("HLE").Info($"[Syscall] Unhandled syscall RAX={ctx.Rax} (0x{ctx.Rax:X}) RDI={ctx.Rdi} (0x{ctx.Rdi:X}) RSI={ctx.Rsi} (0x{ctx.Rsi:X})\n");
+            CraziiEmuLog.For("HLE").Info($"[Syscall] Unhandled syscall RAX={ctx[CpuRegister.Rax]} (0x{ctx[CpuRegister.Rax]:X}) RDI={ctx[CpuRegister.Rdi]} (0x{ctx[CpuRegister.Rdi]:X}) RSI={ctx[CpuRegister.Rsi]} (0x{ctx[CpuRegister.Rsi]:X})\n");
             // Unregistered syscall: gracefully return ENOSYS (78 for FreeBSD, 38 for Linux)
             ulong enosysCode = ActiveAbi == SyscallAbi.FreeBsd ? 78UL : 38UL;
             SetError(ctx, enosysCode);
@@ -103,9 +103,9 @@ public class SyscallRouter
     private void SysWrite(CpuContext ctx)
     {
         // Rdi = fd, Rsi = buffer, Rdx = count
-        ulong fd = ctx.Rdi;
-        ulong bufferAddress = ctx.Rsi;
-        int count = (int)ctx.Rdx;
+        ulong fd = ctx[CpuRegister.Rdi];
+        ulong bufferAddress = ctx[CpuRegister.Rsi];
+        int count = (int)ctx[CpuRegister.Rdx];
 
         if (fd == 1 || fd == 2) // stdout or stderr
         {
@@ -131,20 +131,20 @@ public class SyscallRouter
     {
         // Rdi = error_code (or sometimes a leftover pointer if the payload called syscall(1) without an exit code)
         string leftoverString = "";
-        if (ctx.Rdi > 0x10000000)
+        if (ctx[CpuRegister.Rdi] > 0x10000000)
         {
             try
             {
-                var span = _memory.GetSpan(ctx.Rdi, 256);
+                var span = _memory.GetSpan(ctx[CpuRegister.Rdi], 256);
                 int len = span.IndexOf((byte)0);
                 if (len > 0) leftoverString = " | Leftover string: '" + Encoding.UTF8.GetString(span.Slice(0, len)).Replace("\n", "\\n") + "'";
             }
             catch { }
         }
         
-        CraziiEmuLog.For("HLE").Info($"[Syscall] sys_exit called with code {ctx.Rdi}{leftoverString}\n");
+        CraziiEmuLog.For("HLE").Info($"[Syscall] sys_exit called with code {ctx[CpuRegister.Rdi]}{leftoverString}\n");
         ctx.IsTerminated = true;
-        ctx.ExitCode = (int)ctx.Rdi;
+        ctx.ExitCode = (int)ctx[CpuRegister.Rdi];
     }
 
     private readonly Dictionary<string, ulong> _dlsymStubs = new Dictionary<string, ulong>();
@@ -161,8 +161,8 @@ public class SyscallRouter
 
     private void SysDlsymStub(CpuContext ctx)
     {
-        ulong symbolAddr = ctx.Rsi;
-        ulong outAddr = ctx.Rdx;
+        ulong symbolAddr = ctx[CpuRegister.Rsi];
+        ulong outAddr = ctx[CpuRegister.Rdx];
 
         string symbolName = "unknown";
         try

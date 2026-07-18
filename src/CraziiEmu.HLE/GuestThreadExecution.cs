@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Diagnostics;
@@ -403,27 +402,6 @@ public static class GuestThreadExecution
         _pendingBlockWaiter = null;
         _pendingBlockDeadlineTimestamp = 0;
         return true;
-    }
-
-    public static bool TryConsumeCurrentThreadBlock(
-        out string reason,
-        out GuestCpuContinuation continuation,
-        out bool hasContinuation,
-        out string wakeKey,
-        out Func<int>? resumeHandler,
-        out Func<bool>? wakeHandler,
-        out long blockDeadlineTimestamp)
-    {
-        var consumed = TryConsumeCurrentThreadBlock(
-            out reason,
-            out continuation,
-            out hasContinuation,
-            out wakeKey,
-            out var waiter,
-            out blockDeadlineTimestamp);
-        resumeHandler = waiter is null ? null : waiter.Resume;
-        wakeHandler = waiter is null ? null : waiter.TryWake;
-        return consumed;
     }
 
     public static long ComputeDeadlineTimestamp(TimeSpan timeout)

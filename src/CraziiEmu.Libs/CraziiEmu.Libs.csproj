@@ -1,6 +1,5 @@
 <!--
 Copyright (C) 2026 CraziiEmu Emulator Project
-Copyright (C) 2026 craze1pirate - CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -8,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler\CraziiEmu.ShaderCompiler.csproj" />
+    
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Vulkan\CraziiEmu.ShaderCompiler.Vulkan.csproj" />
     <!-- SysAbi export generator + analyzers (compile-time registry, NID validation). -->
     <ProjectReference Include="..\CraziiEmu.SourceGenerators\CraziiEmu.SourceGenerators.csproj"
@@ -40,3 +40,4 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>
+

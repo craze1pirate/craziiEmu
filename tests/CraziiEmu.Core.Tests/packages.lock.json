@@ -104,11 +104,6 @@
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
       },
-      "Silk.NET.Maths": {
-        "type": "Transitive",
-        "resolved": "2.23.0",
-        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
-      },
       "Silk.NET.Windowing.Common": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -180,6 +175,7 @@
           "CraziiEmu.Logging": "[0.0.2-beta.2, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
+          "Silk.NET.Maths": "[2.23.0, )",
           "Silk.NET.OpenGL": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )"
         }
@@ -233,6 +229,12 @@
           "Silk.NET.Input.Common": "2.23.0",
           "Silk.NET.Input.Glfw": "2.23.0"
         }
+      },
+      "Silk.NET.Maths": {
+        "type": "CentralTransitive",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
       },
       "Silk.NET.OpenGL": {
         "type": "CentralTransitive",

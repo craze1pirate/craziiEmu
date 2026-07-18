@@ -57,6 +57,6 @@ public sealed class GuestContextTransferValidationTests
         new()
         {
             Rip = rip,
-            Rsp = rsp,
+[CpuRegister.Rsp] = rsp,
         };
 }

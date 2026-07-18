@@ -1,13 +1,12 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers.Binary;
 using System.Text;
 
-namespace CraziiEmu.Libs.Agc;
+namespace SharpEmu.ShaderCompiler.Vulkan;
 
-internal enum SpirvOp : ushort
+public enum SpirvOp : ushort
 {
     Nop = 0,
     Name = 5,
@@ -41,6 +40,7 @@ internal enum SpirvOp : ushort
     FunctionEnd = 56,
     FunctionCall = 57,
     Variable = 59,
+    ImageTexelPointer = 60,
     Load = 61,
     Store = 62,
     AccessChain = 65,
@@ -143,7 +143,19 @@ internal enum SpirvOp : ushort
     BitCount = 205,
     ControlBarrier = 224,
     MemoryBarrier = 225,
+    AtomicExchange = 229,
+    AtomicCompareExchange = 230,
+    AtomicIIncrement = 232,
+    AtomicIDecrement = 233,
     AtomicIAdd = 234,
+    AtomicISub = 235,
+    AtomicSMin = 236,
+    AtomicUMin = 237,
+    AtomicSMax = 238,
+    AtomicUMax = 239,
+    AtomicAnd = 240,
+    AtomicOr = 241,
+    AtomicXor = 242,
     Phi = 245,
     LoopMerge = 246,
     SelectionMerge = 247,
@@ -168,7 +180,7 @@ internal enum SpirvOp : ushort
     GroupNonUniformShuffleDown = 348,
 }
 
-internal enum SpirvCapability : uint
+public enum SpirvCapability : uint
 {
     Shader = 1,
     Float16 = 9,
@@ -187,7 +199,7 @@ internal enum SpirvCapability : uint
     RuntimeDescriptorArray = 5302,
 }
 
-internal enum SpirvStorageClass : uint
+public enum SpirvStorageClass : uint
 {
     UniformConstant = 0,
     Input = 1,
@@ -201,21 +213,21 @@ internal enum SpirvStorageClass : uint
     StorageBuffer = 12,
 }
 
-internal enum SpirvExecutionModel : uint
+public enum SpirvExecutionModel : uint
 {
     Vertex = 0,
     Fragment = 4,
     GLCompute = 5,
 }
 
-internal enum SpirvExecutionMode : uint
+public enum SpirvExecutionMode : uint
 {
     OriginUpperLeft = 7,
     DepthReplacing = 12,
     LocalSize = 17,
 }
 
-internal enum SpirvDecoration : uint
+public enum SpirvDecoration : uint
 {
     Block = 2,
     ArrayStride = 6,
@@ -228,7 +240,7 @@ internal enum SpirvDecoration : uint
     Offset = 35,
 }
 
-internal enum SpirvBuiltIn : uint
+public enum SpirvBuiltIn : uint
 {
     Position = 0,
     VertexIndex = 42,
@@ -239,10 +251,11 @@ internal enum SpirvBuiltIn : uint
     LocalInvocationId = 27,
     GlobalInvocationId = 28,
     LocalInvocationIndex = 29,
+    SubgroupSize = 36,
     SubgroupLocalInvocationId = 41,
 }
 
-internal enum SpirvImageDim : uint
+public enum SpirvImageDim : uint
 {
     Dim1D = 0,
     Dim2D = 1,
@@ -251,7 +264,7 @@ internal enum SpirvImageDim : uint
     Buffer = 5,
 }
 
-internal enum SpirvImageFormat : uint
+public enum SpirvImageFormat : uint
 {
     Unknown = 0,
     Rgba32f = 1,
@@ -295,7 +308,7 @@ internal enum SpirvImageFormat : uint
     R8ui = 39,
 }
 
-internal sealed class SpirvModuleBuilder
+public sealed class SpirvModuleBuilder
 {
     private const uint Magic = 0x07230203;
     private const uint Version15 = 0x00010500;

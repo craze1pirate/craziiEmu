@@ -1,9 +1,9 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using CraziiEmu.Libs.Gpu;
 using CraziiEmu.Libs.Kernel;
 using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.ShaderCompiler;
@@ -26,9 +26,9 @@ internal static class AgcShaderCompilerHooks
             "enters through this assembly.")]
     internal static void Install()
     {
-        CraziiEmu.ShaderCompiler.Gen5ShaderScalarEvaluator.FallbackMemoryReader =
+        Gen5ShaderScalarEvaluator.FallbackMemoryReader =
             KernelMemoryCompatExports.TryReadTrackedLibcHeap;
-        CraziiEmu.ShaderCompiler.Gen5ShaderScalarEvaluator.GlobalMemoryPool =
-            VulkanVideoPresenter.GuestDataPool;
+        Gen5ShaderScalarEvaluator.GlobalMemoryPool =
+            GuestDataPool.Shared;
     }
 }

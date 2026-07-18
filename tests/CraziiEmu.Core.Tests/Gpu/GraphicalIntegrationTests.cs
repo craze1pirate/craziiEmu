@@ -1,3 +1,4 @@
+using CraziiEmu.HLE;
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -78,7 +79,7 @@ public class GraphicalIntegrationTests
 
         // Verify Execution
         Assert.True(engine.Context.IsTerminated);
-        Assert.Equal(0u, engine.Context.Rdi); // Status code 0
+        Assert.Equal(0u, engine.Context[CpuRegister.Rdi]); // Status code 0
 
         // Trigger Framebuffer Update
         var exception = Record.Exception(() => display.UpdateFrameBufferOnly());

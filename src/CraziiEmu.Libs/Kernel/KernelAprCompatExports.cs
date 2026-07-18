@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -15,7 +14,7 @@ public static class KernelAprCompatExports
     private static int _nextSubmissionId;
     private static int _aprWaitTraceCount;
     private static readonly bool _traceApr =
-        string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_AMPR"), "1", StringComparison.Ordinal);
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AMPR"), "1", StringComparison.Ordinal);
 
     private readonly record struct AprSubmission(ulong CommandBuffer, ulong Priority, ulong ResultAddress);
 

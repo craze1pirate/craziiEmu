@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -122,6 +121,33 @@ public static class AppContentExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    // Download data is not emulated as a real quota; report a comfortable
+    // fixed amount of free space so titles never take the "storage full" path.
+    [SysAbiExport(
+        Nid = "Gl6w5i0JokY",
+        ExportName = "sceAppContentDownloadDataGetAvailableSpaceKb",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceAppContent")]
+    public static int AppContentDownloadDataGetAvailableSpaceKb(CpuContext ctx)
+    {
+        const ulong availableSpaceKb = 1024UL * 1024UL; // 1 GiB
+        var availableSpaceAddress = ctx[CpuRegister.Rsi];
+        if (availableSpaceAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        Span<byte> spaceBytes = stackalloc byte[sizeof(ulong)];
+        BinaryPrimitives.WriteUInt64LittleEndian(spaceBytes, availableSpaceKb);
+        if (!ctx.Memory.TryWrite(availableSpaceAddress, spaceBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     private static bool TryReadUserDefinedParam(uint paramId, out int value)
     {
         value = 0;
@@ -130,7 +156,7 @@ public static class AppContentExports
             return false;
         }
 
-        var app0Root = Environment.GetEnvironmentVariable("CraziiEmu_APP0_DIR");
+        var app0Root = Environment.GetEnvironmentVariable("CRAZIIEMU_APP0_DIR");
         if (string.IsNullOrWhiteSpace(app0Root))
         {
             return true;
@@ -171,7 +197,7 @@ public static class AppContentExports
 
     private static void TraceAppContent(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_LOG_APP_CONTENT"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_APP_CONTENT"), "1", StringComparison.Ordinal))
         {
             return;
         }
@@ -181,14 +207,14 @@ public static class AppContentExports
 
     private static string ResolveTemp0Root()
     {
-        const string temp0VariableName = "CraziiEmu_TEMP0_DIR";
+        const string temp0VariableName = "CRAZIIEMU_TEMP0_DIR";
         var configuredRoot = Environment.GetEnvironmentVariable(temp0VariableName);
         if (!string.IsNullOrWhiteSpace(configuredRoot))
         {
             return Path.GetFullPath(configuredRoot);
         }
 
-        var app0Root = Environment.GetEnvironmentVariable("CraziiEmu_APP0_DIR");
+        var app0Root = Environment.GetEnvironmentVariable("CRAZIIEMU_APP0_DIR");
         var appName = string.IsNullOrWhiteSpace(app0Root)
             ? "default"
             : Path.GetFileName(Path.TrimEndingDirectorySeparator(app0Root));

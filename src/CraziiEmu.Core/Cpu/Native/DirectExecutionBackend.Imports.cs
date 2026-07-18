@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -11,8 +10,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using CraziiEmu.Core.Cpu.Debugging;
 using CraziiEmu.Core.Cpu;
-using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Kernel;
 
@@ -41,16 +40,6 @@ public sealed partial class DirectExecutionBackend
 
 	private static ulong ImportDispatchGatewayManaged(nint backendHandle, int importIndex, nint argPackPtr)
 	{
-		if (LogThreadMode)
-		{
-			_threadModeGatewayCalls++;
-			_threadModeGatewayDepth++;
-			if (!_threadModeGatewayFirstLogged)
-			{
-				_threadModeGatewayFirstLogged = true;
-				TraceThreadMode($"gateway_first import={importIndex} total={_threadModeGatewayCalls}");
-			}
-		}
 		try
 		{
 			if (!(GCHandle.FromIntPtr(backendHandle).Target is DirectExecutionBackend directExecutionBackend))
@@ -75,13 +64,6 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine(
 				$"[LOADER][ERROR] ImportDispatchGatewayManaged exception: {ex.GetType().Name}: {ex.Message}");
 			return 18446744071562199298uL;
-		}
-		finally
-		{
-			if (LogThreadMode)
-			{
-				_threadModeGatewayDepth--;
-			}
 		}
 	}
 
@@ -120,12 +102,6 @@ public sealed partial class DirectExecutionBackend
 			WriteCtxU64(contextRecord, 152, nextRsp);
 			WriteCtxU64(contextRecord, 248, returnRip);
 			Interlocked.Increment(ref _rawSentinelRecoveries);
-			if (LogThreadMode)
-			{
-				TraceThreadMode(
-					$"sentinel_recover rip=0x{value:X16} -> 0x{returnRip:X16} rsp=0x{rsp:X16} -> 0x{nextRsp:X16} " +
-					$"gateway_depth={_threadModeGatewayDepth}");
-			}
 			return -1;
 		}
 		return 0;
@@ -215,7 +191,6 @@ public sealed partial class DirectExecutionBackend
 		cpuContext[CpuRegister.R13] = *(ulong*)(argPackPtr + 72);
 		cpuContext[CpuRegister.R14] = *(ulong*)(argPackPtr + 80);
 		cpuContext[CpuRegister.R15] = *(ulong*)(argPackPtr + 88);
-
 		cpuContext[CpuRegister.Rsp] = (ulong)argPackPtr + 96uL;
 		ulong value = cpuContext[CpuRegister.Rdi];
 		ulong value2 = cpuContext[CpuRegister.Rsi];
@@ -342,11 +317,15 @@ public sealed partial class DirectExecutionBackend
 		}
 		if (!isGuestWorker &&
 			!ActiveForcedGuestExit &&
-			ShouldForceGuestExitOnImportLoop(in importStubEntry, num7, num, value, value2) &&
-			TryForceGuestExitToHostStub(argPackPtr, num, num7, importStubEntry.Nid))
+			ShouldForceGuestExitOnImportLoop(in importStubEntry, num7, num, value, value2))
 		{
-			cpuContext[CpuRegister.Rax] = 1uL;
-			return 1uL;
+			// Break before the forced exit so the loop state is still live.
+			NotifyDebuggerStall(CpuStallKind.ImportLoop, in importStubEntry, num7, num, value, value2);
+			if (TryForceGuestExitToHostStub(argPackPtr, num, num7, importStubEntry.Nid))
+			{
+				cpuContext[CpuRegister.Rax] = 1uL;
+				return 1uL;
+			}
 		}
 		bool flag0 = importStubEntry.SuppressStrlenTrace;
 		bool flag = num7 >= 2156221920u && num7 <= 2156225024u;
@@ -540,21 +519,12 @@ public sealed partial class DirectExecutionBackend
 					}
 					orbisGen2Result = (OrbisGen2Result)returnValue;
 				}
-                else if (importStubEntry.Export is { } mismatchedExport)
-                {
-                    dispatchResolved = true;
-                    orbisGen2Result = OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_IMPLEMENTED;
-                    cpuContext[CpuRegister.Rax] = unchecked((ulong)(int)orbisGen2Result);
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] Import#{num} not implemented for generation {cpuContext.TargetGeneration}: " +
-                        $"nid={importStubEntry.Nid} targets={mismatchedExport.Target} ret=0x{num7:X16}");
-                }
-                else
-                {
-                    dispatchResolved = false;
-                    orbisGen2Result = OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-                    cpuContext[CpuRegister.Rax] = unchecked((ulong)(int)orbisGen2Result);
-                }
+				else
+				{
+					dispatchResolved = false;
+					orbisGen2Result = OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+					cpuContext[CpuRegister.Rax] = unchecked((ulong)(int)orbisGen2Result);
+				}
 			}
 			finally
 			{
@@ -1380,8 +1350,7 @@ public sealed partial class DirectExecutionBackend
 				out var blockContinuation,
 				out var hasBlockContinuation,
 				out var blockWakeKey,
-				out var blockResumeHandler,
-				out var blockWakeHandler,
+				out var blockWaiter,
 				out var blockDeadlineTimestamp);
 		if (consumedThreadBlock &&
 			TryYieldGuestThreadToHostStub(argPackPtr, dispatchIndex, returnRip, importStubEntry.Nid, blockReason))
@@ -1392,8 +1361,7 @@ public sealed partial class DirectExecutionBackend
 					GuestThreadExecution.CurrentGuestThreadHandle,
 					blockContinuation,
 					blockWakeKey,
-					blockResumeHandler,
-					blockWakeHandler,
+					blockWaiter,
 					blockDeadlineTimestamp);
 			}
 
@@ -1417,13 +1385,6 @@ public sealed partial class DirectExecutionBackend
 		return true;
 	}
 
-	// Subset of the leaf set that additionally skips the import-call-frame
-	// bookkeeping. The same scalar-only (no XMM args, no XMM return) constraint
-	// as IsLeafImport applies ΓÇö see the note there before adding entries.
-	// NOTE: this filter is only consulted after IsLeafImport accepts the NID;
-	// entries listed here but not in IsLeafImport (scePadRead, scePadOpen,
-	// sceUserServiceGetEvent, sceUserServiceGetPlatformPrivacySetting,
-	// pthread_mutex_trylock) currently take the full gateway path.
 	private static bool IsNoBlockLeafImport(string nid) =>
 		nid is
 			"8aI7R7WaOlc" or // sceAmprCommandBufferConstructor
@@ -1524,28 +1485,9 @@ public sealed partial class DirectExecutionBackend
 			"1G3lF1Gg1k8" or // sceKernelOpen
 			"gEpBkcwxUjw";   // sceKernelAprResolveFilepathsToIdsAndFileSizes
 
-	// LEAF-IMPORT REGISTRATION ΓÇö scalar-only constraint.
-	//
-	// TryDispatchLeafImport is a fast path that never copies the trampoline's XMM
-	// save area into CpuContext and never publishes an XMM0 return back to the
-	// guest (see DispatchImport). Every NID listed here must therefore satisfy BOTH:
-	//   1. no float/double parameters (nothing passed in xmm0..xmm7), and
-	//   2. no float/double return value (nothing returned in xmm0).
-	// Integer/pointer arguments and returns only. va_list-based functions
-	// (vsnprintf) are safe: SysV va_list floats are read from the caller-built
-	// reg_save_area in guest memory, not from the callee's incoming XMM registers.
-	//
-	// If a function that consumes XMM arguments or returns in xmm0 (e.g. powf,
-	// logf, wcstod, sceVideoOutColorSettingsSetGamma_) is ever added here, its
-	// float arguments will silently arrive stale and its return value will be
-	// dropped. Such functions must stay on the full gateway path ΓÇö do not list them.
-	//
-	// Audited 2026-07-11 (PR #59): every NID below maps to a registered
-	// SysAbiExport whose handler neither reads nor writes CpuContext XMM state
-	// and whose known guest signature is integer/pointer only.
 	private bool IsLeafImport(string nid)
 	{
-		if (nid == "1jfXLRVzisc") // sceKernelUsleep
+		if (nid == "1jfXLRVzisc")
 		{
 			return !_logUsleep;
 		}
@@ -1561,7 +1503,7 @@ public sealed partial class DirectExecutionBackend
 			"8aI7R7WaOlc" or // sceAmprCommandBufferConstructor
 			"zgXifHT9ErY" or // sceVideoOutIsFlipPending
 			"V++UgBtQhn0" or // sceAgcGetDataPacketPayloadAddress
-			"qj7QZpgr9Uw" or // sceAgcUnknownQj7QZpgr9Uw (unknown NID; observed scalar: command-buffer pointer in, packet address out)
+			"qj7QZpgr9Uw" or // Gen5 graphics type-2 packet
 			"LtTouSCZjHM" or // sceAgcCbNop
 			"k3GhuSNmBLU" or // sceAgcCbDispatch
 			"UZbQjYAwwXM" or // sceAgcCbSetShRegistersDirect
@@ -1649,12 +1591,7 @@ public sealed partial class DirectExecutionBackend
 			"vz+pg2zdopI" or // sceKernelGetEventUserData
 			"mJ7aghmgvfc" or // sceKernelGetEventId
 			"23CPPI1tyBY" or // sceKernelGetEventFilter
-			"kwGyyjohI50" or // sceKernelGetEventData
-			// _Getpctype is a per-character ctype table lookup; the embedded mcpp preprocessor
-			// re-fetches the table pointer on every isdigit()/isalpha() check, so classifying a
-			// large input legitimately calls it hundreds of thousands of times back-to-back -
-			// real, finite work that would otherwise trip the loop guard.
-			"sUP1hBaouOw";   // _Getpctype
+			"kwGyyjohI50";   // sceKernelGetEventData
 	}
 
 	private long NextImportDispatchIndex()
@@ -2391,173 +2328,5 @@ public sealed partial class DirectExecutionBackend
 				VirtualProtect((void*)num, 5u, flNewProtect, &flNewProtect);
 			}
 		}
-	}
-
-	private readonly Dictionary<ulong, byte[]> _inlineDetourBackup = new();
-
-	/// <summary>
-	/// Determines whether a Category-1 HLE export should be interposed via an inline E9 rel32 detour inside libc.prx.
-	/// Excludes stdio and string search functions to maintain internal struct buffer layout compatibility and leaf performance.
-	/// </summary>
-	private static bool IsInlineDetourTarget(string nid, string exportName)
-	{
-		if (string.IsNullOrWhiteSpace(exportName) && string.IsNullOrWhiteSpace(nid))
-		{
-			return false;
-		}
-
-		return exportName switch
-		{
-			"__cxa_guard_acquire" or
-			"__cxa_guard_release" or
-			"__cxa_guard_abort" or
-			"_umtx_op" => true,
-			_ => nid is "3GPpjQdAMTw" or "S+B1-L6d+Wk" or "bZzZ2S54a10" or "3D1uQc1oEFE"
-		};
-	}
-
-	/// <summary>
-	/// Applies inline E9 rel32 detours to allowlisted Category-1 HLE exports inside preloaded dynamic libraries (such as libc.prx),
-	/// ensuring intra-module relative jumps reach the C# HLE gateway rather than unpatched guest machine code.
-	/// </summary>
-	public unsafe void ApplyInlineHleDetours()
-	{
-		CpuContext? context = ActiveCpuContext;
-		if (context == null || !TryGetVirtualMemory(context, out var virtualMemory) || virtualMemory == null)
-		{
-			return;
-		}
-
-		KeyValuePair<string, ulong>[] runtimeSymbols = _runtimeSymbolsByAddress;
-		if (runtimeSymbols == null || runtimeSymbols.Length == 0)
-		{
-			return;
-		}
-
-		int patchedCount = 0;
-		foreach (KeyValuePair<string, ulong> kvp in runtimeSymbols)
-		{
-			ulong guestAddr = kvp.Value;
-			string symName = kvp.Key;
-			if (guestAddr == 0 || string.IsNullOrWhiteSpace(symName))
-			{
-				continue;
-			}
-
-			string cleanName = symName;
-			int hashIndex = cleanName.IndexOf('#');
-			if (hashIndex > 0)
-			{
-				cleanName = cleanName[..hashIndex];
-			}
-
-			if (!_moduleManager.TryGetExport(cleanName, out ExportedFunction? export) &&
-				!_moduleManager.TryGetExportByName(cleanName, out export))
-			{
-				continue;
-			}
-
-			if (export == null || PreferLleForLibcExport(export.Name) || !IsInlineDetourTarget(export.Nid, export.Name))
-			{
-				continue;
-			}
-
-			if (_inlineDetourBackup.ContainsKey(guestAddr))
-			{
-				continue;
-			}
-
-			int importIndex = -1;
-			for (int i = 0; i < _importEntries.Length; i++)
-			{
-				if (_importEntries[i].Address == guestAddr ||
-					string.Equals(_importEntries[i].Nid, export.Nid, StringComparison.Ordinal) ||
-					string.Equals(_importEntries[i].Nid, cleanName, StringComparison.Ordinal))
-				{
-					importIndex = i;
-					break;
-				}
-			}
-
-			if (importIndex < 0)
-			{
-				importIndex = _importEntries.Length;
-				Array.Resize(ref _importEntries, importIndex + 1);
-				_importEntries[importIndex] = new ImportStubEntry(
-					guestAddr,
-					export.Nid,
-					export,
-					IsLeafImport(export.Nid),
-					IsNoBlockLeafImport(export.Nid),
-					ShouldSuppressStrlenTrace(export.Nid),
-					IsImportLoopGuardBoundary(export.Nid),
-					StableHash64(export.Nid));
-			}
-
-			nint trampolineAddr = CreateImportHandlerTrampoline(importIndex);
-			if (trampolineAddr == 0)
-			{
-				Console.Error.WriteLine($"[LOADER][WARN] Failed to allocate HLE trampoline for inline detour: {export.Name} ({export.Nid}) at 0x{guestAddr:X16}");
-				continue;
-			}
-
-			long disp64 = (long)trampolineAddr - (long)(guestAddr + 5);
-			if (disp64 < int.MinValue || disp64 > int.MaxValue)
-			{
-				Console.Error.WriteLine($"[LOADER][WARN] Cannot apply inline detour for {export.Name}: trampoline at 0x{trampolineAddr:X16} out of ±2GB rel32 range from 0x{guestAddr:X16}");
-				continue;
-			}
-
-			byte[] originalBytes = new byte[5];
-			if (!virtualMemory.TryRead(guestAddr, originalBytes))
-			{
-				Console.Error.WriteLine($"[LOADER][WARN] Failed to read original instructions for inline detour: {export.Name} at 0x{guestAddr:X16}");
-				continue;
-			}
-
-			byte[] detourBytes = new byte[5];
-			detourBytes[0] = 0xE9;
-			int disp32 = (int)disp64;
-			detourBytes[1] = (byte)(disp32 & 0xFF);
-			detourBytes[2] = (byte)((disp32 >> 8) & 0xFF);
-			detourBytes[3] = (byte)((disp32 >> 16) & 0xFF);
-			detourBytes[4] = (byte)((disp32 >> 24) & 0xFF);
-
-			if (virtualMemory.TryWrite(guestAddr, detourBytes))
-			{
-				_inlineDetourBackup[guestAddr] = originalBytes;
-				patchedCount++;
-				Console.Error.WriteLine($"[LOADER][INFO] Applied inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
-			}
-			else
-			{
-				Console.Error.WriteLine($"[LOADER][ERROR] Failed to write inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
-			}
-		}
-
-		if (patchedCount > 0)
-		{
-			Console.Error.WriteLine($"[LOADER][INFO] Successfully applied {patchedCount} inline HLE export detours.");
-		}
-	}
-
-	/// <summary>
-	/// Removes all applied inline HLE export detours, restoring the original guest machine code bytes.
-	/// </summary>
-	private void RemoveInlineHleDetours()
-	{
-		CpuContext? context = ActiveCpuContext;
-		if (context != null && TryGetVirtualMemory(context, out var virtualMemory) && virtualMemory != null)
-		{
-			foreach (KeyValuePair<ulong, byte[]> kvp in _inlineDetourBackup)
-			{
-				if (!virtualMemory.TryWrite(kvp.Key, kvp.Value))
-				{
-					Console.Error.WriteLine($"[LOADER][ERROR] Failed to restore original bytes during inline detour removal at 0x{kvp.Key:X16}");
-				}
-			}
-		}
-
-		_inlineDetourBackup.Clear();
 	}
 }

@@ -53,17 +53,17 @@ public class SyscallRouterTests
 
         var ctx = new CpuContext(new DummyMemory(), Generation.Gen5)
         {
-            Rax = 1, // sys_write
-            Rdi = 1, // stdout
-            Rsi = bufferAddress,
-            Rdx = (ulong)bytes.Length
+[CpuRegister.Rax] = 1, // sys_write
+[CpuRegister.Rdi] = 1, // stdout
+[CpuRegister.Rsi] = bufferAddress,
+[CpuRegister.Rdx] = (ulong)bytes.Length
         };
 
         // Act
         router.Dispatch(ctx);
 
         // Assert
-        Assert.Equal((ulong)bytes.Length, ctx.Rax);
+        Assert.Equal((ulong)bytes.Length, ctx[CpuRegister.Rax]);
     }
 
     /// <summary>
@@ -78,8 +78,8 @@ public class SyscallRouterTests
         
         var ctx = new CpuContext(new DummyMemory(), Generation.Gen5)
         {
-            Rax = 1, // sys_exit in FreeBSD
-            Rdi = 42, // Exit code
+[CpuRegister.Rax] = 1, // sys_exit in FreeBSD
+[CpuRegister.Rdi] = 42, // Exit code
             IsTerminated = false
         };
 
@@ -103,7 +103,7 @@ public class SyscallRouterTests
         
         var ctx = new CpuContext(new DummyMemory(), Generation.Gen5)
         {
-            Rax = 9999, // Unregistered syscall
+[CpuRegister.Rax] = 9999, // Unregistered syscall
         };
 
         // Act
@@ -111,7 +111,7 @@ public class SyscallRouterTests
 
         // Assert
         ulong expectedEnosys = unchecked((ulong)-38);
-        Assert.Equal(expectedEnosys, ctx.Rax);
+        Assert.Equal(expectedEnosys, ctx[CpuRegister.Rax]);
     }
 
     /// <summary>
@@ -126,7 +126,7 @@ public class SyscallRouterTests
         
         var ctx = new CpuContext(new DummyMemory(), Generation.Gen5)
         {
-            Rax = 9999, // Unregistered syscall
+[CpuRegister.Rax] = 9999, // Unregistered syscall
             CarryFlag = false
         };
 
@@ -134,7 +134,7 @@ public class SyscallRouterTests
         router.Dispatch(ctx);
 
         // Assert
-        Assert.Equal(78UL, ctx.Rax);
+        Assert.Equal(78UL, ctx[CpuRegister.Rax]);
         Assert.True(ctx.CarryFlag);
     }
 }

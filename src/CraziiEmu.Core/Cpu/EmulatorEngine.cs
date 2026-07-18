@@ -1658,9 +1658,9 @@ public class EmulatorEngine
             if (instruction.Op0Kind == OpKind.Register) srcValue = GetRegister(instruction.Op0Register);
             else if (instruction.Op0Kind == OpKind.Memory) srcValue = ReadMemory(ref instruction, GetMemoryAddress(ref instruction));
             
-            long result = (long)_context.Rax * (long)srcValue;
-            _context.Rax = (ulong)result;
-            _context.Rdx = (result < 0) ? ~(ulong)0 : 0; 
+            long result = (long)_context[CpuRegister.Rax] * (long)srcValue;
+            _context[CpuRegister.Rax] = (ulong)result;
+            _context[CpuRegister.Rdx] = (result < 0) ? ~(ulong)0 : 0; 
         }
         else if (instruction.OpCount == 2)
         {
@@ -1920,8 +1920,8 @@ public class EmulatorEngine
 
     private void HandleCdqe(ref Instruction instruction)
     {
-        ulong eax = _context.Rax & 0xFFFFFFFF;
-        _context.Rax = (ulong)(long)(int)eax;
+        ulong eax = _context[CpuRegister.Rax] & 0xFFFFFFFF;
+        _context[CpuRegister.Rax] = (ulong)(long)(int)eax;
     }
 
 
@@ -2338,17 +2338,17 @@ public class EmulatorEngine
     {
         ulong val = MapRegister(reg) switch
         {
-            CpuRegister.Rax => _context.Rax,
+            CpuRegister.Rax => _context[CpuRegister.Rax],
             CpuRegister.Rbx => _context[CpuRegister.Rbx],
             CpuRegister.Rcx => _context[CpuRegister.Rcx],
-            CpuRegister.Rdx => _context.Rdx,
-            CpuRegister.Rsi => _context.Rsi,
-            CpuRegister.Rdi => _context.Rdi,
+            CpuRegister.Rdx => _context[CpuRegister.Rdx],
+            CpuRegister.Rsi => _context[CpuRegister.Rsi],
+            CpuRegister.Rdi => _context[CpuRegister.Rdi],
             CpuRegister.Rbp => _context[CpuRegister.Rbp],
             CpuRegister.Rsp => _context[CpuRegister.Rsp],
-            CpuRegister.R8 => _context.R8,
-            CpuRegister.R9 => _context.R9,
-            CpuRegister.R10 => _context.R10,
+            CpuRegister.R8 => _context[CpuRegister.R8],
+            CpuRegister.R9 => _context[CpuRegister.R9],
+            CpuRegister.R10 => _context[CpuRegister.R10],
             CpuRegister.R11 => _context[CpuRegister.R11],
             CpuRegister.R12 => _context[CpuRegister.R12],
             CpuRegister.R13 => _context[CpuRegister.R13],
@@ -2372,17 +2372,17 @@ public class EmulatorEngine
         var mapped = MapRegister(reg);
         
         ulong currentValue = mapped switch {
-            CpuRegister.Rax => _context.Rax,
+            CpuRegister.Rax => _context[CpuRegister.Rax],
             CpuRegister.Rbx => _context[CpuRegister.Rbx],
             CpuRegister.Rcx => _context[CpuRegister.Rcx],
-            CpuRegister.Rdx => _context.Rdx,
-            CpuRegister.Rsi => _context.Rsi,
-            CpuRegister.Rdi => _context.Rdi,
+            CpuRegister.Rdx => _context[CpuRegister.Rdx],
+            CpuRegister.Rsi => _context[CpuRegister.Rsi],
+            CpuRegister.Rdi => _context[CpuRegister.Rdi],
             CpuRegister.Rbp => _context[CpuRegister.Rbp],
             CpuRegister.Rsp => _context[CpuRegister.Rsp],
-            CpuRegister.R8 => _context.R8,
-            CpuRegister.R9 => _context.R9,
-            CpuRegister.R10 => _context.R10,
+            CpuRegister.R8 => _context[CpuRegister.R8],
+            CpuRegister.R9 => _context[CpuRegister.R9],
+            CpuRegister.R10 => _context[CpuRegister.R10],
             CpuRegister.R11 => _context[CpuRegister.R11],
             CpuRegister.R12 => _context[CpuRegister.R12],
             CpuRegister.R13 => _context[CpuRegister.R13],
@@ -2407,17 +2407,17 @@ public class EmulatorEngine
 
         switch (mapped)
         {
-            case CpuRegister.Rax: _context.Rax = newValue; break;
+            case CpuRegister.Rax: _context[CpuRegister.Rax] = newValue; break;
             case CpuRegister.Rbx: _context[CpuRegister.Rbx] = newValue; break;
             case CpuRegister.Rcx: _context[CpuRegister.Rcx] = newValue; break;
-            case CpuRegister.Rdx: _context.Rdx = newValue; break;
-            case CpuRegister.Rsi: _context.Rsi = newValue; break;
-            case CpuRegister.Rdi: _context.Rdi = newValue; break;
+            case CpuRegister.Rdx: _context[CpuRegister.Rdx] = newValue; break;
+            case CpuRegister.Rsi: _context[CpuRegister.Rsi] = newValue; break;
+            case CpuRegister.Rdi: _context[CpuRegister.Rdi] = newValue; break;
             case CpuRegister.Rbp: _context[CpuRegister.Rbp] = newValue; break;
             case CpuRegister.Rsp: _context[CpuRegister.Rsp] = newValue; break;
-            case CpuRegister.R8: _context.R8 = newValue; break;
-            case CpuRegister.R9: _context.R9 = newValue; break;
-            case CpuRegister.R10: _context.R10 = newValue; break;
+            case CpuRegister.R8: _context[CpuRegister.R8] = newValue; break;
+            case CpuRegister.R9: _context[CpuRegister.R9] = newValue; break;
+            case CpuRegister.R10: _context[CpuRegister.R10] = newValue; break;
             case CpuRegister.R11: _context[CpuRegister.R11] = newValue; break;
             case CpuRegister.R12: _context[CpuRegister.R12] = newValue; break;
             case CpuRegister.R13: _context[CpuRegister.R13] = newValue; break;
@@ -2490,7 +2490,7 @@ public class EmulatorEngine
                 
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine($"Instruction execution failed: {output.ToString()} at RIP 0x{ripBefore:X}");
-                sb.AppendLine($"RAX: 0x{_context.Rax:X16} RBX: 0x{_context[CpuRegister.Rbx]:X16} RCX: 0x{_context[CpuRegister.Rcx]:X16}");
+                sb.AppendLine($"RAX: 0x{_context[CpuRegister.Rax]:X16} RBX: 0x{_context[CpuRegister.Rbx]:X16} RCX: 0x{_context[CpuRegister.Rcx]:X16}");
                 sb.AppendLine("Recent trace:");
                 for (int i = 0; i < 10; i++)
                 {

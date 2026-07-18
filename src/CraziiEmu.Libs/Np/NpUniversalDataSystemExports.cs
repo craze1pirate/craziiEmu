@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -195,6 +194,18 @@ public static class NpUniversalDataSystemExports
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceNpUniversalDataSystem")]
     public static int NpUniversalDataSystemDestroyHandle(CpuContext ctx)
+    {
+        return ctx.SetReturn(0, typeof(long));
+    }
+
+    // Telemetry property setter (event property array, string value). We do not
+    // upload analytics, so accept and drop it — matching the other Set* stubs.
+    [SysAbiExport(
+        Nid = "4llLk7YJRTE",
+        ExportName = "sceNpUniversalDataSystemEventPropertyArraySetString",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpUniversalDataSystem")]
+    public static int NpUniversalDataSystemEventPropertyArraySetString(CpuContext ctx)
     {
         return ctx.SetReturn(0, typeof(long));
     }

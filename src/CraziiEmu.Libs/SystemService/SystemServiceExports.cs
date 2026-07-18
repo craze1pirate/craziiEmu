@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -39,8 +38,8 @@ public static class SystemServiceExports
         }
 
         // No system notice screen to skip in the emulator; report "do not skip".
-        Span<byte> flagBytes = stackalloc byte[sizeof(int)];
-        BinaryPrimitives.WriteInt32LittleEndian(flagBytes, 0);
+        Span<byte> flagBytes = stackalloc byte[1];
+        flagBytes[0] = 0;
         return ctx.Memory.TryWrite(flagAddress, flagBytes)
             ? ctx.SetReturn(0)
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);

@@ -1,7 +1,7 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 
@@ -21,37 +21,40 @@ public sealed class CpuContext(ICpuMemory memory, Generation generation)
     public ulong Rip { get; set; }
 
     public ulong Rflags { get; set; }
+    public bool IsTerminated { get; set; }
+    public int ExitCode { get; set; }
+
+
+    public bool CarryFlag
+    {
+        get => (Rflags & 1) != 0;
+        set { if (value) Rflags |= 1; else Rflags &= ~1UL; }
+    }
+    public bool ZeroFlag
+    {
+        get => (Rflags & (1 << 6)) != 0;
+        set { if (value) Rflags |= (1 << 6); else Rflags &= ~(1UL << 6); }
+    }
+    public bool SignFlag
+    {
+        get => (Rflags & (1 << 7)) != 0;
+        set { if (value) Rflags |= (1 << 7); else Rflags &= ~(1UL << 7); }
+    }
+    public bool OverflowFlag
+    {
+        get => (Rflags & (1 << 11)) != 0;
+        set { if (value) Rflags |= (1 << 11); else Rflags &= ~(1UL << 11); }
+    }
 
     public ulong FsBase { get; set; }
 
     public ulong GsBase { get; set; }
 
+    /// <summary>x87 control word observed at the current guest boundary.</summary>
     public ushort FpuControlWord { get; set; } = 0x037F;
 
+    /// <summary>MXCSR observed at the current guest boundary.</summary>
     public uint Mxcsr { get; set; } = 0x1F80;
-
-    public ulong Rax { get => this[CpuRegister.Rax]; set => this[CpuRegister.Rax] = value; }
-    public ulong Rdi { get => this[CpuRegister.Rdi]; set => this[CpuRegister.Rdi] = value; }
-    public ulong Rsi { get => this[CpuRegister.Rsi]; set => this[CpuRegister.Rsi] = value; }
-    public ulong Rdx { get => this[CpuRegister.Rdx]; set => this[CpuRegister.Rdx] = value; }
-    public ulong R10 { get => this[CpuRegister.R10]; set => this[CpuRegister.R10] = value; }
-    public ulong R8 { get => this[CpuRegister.R8]; set => this[CpuRegister.R8] = value; }
-    public ulong R9 { get => this[CpuRegister.R9]; set => this[CpuRegister.R9] = value; }
-
-    public bool IsTerminated { get; set; }
-    public int ExitCode { get; set; }
-
-    /// <summary>Zero Flag — set when the last arithmetic/comparison result was zero.</summary>
-    public bool ZeroFlag { get; set; }
-
-    /// <summary>Sign Flag — set when the last arithmetic/comparison result was negative (bit 63 set).</summary>
-    public bool SignFlag { get; set; }
-
-    /// <summary>Overflow Flag — set when a signed arithmetic overflow occurred.</summary>
-    public bool OverflowFlag { get; set; }
-
-    /// <summary>Carry Flag — set when an unsigned arithmetic overflow occurred or bit shifted out.</summary>
-    public bool CarryFlag { get; set; }
 
     public ulong this[CpuRegister register]
     {
@@ -266,23 +269,63 @@ public sealed class CpuContext(ICpuMemory memory, Generation generation)
             return false;
         }
 
-        var bytes = new byte[capacity];
-        for (var index = 0; index < bytes.Length; index++)
+        const int StackBufferLength = 512;
+        const int ReadChunkLength = 128;
+        var rented = capacity > StackBufferLength ? ArrayPool<byte>.Shared.Rent(capacity) : null;
+        Span<byte> bytes = rented is null ? stackalloc byte[StackBufferLength] : rented;
+        try
         {
-            if (!Memory.TryRead(address + (ulong)index, bytes.AsSpan(index, 1)))
+            var length = 0;
+            while (length < capacity)
             {
-                return false;
+                // Bulk-read in bounded chunks rather than the full capacity: the string
+                // may end just before unmapped memory, and overreading past the
+                // terminator by more than a chunk could fault where the old
+                // byte-by-byte loop succeeded.
+                var chunk = Math.Min(ReadChunkLength, capacity - length);
+                var span = bytes.Slice(length, chunk);
+                if (Memory.TryRead(address + (ulong)length, span))
+                {
+                    var terminator = span.IndexOf((byte)0);
+                    if (terminator >= 0)
+                    {
+                        value = Encoding.UTF8.GetString(bytes[..(length + terminator)]);
+                        return true;
+                    }
+
+                    length += chunk;
+                    continue;
+                }
+
+                // The chunk touches an unreadable range; fall back to per-byte reads so a
+                // terminator sitting before the bad byte still yields the string.
+                for (var i = 0; i < chunk; i++)
+                {
+                    if (!Memory.TryRead(address + (ulong)(length + i), bytes.Slice(length + i, 1)))
+                    {
+                        return false;
+                    }
+
+                    if (bytes[length + i] == 0)
+                    {
+                        value = Encoding.UTF8.GetString(bytes[..(length + i)]);
+                        return true;
+                    }
+                }
+
+                length += chunk;
             }
 
-            if (bytes[index] == 0)
+            value = Encoding.UTF8.GetString(bytes[..capacity]);
+            return true;
+        }
+        finally
+        {
+            if (rented is not null)
             {
-                value = Encoding.UTF8.GetString(bytes, 0, index);
-                return true;
+                ArrayPool<byte>.Shared.Return(rented);
             }
         }
-
-        value = Encoding.UTF8.GetString(bytes);
-        return true;
     }
 
     public bool PushUInt64(ulong value)

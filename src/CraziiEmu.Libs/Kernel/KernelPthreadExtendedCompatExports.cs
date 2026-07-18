@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -1152,7 +1151,7 @@ public static class KernelPthreadExtendedCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
 
-        var currentThreadId = KernelPthreadState.GetCurrentThreadHandle(ctx);
+        var currentThreadId = KernelPthreadState.GetCurrentThreadHandle();
 
         try
         {
@@ -1315,7 +1314,7 @@ public static class KernelPthreadExtendedCompatExports
     {
         var key = unchecked((int)ctx[CpuRegister.Rdi]);
         var value = ctx[CpuRegister.Rsi];
-        var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle(ctx);
+        var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle();
         if (!_tlsKeys.ContainsKey(key))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -1344,7 +1343,7 @@ public static class KernelPthreadExtendedCompatExports
     public static int PosixPthreadGetspecific(CpuContext ctx)
     {
         var key = unchecked((int)ctx[CpuRegister.Rdi]);
-        var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle(ctx);
+        var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle();
         ulong value = 0;
         if (!_tlsKeys.ContainsKey(key))
         {
@@ -1447,7 +1446,7 @@ public static class KernelPthreadExtendedCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
         }
 
-        var currentThreadId = KernelPthreadState.GetCurrentThreadHandle(ctx);
+        var currentThreadId = KernelPthreadState.GetCurrentThreadHandle();
         lock (rwlock.SyncRoot)
         {
             if (write)

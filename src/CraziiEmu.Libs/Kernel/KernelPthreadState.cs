@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Collections.Concurrent;
@@ -25,7 +24,7 @@ internal static class KernelPthreadState
 
     internal readonly record struct ThreadIdentity(ulong UniqueId, string Name);
 
-    internal static ulong GetCurrentThreadHandle(CpuContext? ctx = null)
+    internal static ulong GetCurrentThreadHandle()
     {
         var guestThreadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
         if (guestThreadHandle != 0 && TryGetThreadIdentity(guestThreadHandle, out _))
@@ -33,11 +32,11 @@ internal static class KernelPthreadState
             return guestThreadHandle;
         }
 
-        EnsureCurrentThreadRegistered(ctx);
+        EnsureCurrentThreadRegistered();
         return _currentThreadHandle;
     }
 
-    internal static ulong GetCurrentThreadUniqueId(CpuContext? ctx = null)
+    internal static ulong GetCurrentThreadUniqueId()
     {
         var guestThreadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
         if (guestThreadHandle != 0 && TryGetThreadIdentity(guestThreadHandle, out var identity))
@@ -45,22 +44,22 @@ internal static class KernelPthreadState
             return identity.UniqueId;
         }
 
-        EnsureCurrentThreadRegistered(ctx);
+        EnsureCurrentThreadRegistered();
         return _currentThreadUniqueId;
     }
 
-    internal static ulong CreateThreadHandle(CpuContext? ctx, string name)
+    internal static ulong CreateThreadHandle(string name)
     {
         var uniqueId = unchecked((ulong)Interlocked.Increment(ref _nextUniqueThreadId));
-        return AllocateThreadHandle(ctx, uniqueId, name);
+        return AllocateThreadHandle(uniqueId, name);
     }
 
-    internal static bool TryGetThreadIdentity(ulong handle, out ThreadIdentity identity)
+    internal static bool TryGetThreadIdentity(ulong threadHandle, out ThreadIdentity identity)
     {
-        return Threads.TryGetValue(handle, out identity);
+        return Threads.TryGetValue(threadHandle, out identity);
     }
 
-    private static void EnsureCurrentThreadRegistered(CpuContext? ctx)
+    private static void EnsureCurrentThreadRegistered()
     {
         if (_currentThreadHandle != 0)
         {
@@ -69,20 +68,16 @@ internal static class KernelPthreadState
 
         var uniqueId = unchecked((ulong)Interlocked.Increment(ref _nextUniqueThreadId));
         var name = $"Thread-{uniqueId:X}";
-        _currentThreadHandle = AllocateThreadHandle(ctx, uniqueId, name);
+        _currentThreadHandle = AllocateThreadHandle(uniqueId, name);
         _currentThreadUniqueId = uniqueId;
     }
 
-    private static ulong AllocateThreadHandle(CpuContext? ctx, ulong uniqueId, string name)
+    private static ulong AllocateThreadHandle(ulong uniqueId, string name)
     {
-        ulong handle = 0;
-        if (ctx?.Memory is IGuestMemoryAllocator allocator &&
-            allocator.TryAllocateGuestMemory(ThreadObjectSize, 16, out var guestAddr))
-        {
-            ctx.Memory.TryWrite(guestAddr, ZeroThreadObject);
-            handle = guestAddr;
-        }
+        var pointer = Marshal.AllocHGlobal(ThreadObjectSize);
+        Marshal.Copy(ZeroThreadObject, 0, pointer, ThreadObjectSize);
 
+        var handle = unchecked((ulong)pointer.ToInt64());
         Threads[handle] = new ThreadIdentity(uniqueId, string.IsNullOrWhiteSpace(name) ? $"Thread-{uniqueId:X}" : name);
 
         return handle;

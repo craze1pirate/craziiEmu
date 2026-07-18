@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Runtime.InteropServices;
@@ -14,54 +13,38 @@ public static class HleDataSymbols
     private const string LibcNeedFlagNid = "P330P3dFF68";
     private const string LibcInternalNeedFlagNid = "ZT4ODD2Ts9o";
     private const int ProgNameMaxBytes = 511;
-    private const ulong StackChkGuardValue = 0xC0DEC0DECAFEBABEUL;
+    // Terminator canaries reserve the low byte as NUL. Keep the process data
+    // symbol and every per-thread TLS copy byte-for-byte identical.
+    private const ulong StackChkGuardValue = 0xC0DEC0DECAFEBA00UL;
 
     private static readonly object _gate = new();
-    private static ulong _stackChkGuardAddress;
-    private static ulong _progNameBufferAddress;
-    private static ulong _progNamePointerAddress;
-    private static ulong _libcNeedFlagAddress;
-    private static ulong _libcInternalNeedFlagAddress;
-    private static bool _isInitialized;
+    private static readonly nint _stackChkGuardAddress = Allocate(sizeof(ulong) * 2);
+    private static readonly nint _progNameBufferAddress = Allocate(ProgNameMaxBytes + 1);
+    private static readonly nint _progNamePointerAddress = Allocate(nint.Size);
+    private static readonly nint _libcNeedFlagAddress = Allocate(sizeof(uint));
+    private static readonly nint _libcInternalNeedFlagAddress = Allocate(sizeof(uint));
 
-    public static void InitializeGuestMemory(IGuestMemoryAllocator allocator, ICpuMemory memory)
+    static HleDataSymbols()
     {
-        lock (_gate)
+        if (_stackChkGuardAddress != 0)
         {
-            if (_isInitialized) return;
-
-            _stackChkGuardAddress = AllocateGuest(allocator, memory, sizeof(ulong) * 2);
-            _progNameBufferAddress = AllocateGuest(allocator, memory, ProgNameMaxBytes + 1);
-            _progNamePointerAddress = AllocateGuest(allocator, memory, 8);
-            _libcNeedFlagAddress = AllocateGuest(allocator, memory, sizeof(uint));
-            _libcInternalNeedFlagAddress = AllocateGuest(allocator, memory, sizeof(uint));
-
-            if (_stackChkGuardAddress != 0)
-            {
-                Span<byte> buf = stackalloc byte[16];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buf.Slice(0, 8), StackChkGuardValue);
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(buf.Slice(8, 8), StackChkGuardValue);
-                memory.TryWrite(_stackChkGuardAddress, buf);
-            }
-
-            if (_libcNeedFlagAddress != 0)
-            {
-                Span<byte> buf = stackalloc byte[4];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(buf, 1);
-                memory.TryWrite(_libcNeedFlagAddress, buf);
-            }
-
-            if (_libcInternalNeedFlagAddress != 0)
-            {
-                Span<byte> buf = stackalloc byte[4];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(buf, 1);
-                memory.TryWrite(_libcInternalNeedFlagAddress, buf);
-            }
-
-            _isInitialized = true;
+            Marshal.WriteInt64(_stackChkGuardAddress, unchecked((long)StackChkGuardValue));
+            Marshal.WriteInt64(
+                IntPtr.Add(_stackChkGuardAddress, sizeof(ulong)),
+                unchecked((long)StackChkGuardValue));
         }
 
-        ConfigureProcessImageName("eboot.bin", memory);
+        if (_libcNeedFlagAddress != 0)
+        {
+            Marshal.WriteInt32(_libcNeedFlagAddress, 1);
+        }
+
+        if (_libcInternalNeedFlagAddress != 0)
+        {
+            Marshal.WriteInt32(_libcInternalNeedFlagAddress, 1);
+        }
+
+        ConfigureProcessImageName("eboot.bin");
     }
 
     public static IEnumerable<string> EnumerateKnownNids()
@@ -72,7 +55,7 @@ public static class HleDataSymbols
         yield return LibcInternalNeedFlagNid;
     }
 
-    public static void ConfigureProcessImageName(string? processImageName, ICpuMemory? memory = null)
+    public static void ConfigureProcessImageName(string? processImageName)
     {
         var effectiveName = string.IsNullOrWhiteSpace(processImageName)
             ? "eboot.bin"
@@ -82,18 +65,18 @@ public static class HleDataSymbols
 
         lock (_gate)
         {
-            if (_progNameBufferAddress == 0 || _progNamePointerAddress == 0 || memory == null)
+            if (_progNameBufferAddress == 0 || _progNamePointerAddress == 0)
             {
                 return;
             }
 
-            Span<byte> emptyBytes = new byte[ProgNameMaxBytes + 1];
-            memory.TryWrite(_progNameBufferAddress, emptyBytes);
-            memory.TryWrite(_progNameBufferAddress, encodedName.AsSpan(0, byteCount));
+            for (var i = 0; i <= ProgNameMaxBytes; i++)
+            {
+                Marshal.WriteByte(_progNameBufferAddress, i, 0);
+            }
 
-            Span<byte> pointerBytes = stackalloc byte[8];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(pointerBytes, _progNameBufferAddress);
-            memory.TryWrite(_progNamePointerAddress, pointerBytes);
+            Marshal.Copy(encodedName, 0, _progNameBufferAddress, byteCount);
+            WritePointer(_progNamePointerAddress, _progNameBufferAddress);
         }
     }
 
@@ -105,7 +88,7 @@ public static class HleDataSymbols
             ProgNameNid => _progNamePointerAddress,
             LibcNeedFlagNid => _libcNeedFlagAddress,
             LibcInternalNeedFlagNid => _libcInternalNeedFlagAddress,
-            _ => 0UL,
+            _ => 0,
         };
 
         if (pointer == 0)
@@ -114,18 +97,26 @@ public static class HleDataSymbols
             return false;
         }
 
-        address = pointer;
+        address = unchecked((ulong)pointer);
         return true;
     }
 
-    private static ulong AllocateGuest(IGuestMemoryAllocator allocator, ICpuMemory memory, int size)
+    private static nint Allocate(int size)
     {
-        if (allocator.TryAllocateGuestMemory((ulong)size, 16, out var address))
+        try
         {
-            memory.TryWrite(address, new byte[size]);
-            return address;
+            var memory = Marshal.AllocHGlobal(size);
+            for (var i = 0; i < size; i++)
+            {
+                Marshal.WriteByte(memory, i, 0);
+            }
+
+            return memory;
         }
-        return 0;
+        catch
+        {
+            return 0;
+        }
     }
 
     private static void WritePointer(nint target, nint value)

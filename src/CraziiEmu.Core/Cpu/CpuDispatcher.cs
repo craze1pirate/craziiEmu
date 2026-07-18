@@ -1,9 +1,9 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers.Binary;
 using System.Text;
+using CraziiEmu.Core.Cpu.Debugging;
 using CraziiEmu.Core.Cpu.Native;
 using CraziiEmu.Core.Loader;
 using CraziiEmu.Core.Memory;
@@ -273,7 +273,23 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
             entryFrameDiagnostic,
             Environment.NewLine,
             "CpuEngine: native-only");
+        // Frame boundaries an attached debugger observes; null hook = a branch.
+        var debugHook = executionOptions.DebugHook;
+        var debugFrame = debugHook is null
+            ? null
+            : new CpuContextDebugFrame(
+                frameKind == EntryFrameKind.ProcessEntry
+                    ? CpuDebugFrameKind.ProcessEntry
+                    : CpuDebugFrameKind.ModuleInitializer,
+                entryPoint,
+                processImageName,
+                context,
+                effectiveImportStubs);
+        debugHook?.OnFrameEnter(debugFrame!);
+
         _nativeCpuBackend ??= new DirectExecutionBackend(_moduleManager);
+        // Let backend stall reports reference the same frame as entry.
+        (_nativeCpuBackend as DirectExecutionBackend)?.SetActiveDebugFrame(debugFrame);
         if (_nativeCpuBackend.TryExecute(
                 context,
                 entryPoint,
@@ -283,6 +299,7 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
                 executionOptions,
                 out var nativeResult))
         {
+            debugHook?.OnFrameExit(debugFrame!, nativeResult);
             LastSessionSummary = new CpuSessionSummary(
                 nativeResult,
                 nativeResult == OrbisGen2Result.ORBIS_GEN2_OK
@@ -296,6 +313,8 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
                 uniqueNidsHit: 0);
             return nativeResult;
         }
+
+        debugHook?.OnFrameExit(debugFrame!, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_IMPLEMENTED);
 
         var backendName = string.IsNullOrWhiteSpace(_nativeCpuBackend.BackendName)
             ? "native-backend"
@@ -694,10 +713,12 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         return _virtualMemory.TryWrite(address, buffer);
     }
 
-    public void ApplyInlineHleDetours()
-    {
-        _nativeCpuBackend?.ApplyInlineHleDetours();
-    }
+    /// <summary>
+    /// True when the disposed native backend left its session state alive
+    /// because guest workers were still executing guest code. The guest
+    /// address space must then stay mapped as well.
+    /// </summary>
+    internal bool NativeSessionLeaked { get; private set; }
 
     public void Dispose()
     {
@@ -706,6 +727,7 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
             disposableBackend.Dispose();
         }
 
+        NativeSessionLeaked = _nativeCpuBackend is DirectExecutionBackend { GuestSessionLeaked: true };
         _nativeCpuBackend = null;
     }
 }
