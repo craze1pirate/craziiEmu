@@ -320,12 +320,18 @@
                     Padding="0"
                     IsVisible="False">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="Console Output"
-                               FontSize="10"
-                               FontWeight="SemiBold"
-                               Foreground="#2A2A2A"
-                               Margin="14,6,0,2"/>
+                    <Grid DockPanel.Dock="Top" ColumnDefinitions="Auto,*">
+                        <TextBlock Text="Console Output"
+                                   FontSize="10"
+                                   FontWeight="SemiBold"
+                                   Foreground="#2A2A2A"
+                                   Margin="14,6,0,2"
+                                   VerticalAlignment="Center"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,14,0" Spacing="8">
+                            <Button x:Name="BtnCopyConsole" Content="📋 Copy" FontSize="10" Padding="4,2" Cursor="Hand" Background="Transparent" Foreground="#888888" BorderThickness="0" ToolTip.Tip="Copy all logs"/>
+                            <Button x:Name="BtnExportConsole" Content="Export" FontSize="10" Padding="4,2" Cursor="Hand" Background="Transparent" Foreground="#888888" BorderThickness="0" ToolTip.Tip="Export last 100 lines"/>
+                        </StackPanel>
+                    </Grid>
                     <ListBox x:Name="ConsoleOutput"
                              Focusable="False"
                              Background="Transparent"
@@ -333,6 +339,13 @@
                              Padding="14,4"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.Styles>
+                            <Style Selector="ListBoxItem">
+                                <Setter Property="MinHeight" Value="14"/>
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                            </Style>
+                        </ListBox.Styles>
                         <ListBox.ItemTemplate>
                             <DataTemplate x:CompileBindings="False">
                                 <TextBlock Text="{Binding Text}"

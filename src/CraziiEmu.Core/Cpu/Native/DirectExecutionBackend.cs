@@ -559,6 +559,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 					{
 						_work?.Invoke();
 					}
+					catch (Exception ex)
+					{
+						Console.Error.WriteLine($"[LOADER][ERROR] Unhandled exception in guest execution runner: {ex}");
+					}
 					finally
 					{
 						_workCompleted.Set();
@@ -647,7 +651,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 						work = _work;
 						_work = null;
 					}
-					work?.Invoke();
+					try
+					{
+						work?.Invoke();
+					}
+					catch (Exception ex)
+					{
+						Console.Error.WriteLine($"[LOADER][ERROR] Unhandled exception in guest execution dispatcher: {ex}");
+					}
 				}
 			}
 			finally
@@ -5941,7 +5952,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				Console.Error.WriteLine("[LOADER][ERROR] " + LastError);
 				LogStallWatchdogSnapshot();
 				Console.Error.Flush();
-				Environment.Exit(4);
+				_guestTeardownRequested = true;
+				_stallWatchdogStop = true;
 			}
 		}))
 		{

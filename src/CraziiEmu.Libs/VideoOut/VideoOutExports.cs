@@ -162,11 +162,7 @@ public static class VideoOutExports
         AudioOutExports.ShutdownAllPorts();
         Interlocked.Exchange(ref _vblankStopRequested, 1);
         HostSessionControl.RequestShutdown(reason);
-        ThreadPool.QueueUserWorkItem(static _ =>
-        {
-            Thread.Sleep(2000);
-            Environment.Exit(0);
-        });
+        // Removed aggressive Environment.Exit(0) to allow UI recovery.
     }
 
     private sealed class VideoOutPortState

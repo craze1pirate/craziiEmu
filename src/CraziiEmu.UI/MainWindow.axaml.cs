@@ -11,6 +11,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.Input.Platform;
 using System.Collections.ObjectModel;
 using CraziiEmu.Core.Cpu;
 using CraziiEmu.Core.Gpu;
@@ -74,6 +75,10 @@ public partial class MainWindow : Window
             InsertConsoleLine(line);
         });
         CraziiEmuLog.Sink = _logSink;
+        CraziiEmuLog.MinimumLevel = LogLevel.Debug;
+
+        BtnCopyConsole.Click += OnBtnCopyConsole;
+        BtnExportConsole.Click += OnBtnExportConsole;
 
         // ── Window chrome ──────────────────────────────────────────────
         BtnClose.Click    += (_, _) => Close();
@@ -808,6 +813,49 @@ public partial class MainWindow : Window
         if (isAtBottom)
         {
             ConsoleOutput.ScrollIntoView(line);
+        }
+    }
+
+    private async void OnBtnCopyConsole(object? sender, RoutedEventArgs e)
+    {
+        var text = string.Join(Environment.NewLine, ConsoleMessages.Select(m => m.Text));
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.Clipboard != null)
+        {
+            await topLevel.Clipboard.SetTextAsync(text);
+            AppendConsole("[UI] Console logs copied to clipboard.", "#00FF00");
+        }
+    }
+
+    private async void OnBtnExportConsole(object? sender, RoutedEventArgs e)
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider != null && topLevel.StorageProvider.CanSave)
+        {
+            var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "Export Console Logs",
+                DefaultExtension = "txt",
+                SuggestedFileName = $"CraziiEmu_Log_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+            });
+
+            if (file != null)
+            {
+                // Get last 100 lines
+                var lines = ConsoleMessages.Skip(Math.Max(0, ConsoleMessages.Count - 100)).Select(m => m.Text);
+                var text = string.Join(Environment.NewLine, lines);
+                try
+                {
+                    await using var stream = await file.OpenWriteAsync();
+                    using var writer = new StreamWriter(stream);
+                    await writer.WriteAsync(text);
+                    AppendConsole($"[UI] Logs exported to {file.Name}.", "#00FF00");
+                }
+                catch (Exception ex)
+                {
+                    AppendConsole($"[UI] Failed to export logs: {ex.Message}", "#FF0000");
+                }
+            }
         }
     }
 
