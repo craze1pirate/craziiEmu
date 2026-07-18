@@ -50,6 +50,12 @@ public interface IGuestThreadScheduler
     /// </summary>
     void RegisterGuestThreadContext(ulong threadHandle, CpuContext context);
 
+    /// <summary>
+    /// Removes a previously registered thread context when an external thread
+    /// (e.g. host audio worker) finishes executing a guest callback.
+    /// </summary>
+    void UnregisterGuestThreadContext(ulong threadHandle);
+
     bool TryStartThread(CpuContext creatorContext, GuestThreadStartRequest request, out string? error);
 
     bool TryJoinThread(

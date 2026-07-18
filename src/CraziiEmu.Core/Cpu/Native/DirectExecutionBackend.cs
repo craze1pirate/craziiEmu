@@ -3152,6 +3152,18 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 	}
 
+	public void UnregisterGuestThreadContext(ulong threadHandle)
+	{
+		using (LockGate("UnregisterGuestThreadContext"))
+		{
+			if (_guestThreads.TryGetValue(threadHandle, out var thread) && thread.IsExternalExecutor)
+			{
+				thread.State = GuestThreadRunState.Exited;
+				_guestThreads.Remove(threadHandle);
+			}
+		}
+	}
+
 	public bool SupportsGuestContextTransfer => true;
 
 	public bool TryJoinThread(
@@ -3668,6 +3680,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				_nestedGuestCallbackDepth--;
 			}
 			LastError = previousLastError;
+			var currentGuestHandle = GuestThreadExecution.CurrentGuestThreadHandle;
+			if (currentGuestHandle != 0)
+			{
+				UnregisterGuestThreadContext(currentGuestHandle);
+			}
 		}
 	}
 

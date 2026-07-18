@@ -56,17 +56,17 @@
       },
       "ELFSharp": {
         "type": "Direct",
-        "requested": "[2.17.3, )",
-        "resolved": "2.17.3",
-        "contentHash": "BFKpnrs3yKH/jo1yewQdvLKMkEaxE6Wj3Lu5LHRNJfcAdOQ9YiY4dfQ5+5kz6ji1E/Xcxy5ta+qqKGA6KiVQMw=="
+        "requested": "[2.17.1, )",
+        "resolved": "2.17.1",
+        "contentHash": "HaAgFlseUcR0UEfyNOoJMqlpAtWsb5Am9Rc3Ej20+eEXNzsM2kvEs/liuUMioCslge+9Z5J0YyaPReiYbTRNvw=="
       },
       "System.Management": {
         "type": "Direct",
-        "requested": "[10.0.9, )",
-        "resolved": "10.0.9",
-        "contentHash": "8mfTzHLlMHCqFE1+iFGzxRCeCb2gDqvRQtZthuksYB+z546QZaFCiagbJ2KXHe7dy5ZpCUg/usaIqc2DxiemPw==",
+        "requested": "[9.0.0, )",
+        "resolved": "9.0.0",
+        "contentHash": "bVh4xAMI5grY5GZoklKcMBLirhC8Lqzp63Ft3zXJacwGAlLyFdF4k0qz4pnKIlO6HyL2Z4zqmHm9UkzEo6FFsA==",
         "dependencies": {
-          "System.CodeDom": "10.0.9"
+          "System.CodeDom": "9.0.0"
         }
       },
       "Avalonia.Angle.Windows.Natives": {
@@ -287,13 +287,8 @@
       },
       "System.CodeDom": {
         "type": "Transitive",
-        "resolved": "10.0.9",
-        "contentHash": "scH7O8oAuOMyZKOEiOQB3ZVz6x9XkrZNKNeWVCxdvkJHSy4SYXyinGK0o2Rn5LiGh+ovezziT2WCdqWKa7WMKA=="
-      },
-      "Tmds.DBus.Protocol": {
-        "type": "Transitive",
-        "resolved": "0.92.0",
-        "contentHash": "h7IMakm0PF2jxiagoysoAjrzzLQ0UBdnSXQL5kb17YW0Fvyo12Tg96A99QkzwktWRrd7H+Uw9EzjasNLUfGYlA=="
+        "resolved": "9.0.0",
+        "contentHash": "oTE5IfuMoET8yaZP/vdvy9xO47guAv/rOhe4DODuFBN3ySprcQOlXqO3j+e/H/YpKKR5sglrxRaZ2HYOhNJrqA=="
       },
       "Ultz.Native.GLFW": {
         "type": "Transitive",
@@ -303,9 +298,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[1.0.0, )",
-          "CraziiEmu.Libs": "[1.0.0, )",
-          "CraziiEmu.Logging": "[1.0.0, )",
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
+          "CraziiEmu.Libs": "[0.0.2-beta.2, )",
+          "CraziiEmu.Logging": "[0.0.2-beta.2, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.OpenGL": "[2.23.0, )",
@@ -313,21 +308,38 @@
         }
       },
       "craziiemu.hle": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.Logging": "[0.0.2-beta.2, )"
+        }
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[1.0.0, )",
-          "CraziiEmu.Logging": "[1.0.0, )",
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
+          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.0.2-beta.2, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
+          "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )"
         }
       },
       "craziiemu.logging": {
         "type": "Project"
+      },
+      "craziiemu.shadercompiler": {
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )"
+        }
+      },
+      "craziiemu.shadercompiler.vulkan": {
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )"
+        }
       },
       "Iced": {
         "type": "CentralTransitive",
@@ -364,6 +376,16 @@
           "Silk.NET.Core": "2.23.0"
         }
       },
+      "Silk.NET.Vulkan.Extensions.EXT": {
+        "type": "CentralTransitive",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "+Oth189ksRiL6HvGCwIdnsYHawqrbO8y49u1H61z3wsfcHhQZeVDYe/wF5LD7fk3NcdgDvwFD3mLm1QWhdZySw==",
+        "dependencies": {
+          "Silk.NET.Core": "2.23.0",
+          "Silk.NET.Vulkan": "2.23.0"
+        }
+      },
       "Silk.NET.Vulkan.Extensions.KHR": {
         "type": "CentralTransitive",
         "requested": "[2.23.0, )",
@@ -383,6 +405,12 @@
           "Silk.NET.Windowing.Common": "2.23.0",
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
+      },
+      "Tmds.DBus.Protocol": {
+        "type": "CentralTransitive",
+        "requested": "[0.21.3, )",
+        "resolved": "0.92.0",
+        "contentHash": "h7IMakm0PF2jxiagoysoAjrzzLQ0UBdnSXQL5kb17YW0Fvyo12Tg96A99QkzwktWRrd7H+Uw9EzjasNLUfGYlA=="
       }
     }
   }
