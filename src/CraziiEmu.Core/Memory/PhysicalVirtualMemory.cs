@@ -5,14 +5,20 @@
 using System.Runtime.InteropServices;
 using CraziiEmu.Core.Loader;
 using CraziiEmu.HLE;
+using CraziiEmu.HLE.Host;
+using CraziiEmu.Logging;
 
 namespace CraziiEmu.Core.Memory;
 
-public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryAllocator, IDisposable
+public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryAllocator, IGuestAddressSpace, IDisposable
 {
+    private static readonly CraziiEmuLogger Log = CraziiEmuLog.For("VMEM");
+
     private readonly ReaderWriterLockSlim _gate = new(LockRecursionPolicy.SupportsRecursion);
     private readonly object _guestAllocationGate = new();
+    private readonly object _allocationSearchHintGate = new();
     private readonly List<MemoryRegion> _regions = new();
+    private readonly Dictionary<(ulong DesiredAddress, ulong Alignment, bool Executable), ulong> _allocationSearchHints = new();
     private readonly Dictionary<ulong, ProgramHeaderFlags> _pageProtections = new();
     private bool _disposed;
     private const ulong PageSize = 0x1000;
@@ -20,39 +26,131 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
     private const ulong GuestAllocationArenaSize = 0x0100_0000;
     private const ulong GuestAllocationArenaStartOffset = PageSize;
     private const ulong LargeDataReserveThreshold = 0x4000_0000UL; // 1 GiB
-    private const ulong LazyReservePrimeBytes = 0x5000_0000UL; // 1.25 GiB
+    private const ulong FullCommitRegionLimit = 4UL << 30;
+    private const ulong DefaultLazyReservePrimeBytes = 0x0400_0000UL; // 64 MiB
     private const ulong LazyReservePrimeChunkBytes = 0x0200_0000UL; // 32 MiB
 
-    private const uint MEM_COMMIT = 0x1000;
-    private const uint MEM_RESERVE = 0x2000;
-    private const uint MEM_RELEASE = 0x8000;
+    // Raw Windows PAGE_* values retained for the internal region/protection
+    // bookkeeping: regions and saved old-protection values always carry the raw
+    // value of the host platform in use, and these classification helpers only
+    // ever see values this class itself assigned (see IHostMemory.ProtectRaw).
     private const uint PAGE_EXECUTE_READ = 0x20;
     private const uint PAGE_EXECUTE_READWRITE = 0x40;
     private const uint PAGE_EXECUTE = 0x10;
     private const uint PAGE_EXECUTE_WRITECOPY = 0x80;
-    private const uint PAGE_NOACCESS = 0x01;
     private const uint PAGE_READWRITE = 0x04;
     private const uint PAGE_READONLY = 0x02;
 
+    private readonly IHostMemory _hostMemory;
     private ulong _guestAllocationArenaBase;
-    private ulong _guestAllocationOffset;
+    private readonly SortedDictionary<ulong, ulong> _guestAllocationFreeRanges = new();
+    private readonly Dictionary<ulong, (ulong Offset, ulong Size)> _guestAllocations = new();
+    private static readonly ulong LazyReservePrimeBytes = ResolveLazyReservePrimeBytes();
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void* VirtualAlloc(void* lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);
+    public PhysicalVirtualMemory(IHostMemory? hostMemory = null)
+    {
+        _hostMemory = hostMemory ?? CrossPlatformHostMemory.Instance;
+    }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool VirtualFree(void* lpAddress, nuint dwSize, uint dwFreeType);
+    private sealed class CrossPlatformHostMemory : IHostMemory
+    {
+        public static readonly CrossPlatformHostMemory Instance = new();
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool VirtualProtect(void* lpAddress, nuint dwSize, uint flNewProtect, out uint lpflOldProtect);
+        public ulong Allocate(ulong desiredAddress, ulong size, HostPageProtection protection) =>
+            unchecked((ulong)HostMemory.Alloc(
+                (void*)desiredAddress,
+                (nuint)size,
+                HostMemory.MEM_RESERVE | HostMemory.MEM_COMMIT,
+                ToRawProtection(protection)));
 
-    [DllImport("kernel32.dll")]
-    private static extern nuint VirtualQuery(void* lpAddress, out MemoryBasicInformation64 lpBuffer, nuint dwLength);
+        public ulong Reserve(ulong desiredAddress, ulong size, HostPageProtection protection) =>
+            unchecked((ulong)HostMemory.Alloc(
+                (void*)desiredAddress,
+                (nuint)size,
+                HostMemory.MEM_RESERVE,
+                ToRawProtection(protection)));
 
-    [DllImport("kernel32.dll")]
-    private static extern void FlushInstructionCache(void* hProcess, void* lpBaseAddress, nuint dwSize);
+        public bool Commit(ulong address, ulong size, HostPageProtection protection) =>
+            HostMemory.Alloc(
+                (void*)address,
+                (nuint)size,
+                HostMemory.MEM_COMMIT,
+                ToRawProtection(protection)) != null;
+
+        public bool Free(ulong address) =>
+            HostMemory.Free((void*)address, 0, HostMemory.MEM_RELEASE);
+
+        public bool Protect(
+            ulong address,
+            ulong size,
+            HostPageProtection protection,
+            out uint rawOldProtection) =>
+            HostMemory.Protect(
+                (void*)address,
+                (nuint)size,
+                ToRawProtection(protection),
+                out rawOldProtection);
+
+        public bool ProtectRaw(
+            ulong address,
+            ulong size,
+            uint rawProtection,
+            out uint rawOldProtection) =>
+            HostMemory.Protect((void*)address, (nuint)size, rawProtection, out rawOldProtection);
+
+        public bool Query(ulong address, out HostRegionInfo info)
+        {
+            if (HostMemory.Query((void*)address, out var raw) == 0)
+            {
+                info = default;
+                return false;
+            }
+
+            var state = raw.State switch
+            {
+                HostMemory.MEM_FREE_STATE => HostRegionState.Free,
+                HostMemory.MEM_RESERVE => HostRegionState.Reserved,
+                _ => HostRegionState.Committed,
+            };
+
+            info = new HostRegionInfo(
+                raw.BaseAddress,
+                raw.AllocationBase,
+                raw.RegionSize,
+                state,
+                raw.State,
+                FromRawProtection(raw.Protect),
+                raw.Protect,
+                raw.AllocationProtect);
+            return true;
+        }
+
+        public void FlushInstructionCache(ulong address, ulong size) =>
+            HostMemory.FlushInstructionCache((void*)address, (nuint)size);
+
+        private static uint ToRawProtection(HostPageProtection protection) => protection switch
+        {
+            HostPageProtection.NoAccess => HostMemory.PAGE_NOACCESS,
+            HostPageProtection.ReadOnly => HostMemory.PAGE_READONLY,
+            HostPageProtection.ReadWrite => HostMemory.PAGE_READWRITE,
+            HostPageProtection.Execute => HostMemory.PAGE_EXECUTE,
+            HostPageProtection.ReadExecute => HostMemory.PAGE_EXECUTE_READ,
+            HostPageProtection.ReadWriteExecute => HostMemory.PAGE_EXECUTE_READWRITE,
+            HostPageProtection.ExecuteWriteCopy => 0x80,
+            _ => HostMemory.PAGE_NOACCESS,
+        };
+
+        private static HostPageProtection FromRawProtection(uint protection) => protection switch
+        {
+            HostMemory.PAGE_READONLY => HostPageProtection.ReadOnly,
+            HostMemory.PAGE_READWRITE => HostPageProtection.ReadWrite,
+            HostMemory.PAGE_EXECUTE => HostPageProtection.Execute,
+            HostMemory.PAGE_EXECUTE_READ => HostPageProtection.ReadExecute,
+            HostMemory.PAGE_EXECUTE_READWRITE => HostPageProtection.ReadWriteExecute,
+            0x80 => HostPageProtection.ExecuteWriteCopy,
+            _ => HostPageProtection.NoAccess,
+        };
+    }
 
     public bool TryAllocateAtExact(ulong desiredAddress, ulong size, bool executable, out ulong actualAddress)
     {
@@ -64,17 +162,17 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
         var alignedSize = (size + 0xFFF) & ~0xFFFUL;
         var protection = executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
-        var allocationType = MEM_COMMIT | MEM_RESERVE;
-        var result = VirtualAlloc((void*)desiredAddress, (nuint)alignedSize, allocationType, protection);
-        if (result == null)
+        var hostProtection = executable ? HostPageProtection.ReadWriteExecute : HostPageProtection.ReadWrite;
+        var result = _hostMemory.Allocate(desiredAddress, alignedSize, hostProtection);
+        if (result == 0)
         {
             return false;
         }
 
-        actualAddress = (ulong)result;
+        actualAddress = result;
         if (actualAddress != desiredAddress)
         {
-            VirtualFree(result, 0, MEM_RELEASE);
+            _hostMemory.Free(result);
             actualAddress = 0;
             return false;
         }
@@ -97,8 +195,26 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         }
 
         var allocationKind = executable ? "executable memory" : "data memory";
-        Console.Error.WriteLine($"[VMEM] Allocated exact {allocationKind}: 0x{actualAddress:X16} - 0x{actualAddress + alignedSize:X16} ({alignedSize} bytes)");
+        TraceVmem($"Allocated exact {allocationKind}: 0x{actualAddress:X16} - 0x{actualAddress + alignedSize:X16} ({alignedSize} bytes)");
         return true;
+    }
+
+    public string DescribeAddressForDiagnostics(ulong address)
+    {
+        if (!_hostMemory.Query(address, out var info))
+        {
+            return "unable to query host memory at this address";
+        }
+
+        return info.State switch
+        {
+            HostRegionState.Free => "address reports free, but the exact-address reservation still failed",
+            HostRegionState.Reserved =>
+                $"already reserved by another host allocation (base=0x{info.AllocationBase:X16}, size=0x{info.RegionSize:X})",
+            HostRegionState.Committed =>
+                $"already committed by another host allocation (base=0x{info.AllocationBase:X16}, size=0x{info.RegionSize:X}, protect=0x{info.RawProtection:X})",
+            _ => $"in an unexpected host state (raw=0x{info.RawState:X})",
+        };
     }
 
     public ulong AllocateAt(ulong desiredAddress, ulong size, bool executable = true, bool allowAlternative = true)
@@ -109,64 +225,66 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         var alignedSize = (size + 0xFFF) & ~0xFFFUL;
 
         var protection = executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
-        var allocationType = MEM_COMMIT | MEM_RESERVE;
+        var hostProtection = executable ? HostPageProtection.ReadWriteExecute : HostPageProtection.ReadWrite;
         var reservedOnly = false;
-        var preferReserveOnly = !executable && alignedSize >= LargeDataReserveThreshold;
+        var preferReserveOnly = !executable &&
+            alignedSize >= LargeDataReserveThreshold &&
+            alignedSize > FullCommitRegionLimit;
 
-        void* result = null;
+        ulong result = 0;
         if (preferReserveOnly)
         {
-            result = VirtualAlloc((void*)desiredAddress, (nuint)alignedSize, MEM_RESERVE, PAGE_READWRITE);
-            if (result == null && allowAlternative)
+            result = _hostMemory.Reserve(desiredAddress, alignedSize, HostPageProtection.ReadWrite);
+            if (result == 0 && allowAlternative)
             {
-                result = VirtualAlloc(null, (nuint)alignedSize, MEM_RESERVE, PAGE_READWRITE);
+                result = _hostMemory.Reserve(0, alignedSize, HostPageProtection.ReadWrite);
             }
 
-            if (result != null)
+            if (result != 0)
             {
                 reservedOnly = true;
             }
         }
 
-        if (result == null)
+        if (result == 0)
         {
-            result = VirtualAlloc((void*)desiredAddress, (nuint)alignedSize, allocationType, protection);
+            result = _hostMemory.Allocate(desiredAddress, alignedSize, hostProtection);
         }
 
-        if (result == null)
+        if (result == 0)
         {
             if (!allowAlternative)
             {
                 throw new InvalidOperationException($"Failed to allocate exact mapping at 0x{desiredAddress:X16} ({alignedSize} bytes)");
             }
 
-            Console.Error.WriteLine($"[VMEM] Could not allocate at 0x{desiredAddress:X16}, trying any address...");
-            result = VirtualAlloc(null, (nuint)alignedSize, allocationType, protection);
+            TraceVmem($"Could not allocate at 0x{desiredAddress:X16}, trying any address...");
+            result = _hostMemory.Allocate(0, alignedSize, hostProtection);
 
-            if (result == null)
+            if (result == 0)
             {
                 if (!executable)
                 {
-                    result = VirtualAlloc((void*)desiredAddress, (nuint)alignedSize, MEM_RESERVE, PAGE_READWRITE);
-                    if (result == null && allowAlternative)
+                    result = _hostMemory.Reserve(desiredAddress, alignedSize, HostPageProtection.ReadWrite);
+                    if (result == 0 && allowAlternative)
                     {
-                        result = VirtualAlloc(null, (nuint)alignedSize, MEM_RESERVE, PAGE_READWRITE);
+                        result = _hostMemory.Reserve(0, alignedSize, HostPageProtection.ReadWrite);
                     }
 
-                    if (result != null)
+                    if (result != 0)
                     {
                         reservedOnly = true;
                     }
                 }
 
-                if (result == null)
+                if (result == 0)
                 {
                     throw new OutOfMemoryException($"Failed to allocate {alignedSize} bytes of virtual memory");
                 }
             }
         }
 
-        var actualAddress = (ulong)result;
+        var actualAddress = result;
 
         var lazyPrimeState = "n/a";
         if (reservedOnly)
@@ -179,9 +297,8 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 {
                     var remaining = primeBytes - committedBytes;
                     var chunkBytes = Math.Min(remaining, LazyReservePrimeChunkBytes);
-                    var commitAddress = (void*)(actualAddress + committedBytes);
-                    var committed = VirtualAlloc(commitAddress, (nuint)chunkBytes, MEM_COMMIT, PAGE_READWRITE);
-                    if (committed == null)
+                    var commitAddress = actualAddress + committedBytes;
+                    if (!_hostMemory.Commit(commitAddress, chunkBytes, HostPageProtection.ReadWrite))
                     {
                         break;
                     }
@@ -194,12 +311,12 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                     lazyPrimeState = committedBytes == primeBytes
                         ? $"ok:{committedBytes:X}"
                         : $"partial:{committedBytes:X}/{primeBytes:X}";
-                    Console.Error.WriteLine($"[VMEM] Primed lazy region: 0x{actualAddress:X16} - 0x{actualAddress + committedBytes:X16} ({committedBytes} bytes)");
+                    TraceVmem($"Primed lazy region: 0x{actualAddress:X16} - 0x{actualAddress + committedBytes:X16} ({committedBytes} bytes)");
                 }
                 else
                 {
                     lazyPrimeState = $"fail:{primeBytes:X}";
-                    Console.Error.WriteLine($"[VMEM] Failed to prime lazy region at 0x{actualAddress:X16} ({primeBytes} bytes), continuing with on-demand commit");
+                    TraceVmem($"Failed to prime lazy region at 0x{actualAddress:X16} ({primeBytes} bytes), continuing with on-demand commit");
                 }
             }
             else
@@ -228,7 +345,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         var allocationKind = reservedOnly
             ? "reserved data memory (lazy commit)"
             : (executable ? "executable memory" : "data memory");
-        Console.Error.WriteLine($"[VMEM] Allocated {allocationKind}: 0x{actualAddress:X16} - 0x{actualAddress + alignedSize:X16} ({alignedSize} bytes) lazy_prime={lazyPrimeState}");
+        TraceVmem($"Allocated {allocationKind}: 0x{actualAddress:X16} - 0x{actualAddress + alignedSize:X16} ({alignedSize} bytes) lazy_prime={lazyPrimeState}");
 
         return actualAddress;
     }
@@ -248,7 +365,37 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
         var alignedSize = AlignUp(size, PageSize);
         var effectiveAlignment = Math.Max(PageSize, alignment == 0 ? PageSize : alignment);
-        var cursor = AlignUp(desiredAddress, effectiveAlignment);
+        var requestedCursor = AlignUp(desiredAddress, effectiveAlignment);
+        var cursor = GetAllocationSearchCursor(desiredAddress, requestedCursor, effectiveAlignment, executable);
+
+        // macOS needs alignment over-allocation; Linux uses exact-address search.
+        if (OperatingSystem.IsMacOS())
+        {
+            var reserveSize = effectiveAlignment > PageSize
+                ? alignedSize + effectiveAlignment
+                : alignedSize;
+            try
+            {
+                var posixAddress = AllocateAt(cursor, reserveSize, executable, allowAlternative: true);
+                if (posixAddress != 0)
+                {
+                    var alignedBase = AlignUp(posixAddress, effectiveAlignment);
+                    if (alignedBase + alignedSize <= posixAddress + reserveSize)
+                    {
+                        actualAddress = alignedBase;
+                        UpdateAllocationSearchCursor(desiredAddress, effectiveAlignment, executable, alignedBase + alignedSize);
+                        return true;
+                    }
+
+                    ReleaseUntrackedAllocation(posixAddress);
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
 
         for (var attempt = 0; attempt < 0x10000; attempt++)
         {
@@ -263,24 +410,38 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 continue;
             }
 
-            try
+            if (TryAllocateAtExact(cursor, alignedSize, executable, out actualAddress))
             {
-                actualAddress = AllocateAt(cursor, alignedSize, executable, allowAlternative: false);
-                if (actualAddress == cursor)
-                {
-                    return true;
-                }
-
-                actualAddress = 0;
-            }
-            catch
-            {
+                UpdateAllocationSearchCursor(desiredAddress, effectiveAlignment, executable, actualAddress + alignedSize);
+                return true;
             }
 
             cursor = AlignUp(cursor + effectiveAlignment, effectiveAlignment);
         }
 
         return false;
+    }
+
+    private void ReleaseUntrackedAllocation(ulong address)
+    {
+        _gate.EnterWriteLock();
+        try
+        {
+            for (var i = 0; i < _regions.Count; i++)
+            {
+                if (_regions[i].VirtualAddress == address)
+                {
+                    _regions.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+
+        _hostMemory.Free(address);
     }
 
     public bool TryAllocateGuestMemory(ulong size, ulong alignment, out ulong address)
@@ -302,7 +463,9 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                         GuestAllocationArenaSize,
                         executable: false,
                         allowAlternative: true);
-                    _guestAllocationOffset = GuestAllocationArenaStartOffset;
+                    _guestAllocationFreeRanges.Add(
+                        GuestAllocationArenaStartOffset,
+                        GuestAllocationArenaSize - GuestAllocationArenaStartOffset);
                 }
                 catch (Exception)
                 {
@@ -310,16 +473,126 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 }
             }
 
-            var alignedOffset = AlignUp(_guestAllocationOffset, alignment);
-            if (alignedOffset > GuestAllocationArenaSize || size > GuestAllocationArenaSize - alignedOffset)
+            ulong rangeOffset = 0;
+            ulong rangeSize = 0;
+            ulong alignedOffset = 0;
+            var found = false;
+            foreach (var range in _guestAllocationFreeRanges)
+            {
+                alignedOffset = AlignUp(range.Key, alignment);
+                if (alignedOffset >= range.Key &&
+                    alignedOffset - range.Key <= range.Value &&
+                    size <= range.Value - (alignedOffset - range.Key))
+                {
+                    rangeOffset = range.Key;
+                    rangeSize = range.Value;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
             {
                 return false;
             }
 
+            _guestAllocationFreeRanges.Remove(rangeOffset);
+            if (alignedOffset > rangeOffset)
+            {
+                _guestAllocationFreeRanges.Add(rangeOffset, alignedOffset - rangeOffset);
+            }
+
+            var allocationEnd = alignedOffset + size;
+            var rangeEnd = rangeOffset + rangeSize;
+            if (allocationEnd < rangeEnd)
+            {
+                _guestAllocationFreeRanges.Add(allocationEnd, rangeEnd - allocationEnd);
+            }
+
             address = _guestAllocationArenaBase + alignedOffset;
-            _guestAllocationOffset = alignedOffset + size;
+            _guestAllocations.Add(address, (alignedOffset, size));
             return true;
         }
+    }
+
+    public bool TryFreeGuestMemory(ulong address)
+    {
+        lock (_guestAllocationGate)
+        {
+            if (!_guestAllocations.Remove(address, out var allocation))
+            {
+                return false;
+            }
+
+            var freeOffset = allocation.Offset;
+            var freeSize = allocation.Size;
+            ulong? previousOffset = null;
+            ulong? nextOffset = null;
+
+            foreach (var range in _guestAllocationFreeRanges)
+            {
+                if (range.Key < freeOffset)
+                {
+                    previousOffset = range.Key;
+                    continue;
+                }
+
+                nextOffset = range.Key;
+                break;
+            }
+
+            if (previousOffset is { } previous &&
+                previous + _guestAllocationFreeRanges[previous] == freeOffset)
+            {
+                freeOffset = previous;
+                freeSize += _guestAllocationFreeRanges[previous];
+                _guestAllocationFreeRanges.Remove(previous);
+            }
+
+            if (nextOffset is { } next && freeOffset + freeSize == next)
+            {
+                freeSize += _guestAllocationFreeRanges[next];
+                _guestAllocationFreeRanges.Remove(next);
+            }
+
+            _guestAllocationFreeRanges.Add(freeOffset, freeSize);
+            return true;
+        }
+    }
+
+    public bool TryProtect(ulong address, ulong size, GuestPageProtection protection)
+    {
+        if (size == 0)
+        {
+            return false;
+        }
+
+        return _hostMemory.Protect(address, size, ResolveProtection(protection), out _);
+    }
+
+    // Reproduces the decomposition KernelMemoryCompatExports.ResolveHostProtection
+    // performed before this seam existed; the Windows backend maps each case back
+    // to the identical PAGE_* value.
+    private static HostPageProtection ResolveProtection(GuestPageProtection protection)
+    {
+        var read = (protection & GuestPageProtection.Read) != 0;
+        var write = (protection & GuestPageProtection.Write) != 0;
+        var execute = (protection & GuestPageProtection.Execute) != 0;
+
+        if (execute)
+        {
+            return write
+                ? HostPageProtection.ReadWriteExecute
+                : read
+                    ? HostPageProtection.ReadExecute
+                    : HostPageProtection.Execute;
+        }
+
+        return write
+            ? HostPageProtection.ReadWrite
+            : read
+                ? HostPageProtection.ReadOnly
+                : HostPageProtection.NoAccess;
     }
 
     public void Clear()
@@ -331,10 +604,14 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             {
                 foreach (var region in _regions)
                 {
-                    VirtualFree((void*)region.VirtualAddress, 0, MEM_RELEASE);
+                    _hostMemory.Free(region.VirtualAddress);
                 }
                 _regions.Clear();
                 _pageProtections.Clear();
+                lock (_allocationSearchHintGate)
+                {
+                    _allocationSearchHints.Clear();
+                }
             }
             finally
             {
@@ -342,7 +619,8 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             }
 
             _guestAllocationArenaBase = 0;
-            _guestAllocationOffset = 0;
+            _guestAllocationFreeRanges.Clear();
+            _guestAllocations.Clear();
         }
     }
 
@@ -391,7 +669,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
             ApplySegmentProtection(mapStart, mapEnd, protection);
 
-            Console.Error.WriteLine($"[VMEM] Mapped segment: 0x{virtualAddress:X16} - 0x{virtualAddress + memorySize:X16} (file: {fileData.Length} bytes, prot: {protection})");
+            TraceVmem($"Mapped segment: 0x{virtualAddress:X16} - 0x{virtualAddress + memorySize:X16} (file: {fileData.Length} bytes, prot: {protection})");
         }
         finally
         {
@@ -401,46 +679,67 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
     private void ApplySegmentProtection(ulong mapStart, ulong mapEnd, ProgramHeaderFlags flags)
     {
+        var runStart = mapStart;
+        var runFlags = ProgramHeaderFlags.None;
+        var hasRun = false;
+
         for (var pageAddress = mapStart; pageAddress < mapEnd; pageAddress += PageSize)
         {
             _pageProtections.TryGetValue(pageAddress, out var existingFlags);
             var mergedFlags = existingFlags | flags;
             _pageProtections[pageAddress] = mergedFlags;
-            SetProtection(pageAddress, PageSize, mergedFlags);
+
+            if (!hasRun)
+            {
+                runStart = pageAddress;
+                runFlags = mergedFlags;
+                hasRun = true;
+            }
+            else if (mergedFlags != runFlags)
+            {
+                SetProtection(runStart, pageAddress - runStart, runFlags);
+                runStart = pageAddress;
+                runFlags = mergedFlags;
+            }
+        }
+
+        if (hasRun)
+        {
+            SetProtection(runStart, mapEnd - runStart, runFlags);
         }
     }
 
     private void SetProtection(ulong address, ulong size, ProgramHeaderFlags flags)
     {
-        uint protection;
+        HostPageProtection protection;
 
         if (flags == ProgramHeaderFlags.None)
         {
-            protection = PAGE_NOACCESS;
+            protection = HostPageProtection.NoAccess;
         }
         else if ((flags & ProgramHeaderFlags.Execute) != 0)
         {
             protection = (flags & ProgramHeaderFlags.Write) != 0
-                ? PAGE_EXECUTE_READWRITE
-                : PAGE_EXECUTE_READ;
+                ? HostPageProtection.ReadWriteExecute
+                : HostPageProtection.ReadExecute;
         }
         else if ((flags & ProgramHeaderFlags.Write) != 0)
         {
-            protection = PAGE_READWRITE;
+            protection = HostPageProtection.ReadWrite;
         }
         else
         {
-            protection = PAGE_READONLY;
+            protection = HostPageProtection.ReadOnly;
         }
 
-        if (!VirtualProtect((void*)address, (nuint)size, protection, out _))
+        if (!_hostMemory.Protect(address, size, protection, out _))
         {
             throw new InvalidOperationException($"Failed to set memory protection at 0x{address:X16}");
         }
 
         if ((flags & ProgramHeaderFlags.Execute) != 0)
         {
-            FlushInstructionCache(null, (void*)address, (nuint)size);
+            _hostMemory.FlushInstructionCache(address, size);
         }
     }
 
@@ -529,6 +828,47 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         finally
         {
             _gate.ExitWriteLock();
+        }
+    }
+
+    public bool TryCompare(ulong virtualAddress, ReadOnlySpan<byte> expected)
+    {
+        _gate.EnterReadLock();
+        try
+        {
+            var region = FindRegion(virtualAddress, (ulong)expected.Length);
+            if (region is null ||
+                !TryResolveRegionOffset(
+                    virtualAddress,
+                    (ulong)expected.Length,
+                    region,
+                    out var offset))
+            {
+                return false;
+            }
+
+            if (expected.IsEmpty)
+            {
+                return true;
+            }
+
+            var srcPtr = (void*)(region.VirtualAddress + offset);
+            if (region.IsReservedOnly &&
+                !EnsureRangeCommitted((ulong)srcPtr, (ulong)expected.Length, region))
+            {
+                return false;
+            }
+
+            if (!CanReadWithoutProtectionChange((ulong)srcPtr, (ulong)expected.Length, region))
+            {
+                return false;
+            }
+
+            return new ReadOnlySpan<byte>(srcPtr, expected.Length).SequenceEqual(expected);
+        }
+        finally
+        {
+            _gate.ExitReadLock();
         }
     }
 
@@ -671,7 +1011,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 return true;
             }
 
-            if (!VirtualProtect(destPtr, (nuint)source.Length, PAGE_EXECUTE_READWRITE, out var oldProtect))
+            if (!_hostMemory.Protect((ulong)destPtr, (ulong)source.Length, HostPageProtection.ReadWriteExecute, out var oldProtect))
             {
                 return false;
             }
@@ -685,10 +1025,10 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             }
             finally
             {
-                VirtualProtect(destPtr, (nuint)source.Length, oldProtect, out _);
+                _hostMemory.ProtectRaw((ulong)destPtr, (ulong)source.Length, oldProtect, out _);
                 if (IsExecutableProtection(oldProtect))
                 {
-                    FlushInstructionCache(null, destPtr, (nuint)source.Length);
+                    _hostMemory.FlushInstructionCache((ulong)destPtr, (ulong)source.Length);
                 }
             }
 
@@ -710,9 +1050,14 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         _gate.EnterReadLock();
         try
         {
-            return FindRegion(virtualAddress, 1) is not null
-                ? (void*)virtualAddress
-                : null;
+            var region = FindRegion(virtualAddress, 1);
+            if (region is null ||
+                (region.IsReservedOnly && !EnsureRangeCommitted(virtualAddress, 1, region)))
+            {
+                return null;
+            }
+
+            return (void*)virtualAddress;
         }
         finally
         {
@@ -794,6 +1139,16 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             foreach (var region in _regions)
             {
                 var regionEnd = region.VirtualAddress + region.Size;
+                if (region.VirtualAddress >= end)
+                {
+                    break;
+                }
+
+                if (regionEnd <= address)
+                {
+                    continue;
+                }
+
                 if (address < regionEnd && region.VirtualAddress < end)
                 {
                     overlapEnd = Math.Max(overlapEnd, regionEnd);
@@ -806,6 +1161,37 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         }
 
         return overlapEnd != 0;
+    }
+
+    private ulong GetAllocationSearchCursor(
+        ulong desiredAddress,
+        ulong requestedCursor,
+        ulong alignment,
+        bool executable)
+    {
+        lock (_allocationSearchHintGate)
+        {
+            var key = (desiredAddress, alignment, executable);
+            if (_allocationSearchHints.TryGetValue(key, out var hintedCursor) &&
+                hintedCursor > requestedCursor)
+            {
+                return AlignUp(hintedCursor, alignment);
+            }
+        }
+
+        return requestedCursor;
+    }
+
+    private void UpdateAllocationSearchCursor(
+        ulong desiredAddress,
+        ulong alignment,
+        bool executable,
+        ulong nextCursor)
+    {
+        lock (_allocationSearchHintGate)
+        {
+            _allocationSearchHints[(desiredAddress, alignment, executable)] = AlignUp(nextCursor, alignment);
+        }
     }
 
     private static bool TryResolveRegionOffset(ulong address, ulong size, MemoryRegion region, out ulong offset)
@@ -873,12 +1259,12 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         return protection is PAGE_READWRITE or PAGE_EXECUTE_READWRITE;
     }
 
-    private static uint GetCommitProtection(MemoryRegion region)
+    private static HostPageProtection GetCommitProtection(MemoryRegion region)
     {
-        return region.IsExecutable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
+        return region.IsExecutable ? HostPageProtection.ReadWriteExecute : HostPageProtection.ReadWrite;
     }
 
-    private static unsafe bool EnsureRangeCommitted(ulong address, ulong size, MemoryRegion region)
+    private bool EnsureRangeCommitted(ulong address, ulong size, MemoryRegion region)
     {
         if (size == 0 || !region.IsReservedOnly)
         {
@@ -892,7 +1278,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         var pageAddress = startPage;
         while (pageAddress < endPage)
         {
-            if (VirtualQuery((void*)pageAddress, out var info, (nuint)sizeof(MemoryBasicInformation64)) == 0)
+            if (!_hostMemory.Query(pageAddress, out var info))
             {
                 return false;
             }
@@ -906,19 +1292,19 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 return false;
             }
 
-            if (info.State == MEM_COMMIT)
+            if (info.State == HostRegionState.Committed)
             {
                 pageAddress = rangeEnd;
                 continue;
             }
 
-            if (info.State != MEM_RESERVE)
+            if (info.State != HostRegionState.Reserved)
             {
                 return false;
             }
 
             var commitSize = rangeEnd - pageAddress;
-            if (VirtualAlloc((void*)pageAddress, (nuint)commitSize, MEM_COMMIT, commitProtection) == null)
+            if (!_hostMemory.Commit(pageAddress, commitSize, commitProtection))
             {
                 return false;
             }
@@ -939,11 +1325,11 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
         var startPage = AlignDown(address, PageSize);
         var endPage = AlignUp(address + size, PageSize);
-        var temporaryProtection = region.IsExecutable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
+        var temporaryProtection = region.IsExecutable ? HostPageProtection.ReadWriteExecute : HostPageProtection.ReadWrite;
 
         for (var pageAddress = startPage; pageAddress < endPage; pageAddress += PageSize)
         {
-            if (!VirtualProtect((void*)pageAddress, (nuint)PageSize, temporaryProtection, out var oldProtection))
+            if (!_hostMemory.Protect(pageAddress, PageSize, temporaryProtection, out var oldProtection))
             {
                 RestorePageProtections(touchedPages);
                 touchedPages.Clear();
@@ -956,11 +1342,11 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         return true;
     }
 
-    private static void RestorePageProtections(List<(ulong Address, uint Protection)> touchedPages)
+    private void RestorePageProtections(List<(ulong Address, uint Protection)> touchedPages)
     {
         foreach (var (pageAddress, protection) in touchedPages)
         {
-            VirtualProtect((void*)pageAddress, (nuint)PageSize, protection, out _);
+            _hostMemory.ProtectRaw(pageAddress, PageSize, protection, out _);
         }
     }
 
@@ -974,6 +1360,29 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
     {
         var mask = alignment - 1;
         return checked((value + mask) & ~mask);
+    }
+
+    private static ulong ResolveLazyReservePrimeBytes()
+    {
+        var configured = Environment.GetEnvironmentVariable("CRAZIIEMU_LAZY_RESERVE_PRIME_MB");
+        if (ulong.TryParse(configured, out var megabytes))
+        {
+            return megabytes == 0
+                ? 0
+                : checked(Math.Min(megabytes, 4096UL) * 1024UL * 1024UL);
+        }
+
+        return DefaultLazyReservePrimeBytes;
+    }
+
+    private static void TraceVmem(string message)
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_VMEM"), "1", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Log.Debug(message);
     }
 
     public void Dispose()
@@ -994,16 +1403,4 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         public uint Protection { get; set; }
     }
 
-    private struct MemoryBasicInformation64
-    {
-        public ulong BaseAddress;
-        public ulong AllocationBase;
-        public uint AllocationProtect;
-        public uint Alignment1;
-        public ulong RegionSize;
-        public uint State;
-        public uint Protect;
-        public uint Type;
-        public uint Alignment2;
-    }
 }

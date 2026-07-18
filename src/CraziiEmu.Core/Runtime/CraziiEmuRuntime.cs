@@ -12,6 +12,8 @@ using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.Libs.Kernel;
 using CraziiEmu.Libs.AppContent;
 using CraziiEmu.Libs.SaveData;
+using CraziiEmu.Libs.Fiber;
+using CraziiEmu.Libs.SystemService;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,7 +23,7 @@ namespace CraziiEmu.Core.Runtime;
 
 public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 {
-    private readonly record struct LoadedModuleImage(string Path, SelfImage Image);
+    private readonly record struct LoadedModuleImage(string Path, SelfImage Image, int Handle, bool StartAtBoot);
 
     private static readonly HashSet<string> PreloadSkipModules = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -80,8 +82,9 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             ImportTraceLimit = Math.Max(0, options.ImportTraceLimit),
         };
         var moduleManager = new ModuleManager();
-        moduleManager.RegisterFromAssembly(typeof(VideoOutExports).Assembly, Generation.Gen4 | Generation.Gen5, Aerolib.Instance);
-        moduleManager.RegisterFromAssembly(typeof(KernelExports).Assembly, Generation.Gen4 | Generation.Gen5, Aerolib.Instance);
+        // The compile-time generated registry (CraziiEmu.SourceGenerators) is the sole
+        // registration source; content tests in CraziiEmu.Libs.Tests pin its invariants.
+        moduleManager.RegisterExports(CraziiEmu.Generated.SysAbiExportRegistry.CreateExports(Generation.Gen4 | Generation.Gen5));
         moduleManager.Freeze();
 
         var virtualMemory = new PhysicalVirtualMemory();
@@ -135,11 +138,13 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         LastSessionSummary = null;
         LastBasicBlockTrace = null;
         LastMilestoneLog = null;
+        FiberExports.ResetRuntimeState();
         KernelModuleRegistry.Reset();
         var image = LoadImage(normalizedEbootPath);
         VideoOutExports.ConfigureApplicationInfo(image.Title, image.TitleId, image.Version);
         SaveDataExports.ConfigureApplicationInfo(image.TitleId);
-        RegisterLoadedModule(normalizedEbootPath, image, isMain: true, isSystemModule: false);
+        SystemServiceExports.ConfigureApplicationInfo(image.TitleId);
+        _ = RegisterLoadedModule(normalizedEbootPath, image, isMain: true, isSystemModule: false);
         KernelRuntimeCompatExports.ConfigureProcessProcParamAddress(image.ProcParamAddress);
         Console.Error.WriteLine($"[RUNTIME] Entry: 0x{image.EntryPoint:X16}");
         var generation = image.ElfHeader.AbiVersion == 2 ? Generation.Gen5 : Generation.Gen4;
@@ -171,6 +176,8 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             LastBasicBlockTrace = _cpuDispatcher.LastBasicBlockTrace;
             return failedInitializerResult;
         }
+
+        _cpuDispatcher.ApplyInlineHleDetours();
 
         var activeEntryPoint = image.EntryPoint;
         if (activeRuntimeSymbols.TryGetValue("module_start", out var modStart))
@@ -376,6 +383,20 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return null;
         }
 
+        // Dump tools commonly place decrypted executables in an app0/decrypted
+        // sidecar while leaving Unity data in the parent app0 directory. Keep
+        // loading code/modules beside the decrypted eboot, but mount /app0 at
+        // the content-bearing parent so boot.config, metadata and assets resolve.
+        if (string.Equals(Path.GetFileName(app0Root), "decrypted", StringComparison.OrdinalIgnoreCase))
+        {
+            var parentRoot = Path.GetDirectoryName(app0Root);
+            if (!string.IsNullOrWhiteSpace(parentRoot) &&
+                Directory.Exists(Path.Combine(parentRoot, "Media")))
+            {
+                app0Root = parentRoot;
+            }
+        }
+
         Environment.SetEnvironmentVariable(app0VariableName, app0Root);
         return new App0BindingScope(app0VariableName);
     }
@@ -448,6 +469,56 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return 50; // Standard middleware & game plugins (AkUnitySoundEngine, PSN, SaveData, CommonDialog, PS5Util)
     }
 
+    private bool TryGetEhFrameInfo(
+        SelfImage image,
+        ulong imageSize,
+        out ulong ehFrameHeaderAddress,
+        out ulong ehFrameAddress,
+        out ulong ehFrameSize)
+    {
+        ehFrameHeaderAddress = 0;
+        ehFrameAddress = 0;
+        ehFrameSize = 0;
+        var imageBase = image.EntryPoint >= image.ElfHeader.EntryPoint
+            ? image.EntryPoint - image.ElfHeader.EntryPoint
+            : 0UL;
+        for (var i = 0; i < image.ProgramHeaders.Count; i++)
+        {
+            var header = image.ProgramHeaders[i];
+            if (header.HeaderType != ProgramHeaderType.GnuEhFrame || header.MemorySize < 8)
+            {
+                continue;
+            }
+
+            var headerAddress = imageBase + header.VirtualAddress;
+            Span<byte> ehHeader = stackalloc byte[8];
+            if (!_virtualMemory.TryRead(headerAddress, ehHeader) ||
+                ehHeader[0] != 1 ||
+                ehHeader[1] != 0x1B)
+            {
+                continue;
+            }
+
+            var relativeOffset = BinaryPrimitives.ReadInt32LittleEndian(ehHeader[4..]);
+            ehFrameHeaderAddress = headerAddress;
+            ehFrameAddress = unchecked((ulong)((long)headerAddress + 4 + relativeOffset));
+            if (ehFrameAddress < 0x10000)
+            {
+                continue;
+            }
+
+            var relativeEhFrameAddress = ehFrameAddress - imageBase;
+            ehFrameSize = header.VirtualAddress > relativeEhFrameAddress
+                ? header.VirtualAddress - relativeEhFrameAddress
+                : imageSize > header.VirtualAddress
+                    ? imageSize - header.VirtualAddress
+                    : 0;
+            return true;
+        }
+
+        return false;
+    }
+
     private OrbisGen2Result? RunPreloadedModuleInitializers(
         IReadOnlyList<LoadedModuleImage> loadedModuleImages,
         Generation generation,
@@ -462,20 +533,50 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         for (var i = 0; i < orderedModules.Count; i++)
         {
             var loadedModule = orderedModules[i];
-            var image        = loadedModule.Image;
-            var moduleName   = Path.GetFileName(loadedModule.Path);
+            if (!loadedModule.StartAtBoot)
+            {
+                continue;
+            }
+
+            var image = loadedModule.Image;
+            var initEntryPoint = image.InitFunctionEntryPoint;
+            var hasPreInit = image.PreInitializerFunctions.Count > 0;
+            var hasInit = image.InitializerFunctions.Count > 0;
+            if (initEntryPoint < 0x10000 && !hasPreInit && !hasInit)
+            {
+                continue;
+            }
+
+            if (!KernelModuleRegistry.TryBeginModuleStart(loadedModule.Handle, out _))
+            {
+                continue;
+            }
+
+            var moduleName = Path.GetFileName(loadedModule.Path);
             if (string.IsNullOrWhiteSpace(moduleName))
             {
                 moduleName = $"module#{i}";
             }
 
-            // Dispatch the legacy DT_INIT single-function pointer (if any).
-            var initEntryPoint = image.InitFunctionEntryPoint;
+            Console.Error.WriteLine($"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
+
+            // 1. DT_PREINIT_ARRAY
+            var preInitResult = RunInitializerList(
+                $"{moduleName}:preinit",
+                image.PreInitializerFunctions,
+                generation,
+                activeImportStubs,
+                activeRuntimeSymbols,
+                moduleName);
+            if (preInitResult is not null && preInitResult != OrbisGen2Result.ORBIS_GEN2_OK)
+            {
+                KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
+                return preInitResult;
+            }
+
+            // 2. DT_INIT
             if (initEntryPoint >= 0x10000)
             {
-                Console.Error.WriteLine(
-                    $"[RUNTIME] Starting module {moduleName}: dt_init=0x{initEntryPoint:X16}");
-
                 var r = _cpuDispatcher.DispatchModuleInitializer(
                     initEntryPoint,
                     generation,
@@ -485,65 +586,26 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
                     _cpuExecutionOptions);
                 if (r != OrbisGen2Result.ORBIS_GEN2_OK)
                 {
-                    Console.Error.WriteLine(
-                        $"[RUNTIME] Module start failed: {moduleName} -> {r}");
+                    KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
                     return r;
                 }
             }
 
-            // Dispatch every DT_PREINIT_ARRAY entry through the guest CPU.
-            for (var j = 0; j < image.PreInitializerFunctions.Count; j++)
+            // 3. DT_INIT_ARRAY
+            var initResult = RunInitializerList(
+                $"{moduleName}:init",
+                image.InitializerFunctions,
+                generation,
+                activeImportStubs,
+                activeRuntimeSymbols,
+                moduleName);
+            if (initResult is not null && initResult != OrbisGen2Result.ORBIS_GEN2_OK)
             {
-                var addr = image.PreInitializerFunctions[j];
-                if (addr < 0x10000)
-                {
-                    continue; // null/sentinel slot — skip
-                }
-
-                Console.Error.WriteLine(
-                    $"[RUNTIME]   {moduleName} preinit[{j}] -> 0x{addr:X16}");
-
-                var r = _cpuDispatcher.DispatchModuleInitializer(
-                    addr,
-                    generation,
-                    activeImportStubs,
-                    activeRuntimeSymbols,
-                    moduleName,
-                    _cpuExecutionOptions);
-                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
-                {
-                    Console.Error.WriteLine(
-                        $"[RUNTIME]   {moduleName} preinit[{j}] failed -> {r}");
-                    return r;
-                }
+                KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, false);
+                return initResult;
             }
 
-            // Dispatch every DT_INIT_ARRAY entry through the guest CPU.
-            for (var j = 0; j < image.InitializerFunctions.Count; j++)
-            {
-                var addr = image.InitializerFunctions[j];
-                if (addr < 0x10000)
-                {
-                    continue; // null/sentinel slot — skip
-                }
-
-                Console.Error.WriteLine(
-                    $"[RUNTIME]   {moduleName} init[{j}] -> 0x{addr:X16}");
-
-                var r = _cpuDispatcher.DispatchModuleInitializer(
-                    addr,
-                    generation,
-                    activeImportStubs,
-                    activeRuntimeSymbols,
-                    moduleName,
-                    _cpuExecutionOptions);
-                if (r != OrbisGen2Result.ORBIS_GEN2_OK)
-                {
-                    Console.Error.WriteLine(
-                        $"[RUNTIME]   {moduleName} init[{j}] failed -> {r}");
-                    return r;
-                }
-            }
+            KernelModuleRegistry.CompleteModuleStart(loadedModule.Handle, true);
         }
 
         return null;
@@ -635,18 +697,27 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         }
 
         var configFirmware = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.DecryptedFirmwarePath;
-        var moduleDirectoriesList = new System.Collections.Generic.List<string>()
+        var rawDirectories = new List<(string Path, bool StartAtBoot)>()
         {
-            Path.Combine(ebootDirectory, "sce_module"),
-            Path.Combine(ebootDirectory, "sce_modules"),
-            Path.Combine(ebootDirectory, "Media", "Modules"),
-            Path.Combine(ebootDirectory, "Media", "Plugins")
+            (Path: Path.Combine(ebootDirectory, "sce_module"), StartAtBoot: true),
+            (Path: Path.Combine(ebootDirectory, "sce_modules"), StartAtBoot: true),
+            (Path: Path.Combine(ebootDirectory, "Media", "Modules"), StartAtBoot: true),
+            // Unity native plugins are loaded later through sceKernelLoadStartModule. Map
+            // them up front so the HLE loader can return a real module handle and dlsym
+            // can resolve their exports, but defer DT_INIT until the guest requests them.
+            (Path: Path.Combine(ebootDirectory, "Media", "Plugins"), StartAtBoot: false),
         };
         if (!string.IsNullOrWhiteSpace(configFirmware))
         {
-            moduleDirectoriesList.Add(configFirmware);
+            rawDirectories.Add((Path: Path.Combine(configFirmware, "common", "lib"), StartAtBoot: true));
+            rawDirectories.Add((Path: Path.Combine(configFirmware, "system", "common", "lib"), StartAtBoot: true));
         }
-        var moduleDirectories = moduleDirectoriesList.Distinct(StringComparer.OrdinalIgnoreCase).Where(Directory.Exists).ToArray();
+
+        var moduleDirectories = rawDirectories
+            .GroupBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Where(entry => Directory.Exists(entry.Path))
+            .ToArray();
 
         if (moduleDirectories.Length == 0)
         {
@@ -654,23 +725,26 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         }
 
         var allModulePaths = moduleDirectories
-            .SelectMany(Directory.EnumerateFiles)
-            .Where(path =>
+            .SelectMany(directory => Directory
+                .EnumerateFiles(directory.Path)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .Select(path => (Path: path, directory.StartAtBoot)))
+            .Where(entry =>
             {
-                var extension = Path.GetExtension(path);
+                var extension = Path.GetExtension(entry.Path);
                 return string.Equals(extension, ".prx", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(extension, ".sprx", StringComparison.OrdinalIgnoreCase);
             })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
             .ToArray();
 
         var modulePaths = allModulePaths
-            .Where(ShouldPreloadModule)
+            .Where(entry => ShouldPreloadModule(entry.Path))
             .ToArray();
         var skippedModules = allModulePaths
-            .Where(path => !ShouldPreloadModule(path))
-            .Select(Path.GetFileName)
+            .Where(entry => !ShouldPreloadModule(entry.Path))
+            .Select(entry => Path.GetFileName(entry.Path))
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .ToArray();
         if (skippedModules.Length > 0)
@@ -683,14 +757,15 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             return loadedImages;
         }
 
-        Console.Error.WriteLine($"[RUNTIME] Module search directories: {string.Join(", ", moduleDirectories)}");
+        Console.Error.WriteLine($"[RUNTIME] Module search directories: {string.Join(", ", moduleDirectories.Select(entry => entry.Path))}");
         Console.Error.WriteLine($"[RUNTIME] Loading {modulePaths.Length} module(s)...");
         var loadedModules = 0;
         var failedModules = 0;
         var mergedImportCount = 0;
         var mergedSymbolCount = 0;
-        foreach (var modulePath in modulePaths)
+        foreach (var moduleEntry in modulePaths)
         {
+            var modulePath = moduleEntry.Path;
             try
             {
                 var fileInfo = new FileInfo(modulePath);
@@ -715,8 +790,13 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
 
                 mergedImportCount += MergeImportStubs(importStubs, moduleImage.ImportStubs, modulePath);
                 mergedSymbolCount += MergeRuntimeSymbols(runtimeSymbols, moduleImage.RuntimeSymbols);
-                RegisterLoadedModule(modulePath, moduleImage, isMain: false, isSystemModule: false);
-                loadedImages.Add(new LoadedModuleImage(modulePath, moduleImage));
+                InstallNativePluginCompatibilityHooks(importStubs, moduleImage, modulePath);
+                var moduleHandle = RegisterLoadedModule(modulePath, moduleImage, isMain: false, isSystemModule: false);
+                var moduleName = Path.GetFileName(modulePath);
+                var startAtBoot = moduleEntry.StartAtBoot ||
+                    string.Equals(moduleName, "libfmod.prx", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(moduleName, "libfmodstudio.prx", StringComparison.OrdinalIgnoreCase);
+                loadedImages.Add(new LoadedModuleImage(modulePath, moduleImage, moduleHandle, startAtBoot));
                 loadedModules++;
 
                 Console.Error.WriteLine(
@@ -732,6 +812,28 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         Console.Error.WriteLine(
             $"[RUNTIME] Module preload summary: loaded={loadedModules}, failed={failedModules}, merged_imports={mergedImportCount}, merged_symbols={mergedSymbolCount}");
         return loadedImages;
+    }
+
+    private static void InstallNativePluginCompatibilityHooks(
+        IDictionary<ulong, string> importStubs,
+        SelfImage moduleImage,
+        string modulePath)
+    {
+        if (!string.Equals(Path.GetFileName(modulePath), "libfmod.prx", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ReadOnlySpan<string> compatibilityNids = ["uPLTdl3psGk"];
+        foreach (var nid in compatibilityNids)
+        {
+            if (moduleImage.RuntimeSymbols.TryGetValue(nid, out var address) && address >= 0x10000)
+            {
+                importStubs[address] = nid;
+                Console.Error.WriteLine(
+                    $"[RUNTIME] Installed FMOD compatibility hook: {nid} -> 0x{address:X16}");
+            }
+        }
     }
 
     private void RebindImportedDataSymbols(
@@ -943,7 +1045,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         return !PreloadSkipModules.Contains(fileName);
     }
 
-    private static void RegisterLoadedModule(string modulePath, SelfImage image, bool isMain, bool isSystemModule)
+    private int RegisterLoadedModule(string modulePath, SelfImage image, bool isMain, bool isSystemModule)
     {
         if (!TryComputeImageRange(image, out var baseAddress, out var size))
         {
@@ -951,15 +1053,27 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
             size = 0;
         }
 
+        _ = TryGetEhFrameInfo(
+            image,
+            size,
+            out var ehFrameHeaderAddress,
+            out var ehFrameAddress,
+            out var ehFrameSize);
         var handle = KernelModuleRegistry.RegisterModule(
             modulePath,
             baseAddress,
             size,
             image.EntryPoint,
+            image.InitFunctionEntryPoint,
+            ehFrameHeaderAddress,
+            ehFrameAddress,
+            ehFrameSize,
             isMain,
             isSystemModule);
+        KernelModuleRegistry.RegisterModuleSymbols(handle, image.RuntimeSymbols);
         Console.Error.WriteLine(
             $"[RUNTIME] Registered module handle={handle} name={Path.GetFileName(modulePath)} base=0x{baseAddress:X16} size=0x{size:X16}");
+        return handle;
     }
 
     private static bool TryComputeImageRange(SelfImage image, out ulong baseAddress, out ulong size)

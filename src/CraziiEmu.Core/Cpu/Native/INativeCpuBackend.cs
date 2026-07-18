@@ -20,4 +20,6 @@ public interface INativeCpuBackend
         IReadOnlyDictionary<string, ulong> runtimeSymbols,
         CpuExecutionOptions executionOptions,
         out OrbisGen2Result result);
+
+    void ApplyInlineHleDetours();
 }

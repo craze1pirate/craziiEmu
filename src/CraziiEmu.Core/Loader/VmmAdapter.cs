@@ -102,6 +102,11 @@ public class VmmAdapter : IVirtualMemory, IGuestMemoryAllocator
         }
     }
 
+    public bool TryFreeGuestMemory(ulong address)
+    {
+        return true;
+    }
+
     public bool TryReadString(ulong address, int maxLength, out string value)
     {
         value = string.Empty;

@@ -78,9 +78,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[1.0.0, )",
-          "CraziiEmu.Libs": "[1.0.0, )",
-          "CraziiEmu.Logging": "[1.0.0, )",
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
+          "CraziiEmu.Libs": "[0.0.2-beta.2, )",
+          "CraziiEmu.Logging": "[0.0.2-beta.2, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.OpenGL": "[2.23.0, )",
@@ -88,19 +88,38 @@
         }
       },
       "craziiemu.hle": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.Logging": "[0.0.2-beta.2, )"
+        }
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[1.0.0, )",
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
+          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.0.2-beta.2, )",
+          "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
+          "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )"
         }
       },
       "craziiemu.logging": {
         "type": "Project"
+      },
+      "craziiemu.shadercompiler": {
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.HLE": "[0.0.2-beta.2, )"
+        }
+      },
+      "craziiemu.shadercompiler.vulkan": {
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )"
+        }
       },
       "Iced": {
         "type": "CentralTransitive",
@@ -135,6 +154,16 @@
         "contentHash": "3/irtlSWXZ3eTi8N6nelI6L34NTB8ZJHpqVMNzZx2aX7Ek9YEQ34NoQW8/Tljrtmkg8KRhHW8hKTEzZaKV8PgA==",
         "dependencies": {
           "Silk.NET.Core": "2.23.0"
+        }
+      },
+      "Silk.NET.Vulkan.Extensions.EXT": {
+        "type": "CentralTransitive",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "+Oth189ksRiL6HvGCwIdnsYHawqrbO8y49u1H61z3wsfcHhQZeVDYe/wF5LD7fk3NcdgDvwFD3mLm1QWhdZySw==",
+        "dependencies": {
+          "Silk.NET.Core": "2.23.0",
+          "Silk.NET.Vulkan": "2.23.0"
         }
       },
       "Silk.NET.Vulkan.Extensions.KHR": {

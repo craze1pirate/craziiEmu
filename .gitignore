@@ -11,6 +11,11 @@ publish/
 # NuGet Packages
 .packages/
 project.assets.json
+packages/
+*.nupkg
+.nuget/
+.dotnet-home/
+.cache/
 
 # Local Emulation Testing & Debug Files
 *.log
@@ -121,7 +126,6 @@ global\ control\ map.txt
 # OS
 Thumbs.db
 Desktop.ini
-
 # SharpEmu leftover
 src/SharpEmu.Libs/
 SharpEmu.slnx
@@ -135,3 +139,4 @@ SharpEmu.slnx
 *.suo
 *.ntvs*
 *.njsproj
+ehthumbs.db

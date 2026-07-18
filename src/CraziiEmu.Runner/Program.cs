@@ -26,8 +26,7 @@ namespace CraziiEmu.Runner
             var linker = new DynamicLinker(vmm, name => Array.Empty<byte>());
             
             var moduleManager = new CraziiEmu.HLE.ModuleManager();
-            moduleManager.RegisterFromAssembly(typeof(CraziiEmu.Libs.VideoOut.VideoOutExports).Assembly, CraziiEmu.HLE.Generation.Gen4 | CraziiEmu.HLE.Generation.Gen5, CraziiEmu.HLE.Aerolib.Instance);
-            moduleManager.RegisterFromAssembly(typeof(CraziiEmu.Libs.Kernel.KernelExports).Assembly, CraziiEmu.HLE.Generation.Gen4 | CraziiEmu.HLE.Generation.Gen5, CraziiEmu.HLE.Aerolib.Instance);
+            moduleManager.RegisterExports(CraziiEmu.Generated.SysAbiExportRegistry.CreateExports(CraziiEmu.HLE.Generation.Gen4 | CraziiEmu.HLE.Generation.Gen5));
             moduleManager.Freeze();
 
             var engine = new EmulatorEngine(vmm, router)

@@ -20,7 +20,8 @@ internal static partial class Program
         Console.Error.WriteLine($"[DEBUG] CraziiEmu starting with {args.Length} args");
 
         args = WindowsMitigationHelper.NormalizeInternalArguments(args, out var isMitigatedChild);
-        if (!isMitigatedChild && WindowsMitigationHelper.TryRunMitigatedChild(args, out var childExitCode))
+        int childExitCode = 0;
+        if (!isMitigatedChild && WindowsMitigationHelper.TryRunMitigatedChild(args, out childExitCode))
         {
             return childExitCode;
         }

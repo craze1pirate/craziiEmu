@@ -16,7 +16,7 @@ namespace CraziiEmu.TestRunner
     {
         static void Main(string[] args)
         {
-            var options = new CraziiEmuRuntimeOptions { CpuEngine = CpuExecutionEngine.Interpreter };
+            var options = new CraziiEmuRuntimeOptions { CpuEngine = CpuExecutionEngine.NativeOnly };
             var runtime = CraziiEmuRuntime.CreateDefault(options);
             
             Console.WriteLine("Loading ELF...");

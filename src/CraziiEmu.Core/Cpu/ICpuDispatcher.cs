@@ -43,4 +43,6 @@ public interface ICpuDispatcher
         IReadOnlyDictionary<string, ulong>? runtimeSymbols = null,
         string moduleName = "module",
         CpuExecutionOptions executionOptions = default);
+
+    void ApplyInlineHleDetours();
 }

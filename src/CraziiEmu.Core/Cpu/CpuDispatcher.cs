@@ -19,15 +19,22 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         ModuleInitializer,
     }
 
-    private const ulong StackBaseAddress = 0x7FFF_F000_0000UL;
+    // The top of the x86-64 user address space (0x7FFD..0x7FFF) is only
+    // freely mappable on Windows; on macOS/Linux it hosts the dyld shared
+    // cache / vdso and (under Rosetta 2) the translator runtime, so POSIX
+    // hosts use the equivalent layout one slot lower at 0x6FFx.
+    private static readonly ulong StackBaseAddress = OperatingSystem.IsWindows() ? 0x7FFF_F000_0000UL : 0x6FFF_F000_0000UL;
     private const ulong StackSize = 0x0020_0000UL;
-    private const ulong TlsBaseAddress = 0x7FFE_0000_0000UL;
+    private static readonly ulong TlsBaseAddress = OperatingSystem.IsWindows() ? 0x7FFE_0000_0000UL : 0x6FFE_0000_0000UL;
     private const ulong TlsSize = 0x0001_0000UL;
-    private const ulong TlsPrefixSize = 0x0000_1000UL;
-    private const ulong BootstrapStubBaseAddress = 0x7FFD_F000_0000UL;
-    private const ulong BootstrapPayloadBaseAddress = 0x7FFD_E000_0000UL;
-    private const ulong DynlibFallbackStubBaseAddress = 0x7FFD_D000_0000UL;
-    private const ulong ReturnToHostStubBaseAddress = 0x7FFD_C000_0000UL;
+    // The static TLS blocks live at negative offsets from the TCB (FreeBSD
+    // amd64 variant II). Keep every host in sync with GuestTlsTemplate's
+    // startup reservation; PS5 modules routinely reach beyond one host page.
+    private const ulong TlsPrefixSize = GuestTlsTemplate.StartupStaticTlsReservation;
+    private static readonly ulong BootstrapStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_F000_0000UL : 0x6FFD_F000_0000UL;
+    private static readonly ulong BootstrapPayloadBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_E000_0000UL : 0x6FFD_E000_0000UL;
+    private static readonly ulong DynlibFallbackStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_D000_0000UL : 0x6FFD_D000_0000UL;
+    private static readonly ulong ReturnToHostStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_C000_0000UL : 0x6FFD_C000_0000UL;
     private const ulong BootstrapRegionSize = 0x0000_1000UL;
     private const ulong ReturnToHostStubStride = 0x0100_0000UL;
     private const ulong BootstrapPayloadResultOffset = 0x28UL;
@@ -366,11 +373,19 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
 
     private static bool InitializeTls(CpuContext context, ulong tlsBase)
     {
-        return context.TryWriteUInt64(tlsBase - 0xF0, 0) &&
-               context.TryWriteUInt64(tlsBase + 0x00, tlsBase) &&
-               context.TryWriteUInt64(tlsBase + 0x10, tlsBase) &&
-               context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBABEUL) &&
-               context.TryWriteUInt64(tlsBase + 0x60, tlsBase);
+        if (!context.TryWriteUInt64(tlsBase - 0xF0, 0) ||
+            !context.TryWriteUInt64(tlsBase + 0x00, tlsBase) ||
+            !context.TryWriteUInt64(tlsBase + 0x10, tlsBase) ||
+            !context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBA00UL) ||
+            !context.TryWriteUInt64(tlsBase + 0x60, tlsBase))
+        {
+            return false;
+        }
+
+        // Seed the static TLS block below the thread pointer with the main
+        // module's initialized thread-locals (variant II layout).
+        CraziiEmu.HLE.GuestTlsTemplate.SeedThreadBlock(context, tlsBase);
+        return true;
     }
 
     private static bool InitializeGuestFrameChainSentinel(CpuContext context)
@@ -396,33 +411,52 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         ulong programExitHandlerAddress)
     {
         var imageName = string.IsNullOrWhiteSpace(processImageName) ? "eboot.bin" : processImageName;
-        var encodedNameLength = Encoding.UTF8.GetByteCount(imageName);
-        Span<byte> argv0Buffer = encodedNameLength + 1 <= 512
-            ? stackalloc byte[encodedNameLength + 1]
-            : new byte[encodedNameLength + 1];
-        if (Encoding.UTF8.GetBytes(imageName.AsSpan(), argv0Buffer) != encodedNameLength)
+        var arguments = new List<string>(3) { imageName };
+        var configuredArguments = Environment.GetEnvironmentVariable("CRAZIIEMU_GUEST_ARGS");
+        if (!string.IsNullOrWhiteSpace(configuredArguments))
         {
-            return false;
+            // The PS5 entry-parameter ABI exposes three inline argv pointers.
+            // Two compatibility arguments are therefore safe without changing
+            // the fixed 0x20-byte structure expected by existing titles.
+            var compatibilityArguments = configuredArguments.Split(
+                (char[]?)null,
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            arguments.AddRange(compatibilityArguments.Take(2));
         }
 
-        argv0Buffer[encodedNameLength] = 0;
         var cursor = context[CpuRegister.Rsp];
-
-        var argv0Address = AlignDown(cursor - (ulong)argv0Buffer.Length, 16);
-        if (!context.Memory.TryWrite(argv0Address, argv0Buffer))
+        var argumentAddresses = new ulong[arguments.Count];
+        for (var index = arguments.Count - 1; index >= 0; index--)
         {
-            return false;
+            var encoded = Encoding.UTF8.GetBytes(arguments[index] + '\0');
+            cursor = AlignDown(cursor - (ulong)encoded.Length, 16);
+            if (!context.Memory.TryWrite(cursor, encoded))
+            {
+                return false;
+            }
+
+            argumentAddresses[index] = cursor;
         }
 
         const ulong entryParamsSize = 0x20;
-        var entryParamsAddress = AlignDown(argv0Address - entryParamsSize, 16);
-        if (!TryWriteUInt32(context, entryParamsAddress + 0x00, 1) ||
+        var entryParamsAddress = AlignDown(cursor - entryParamsSize, 16);
+        if (!TryWriteUInt32(context, entryParamsAddress + 0x00, (uint)arguments.Count) ||
             !TryWriteUInt32(context, entryParamsAddress + 0x04, 0) ||
-            !context.TryWriteUInt64(entryParamsAddress + 0x08, argv0Address) ||
-            !context.TryWriteUInt64(entryParamsAddress + 0x10, 0) ||
-            !context.TryWriteUInt64(entryParamsAddress + 0x18, 0))
+            !context.TryWriteUInt64(entryParamsAddress + 0x08, argumentAddresses[0]) ||
+            !context.TryWriteUInt64(
+                entryParamsAddress + 0x10,
+                argumentAddresses.Length > 1 ? argumentAddresses[1] : 0) ||
+            !context.TryWriteUInt64(
+                entryParamsAddress + 0x18,
+                argumentAddresses.Length > 2 ? argumentAddresses[2] : 0))
         {
             return false;
+        }
+
+        if (arguments.Count > 1)
+        {
+            Console.Error.WriteLine(
+                $"[DISPATCHER] Guest arguments: {string.Join(' ', arguments.Skip(1))}");
         }
 
         var entryStackPointer = entryParamsAddress - sizeof(ulong);
@@ -658,6 +692,11 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
         Span<byte> buffer = stackalloc byte[sizeof(uint)];
         BinaryPrimitives.WriteUInt32LittleEndian(buffer, value);
         return _virtualMemory.TryWrite(address, buffer);
+    }
+
+    public void ApplyInlineHleDetours()
+    {
+        _nativeCpuBackend?.ApplyInlineHleDetours();
     }
 
     public void Dispose()

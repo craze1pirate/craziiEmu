@@ -9,8 +9,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);1591</NoWarn>
-    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NoWarn>$(NoWarn);1591;0649;8602;1734;SHEM006</NoWarn>
+    <SharpEmuVersion>0.0.2-beta.2</SharpEmuVersion>
+    <Version>$(SharpEmuVersion)</Version>
 
     <RepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)'))</RepoRoot>
 
@@ -33,4 +34,18 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+
+  <!-- Build provenance surfaced by SharpEmu.Logging.BuildInfo as a banner at the
+       top of the log. Populated from GitHub Actions environment variables when
+       building in CI; empty locally. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="SharpEmu.BuildConfiguration" Value="$(Configuration)" />
+    <AssemblyMetadata Condition="'$(GITHUB_SHA)' != ''" Include="SharpEmu.BuildSha" Value="$(GITHUB_SHA)" />
+    <AssemblyMetadata Condition="'$(GITHUB_REF_NAME)' != ''" Include="SharpEmu.BuildBranch" Value="$(GITHUB_REF_NAME)" />
+    <AssemblyMetadata Condition="'$(GITHUB_REF)' != ''" Include="SharpEmu.BuildRef" Value="$(GITHUB_REF)" />
+    <AssemblyMetadata Condition="'$(GITHUB_EVENT_NAME)' != ''" Include="SharpEmu.BuildEventName" Value="$(GITHUB_EVENT_NAME)" />
+    <AssemblyMetadata Condition="'$(GITHUB_REPOSITORY)' != ''" Include="SharpEmu.BuildRepository" Value="$(GITHUB_REPOSITORY)" />
+    <AssemblyMetadata Condition="'$(GITHUB_SERVER_URL)' != ''" Include="SharpEmu.BuildServerUrl" Value="$(GITHUB_SERVER_URL)" />
+    <AssemblyMetadata Condition="'$(GITHUB_RUN_ID)' != ''" Include="SharpEmu.BuildRunId" Value="$(GITHUB_RUN_ID)" />
+  </ItemGroup>
 </Project>

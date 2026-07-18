@@ -195,11 +195,11 @@ public sealed unsafe class StubManager : IDisposable
         _stubAddresses.Clear();
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern void* VirtualAlloc(void* lpAddress, nuint dwSize, AllocationType flAllocationType, MemoryProtection flProtect);
+    private static void* VirtualAlloc(void* lpAddress, nuint dwSize, AllocationType flAllocationType, MemoryProtection flProtect) =>
+        HostMemory.Alloc(lpAddress, dwSize, (uint)flAllocationType, (uint)flProtect);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool VirtualFree(void* lpAddress, nuint dwSize, FreeType dwFreeType);
+    private static bool VirtualFree(void* lpAddress, nuint dwSize, FreeType dwFreeType) =>
+        HostMemory.Free(lpAddress, dwSize, (uint)dwFreeType);
 
     [Flags]
     private enum AllocationType : uint
