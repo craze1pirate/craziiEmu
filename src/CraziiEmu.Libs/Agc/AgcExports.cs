@@ -9,10 +9,11 @@ using CraziiEmu.Libs.Kernel;
 using CraziiEmu.Libs.VideoOut;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using CraziiEmu.ShaderCompiler;
 
 namespace CraziiEmu.Libs.Agc;
 
-public static class AgcExports
+public static partial class AgcExports
 {
     private const uint ShaderFileHeader = 0x34333231;
     private const uint ShaderVersion = 0x18;
@@ -405,7 +406,7 @@ public static class AgcExports
     private sealed record RegisterDefaultsAllocation(ulong Primary, ulong Internal);
 
     [SysAbiExport(
-        Nid = "23LRUSvYu1M",
+        Nid = "kW3GLb7QfPg",
         ExportName = "sceAgcInit",
         Target = Generation.Gen5,
         LibraryName = "libSceAgc")]
@@ -420,6 +421,239 @@ public static class AgcExports
 
         TraceAgc($"agc.init state=0x{stateAddress:X16} version={version}");
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+        Nid = "F04XjS1p+L8",
+        ExportName = "sceAgcDriverAllocDataPacket",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DriverAllocDataPacket(CpuContext ctx)
+    {
+        var packetAddress = ctx[CpuRegister.Rdi];
+        var size = unchecked((uint)ctx[CpuRegister.Rsi]);
+        if (packetAddress == 0 || size == 0)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (ctx.Memory is not IGuestMemoryAllocator allocator ||
+            !allocator.TryAllocateGuestMemory(size, 256, out var payloadAddress))
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_OUT_OF_MEMORY);
+        }
+
+        Span<byte> packetHeader = stackalloc byte[16];
+        BinaryPrimitives.WriteUInt64LittleEndian(packetHeader, payloadAddress);
+        BinaryPrimitives.WriteUInt32LittleEndian(packetHeader[8..], size);
+        BinaryPrimitives.WriteUInt32LittleEndian(packetHeader[12..], 0);
+
+        return ctx.Memory.TryWrite(packetAddress, packetHeader)
+            ? ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK)
+            : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
+
+    [SysAbiExport(
+        Nid = "S4g2K5oMthI",
+        ExportName = "sceAgcDriverAllocDataPacketUninitialized",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DriverAllocDataPacketUninitialized(CpuContext ctx)
+    {
+        return DriverAllocDataPacket(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "n6xJ90Z8xI4",
+        ExportName = "sceAgcGetComputeShaderPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetComputeShaderPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "gE057E9i3P0",
+        ExportName = "sceAgcGetVertexAttributePayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetVertexAttributePayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "W1S9+GZ576I",
+        ExportName = "sceAgcGetPixelShaderPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetPixelShaderPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "56i9N1G2lR4",
+        ExportName = "sceAgcGetDispatchModifierPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetDispatchModifierPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "U4M6T81i0S8",
+        ExportName = "sceAgcGetStageStatePayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetStageStatePayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "O6j0V8n2W4U",
+        ExportName = "sceAgcGetGlobalResourceTablePayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetGlobalResourceTablePayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "tI152rL3zSg",
+        ExportName = "sceAgcGetTexturePayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetTexturePayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "V005nZ1M6+A",
+        ExportName = "sceAgcGetSamplerPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetSamplerPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "P1N88i3rQ5U",
+        ExportName = "sceAgcGetUniformBufferPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetUniformBufferPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "s7jH905L2I4",
+        ExportName = "sceAgcGetShaderPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetShaderPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "Y4N631E0tK8",
+        ExportName = "sceAgcGetIndexBufferPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetIndexBufferPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "Z3E5S80V+I4",
+        ExportName = "sceAgcGetDepthRenderTargetPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetDepthRenderTargetPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        ExportName = "sceAgcGetRenderTargetPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetRenderTargetPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "M4E8L10P6S8",
+        ExportName = "sceAgcGetOcclusionQueryPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetOcclusionQueryPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "T5p1V72Z0S8",
+        ExportName = "sceAgcGetVertexBufferPayloadAddress",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int GetVertexBufferPayloadAddress(CpuContext ctx)
+    {
+        return GetDataPacketPayloadAddress(ctx);
+    }
+
+    [SysAbiExport(
+        Nid = "pdEV7bI6COI",
+        ExportName = "sceAgcCreateInterpolantMapping",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int CreateInterpolantMapping(CpuContext ctx)
+    {
+        var outAddress = ctx[CpuRegister.Rdi];
+        var configAddress = ctx[CpuRegister.Rsi];
+        if (outAddress == 0 || configAddress == 0)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (!ctx.TryReadUInt32(configAddress, out var attributeMask) ||
+            !ctx.TryReadUInt32(configAddress + 4, out var outputMask))
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        uint mappingCount = 0;
+        Span<uint> mappings = stackalloc uint[16];
+        for (var i = 0; i < 16 && mappingCount < mappings.Length; i++)
+        {
+            var bit = 1u << i;
+            if ((attributeMask & bit) != 0 && (outputMask & bit) != 0)
+            {
+                mappings[(int)mappingCount] = (uint)((i << 8) | i);
+                mappingCount++;
+            }
+        }
+
+        Span<byte> buffer = stackalloc byte[(int)mappingCount * sizeof(uint)];
+        for (var i = 0; i < mappingCount; i++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(buffer.Slice(i * sizeof(uint), sizeof(uint)), mappings[i]);
+        }
+
+        TraceAgc($"agc.create_interpolant_mapping attr=0x{attributeMask:X8} out=0x{outputMask:X8} count={mappingCount}");
+        return ctx.Memory.TryWrite(outAddress, buffer)
+            ? ctx.SetReturn((int)mappingCount)
+            : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
     [SysAbiExport(
@@ -600,13 +834,15 @@ public static class AgcExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+#pragma warning disable SHEM004
     [SysAbiExport(
         Nid = "HV4j+E0MBHE",
         ExportName = "sceAgcCreateInterpolantMapping",
         Target = Generation.Gen5,
         LibraryName = "libSceAgc")]
-    public static int CreateInterpolantMapping(CpuContext ctx)
+    public static int CreateInterpolantMappingLegacy(CpuContext ctx)
     {
+#pragma warning restore SHEM004
         var registersAddress = ctx[CpuRegister.Rdi];
         var geometryShaderAddress = ctx[CpuRegister.Rsi];
         var pixelShaderAddress = ctx[CpuRegister.Rdx];
@@ -659,7 +895,7 @@ public static class AgcExports
     }
 
     [SysAbiExport(
-        Nid = "V++UgBtQhn0",
+        Nid = "CQsSq6l6+kA",
         ExportName = "sceAgcGetDataPacketPayloadAddress",
         Target = Generation.Gen5,
         LibraryName = "libSceAgc")]
@@ -2236,7 +2472,7 @@ public static class AgcExports
     {
         for (var pass = 0; pass < 256; pass++)
         {
-            var woken = GpuWaitRegistry.CollectSatisfied((address, is64Bit) =>
+            var woken = GpuWaitRegistry.CollectSatisfied(ctx.Memory, (address, is64Bit) =>
             {
                 if (is64Bit)
                 {
@@ -3349,7 +3585,7 @@ public static class AgcExports
 
         return renderState with
         {
-            Blend = renderState.Blend with { Enable = false },
+            Blends = [renderState.Blend with { Enable = false }],
         };
     }
 
@@ -3371,7 +3607,7 @@ public static class AgcExports
         var address = state.IndexBufferAddress + byteOffset;
         return (ctx.Memory.TryRead(address, data) ||
                 KernelMemoryCompatExports.TryReadTrackedLibcHeap(address, data))
-            ? new VulkanGuestIndexBuffer(data, is32Bit)
+            ? new VulkanGuestIndexBuffer(data, data.Length, is32Bit, false)
             : null;
     }
 
@@ -3467,9 +3703,11 @@ public static class AgcExports
     {
         var scissor = DecodeScissor(registers, target.Width, target.Height);
         return new VulkanGuestRenderState(
-            DecodeBlendState(registers, target.Slot),
+            [DecodeBlendState(registers, target.Slot)],
             scissor,
-            DecodeViewport(registers, target.Width, target.Height, scissor));
+            DecodeViewport(registers, target.Width, target.Height, scissor),
+            CraziiEmu.Libs.Gpu.GuestRasterState.Default,
+            CraziiEmu.Libs.Gpu.GuestDepthState.Default);
     }
 
     private static VulkanGuestBlendState DecodeBlendState(
@@ -3847,7 +4085,9 @@ public static class AgcExports
         {
             buffers[index] = new VulkanGuestMemoryBuffer(
                 bindings[index].BaseAddress,
-                bindings[index].Data);
+                bindings[index].Data,
+                bindings[index].Data.Length,
+                false);
         }
 
         return buffers;
@@ -3868,7 +4108,9 @@ public static class AgcExports
                 binding.BaseAddress,
                 binding.Stride,
                 binding.OffsetBytes,
-                binding.Data);
+                binding.Data,
+                binding.Data.Length,
+                false);
         }
 
         return buffers;
@@ -4477,10 +4719,12 @@ public static class AgcExports
                         cachedSourceTexture.Width,
                         cachedSourceTexture.Height,
                         cachedSourceTexture.Format,
+                        cachedSourceTexture.NumberType,
                         texture.Address,
                         texture.Width,
                         texture.Height,
-                        texture.Format))
+                        texture.Format,
+                        texture.NumberType))
                 {
                     blits++;
                     TraceAgcShader(

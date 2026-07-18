@@ -5,9 +5,9 @@
 using CraziiEmu.HLE;
 using System.Buffers.Binary;
 
-namespace CraziiEmu.Libs.Agc;
+namespace CraziiEmu.ShaderCompiler;
 
-internal static class Gen5ShaderMetadataReader
+public static class Gen5ShaderMetadataReader
 {
     private const ulong ShaderUserDataOffset = 0x08;
     private const int ResourceClassCount = 4;

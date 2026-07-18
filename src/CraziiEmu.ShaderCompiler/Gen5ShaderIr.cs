@@ -2,9 +2,9 @@
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-namespace CraziiEmu.Libs.Agc;
+namespace CraziiEmu.ShaderCompiler;
 
-internal enum Gen5ShaderEncoding
+public enum Gen5ShaderEncoding
 {
     Sop1,
     Sop2,
@@ -27,7 +27,7 @@ internal enum Gen5ShaderEncoding
     Exp,
 }
 
-internal enum Gen5OperandKind
+public enum Gen5OperandKind
 {
     ScalarRegister,
     VectorRegister,
@@ -35,7 +35,7 @@ internal enum Gen5OperandKind
     LiteralConstant,
 }
 
-internal enum Gen5ShaderResourceKind
+public enum Gen5ShaderResourceKind
 {
     ReadOnlyTexture,
     ReadWriteTexture,
@@ -43,40 +43,31 @@ internal enum Gen5ShaderResourceKind
     ConstantBuffer,
 }
 
-internal enum Gen5PixelOutputKind
+public enum Gen5PixelOutputKind
 {
     Float,
     Uint,
     Sint,
 }
 
-internal enum Gen5SpirvStage
-{
-    Vertex,
-    Pixel,
-    Compute,
-}
+public readonly record struct Gen5PixelOutputBinding(
+    uint GuestSlot,
+    uint HostLocation,
+    Gen5PixelOutputKind Kind);
 
-internal sealed record Gen5SpirvShader(
-    byte[] Spirv,
-    IReadOnlyList<Gen5GlobalMemoryBinding> GlobalMemoryBindings,
-    IReadOnlyList<Gen5ImageBinding> ImageBindings,
-    uint AttributeCount,
-    IReadOnlyList<Gen5VertexInputBinding> VertexInputs);
-
-internal readonly record struct Gen5ShaderResourceMapping(
+public readonly record struct Gen5ShaderResourceMapping(
     Gen5ShaderResourceKind Kind,
     uint Slot,
     uint OffsetDwords,
     bool SizeFlag);
 
-internal sealed record Gen5ShaderMetadata(
+public sealed record Gen5ShaderMetadata(
     uint ExtendedUserDataSizeDwords,
     uint ShaderResourceTableSizeDwords,
     IReadOnlyDictionary<uint, uint> DirectResources,
     IReadOnlyList<Gen5ShaderResourceMapping> Resources);
 
-internal readonly record struct Gen5ComputeSystemRegisters(
+public readonly record struct Gen5ComputeSystemRegisters(
     uint? WorkGroupXRegister,
     uint? WorkGroupYRegister,
     uint? WorkGroupZRegister,
@@ -129,14 +120,14 @@ internal readonly record struct Gen5ComputeSystemRegisters(
     }
 }
 
-internal sealed record Gen5ShaderState(
+public sealed record Gen5ShaderState(
     Gen5ShaderProgram Program,
     IReadOnlyList<uint> UserData,
     Gen5ShaderMetadata? Metadata,
     Gen5ComputeSystemRegisters? ComputeSystemRegisters = null,
     uint UserDataScalarRegisterBase = 0);
 
-internal readonly record struct Gen5Operand(Gen5OperandKind Kind, uint Value)
+public readonly record struct Gen5Operand(Gen5OperandKind Kind, uint Value)
 {
     public static Gen5Operand Scalar(uint index) =>
         new(Gen5OperandKind.ScalarRegister, index);
@@ -173,9 +164,9 @@ internal readonly record struct Gen5Operand(Gen5OperandKind Kind, uint Value)
     };
 }
 
-internal abstract record Gen5InstructionControl;
+public abstract record Gen5InstructionControl;
 
-internal sealed record Gen5ImageControl(
+public sealed record Gen5ImageControl(
     uint Dmask,
     uint VectorAddress,
     IReadOnlyList<uint> AddressRegisters,
@@ -185,7 +176,9 @@ internal sealed record Gen5ImageControl(
     uint Dimension,
     bool IsArray,
     bool Glc,
-    bool Slc) : Gen5InstructionControl
+    bool Slc,
+    bool A16,
+    bool D16) : Gen5InstructionControl
 {
     public uint GetAddressRegister(int component) =>
         component < AddressRegisters.Count
@@ -193,7 +186,7 @@ internal sealed record Gen5ImageControl(
             : VectorAddress + (uint)component;
 }
 
-internal sealed record Gen5GlobalMemoryControl(
+public sealed record Gen5GlobalMemoryControl(
     uint DwordCount,
     uint VectorAddress,
     uint VectorData,
@@ -202,7 +195,7 @@ internal sealed record Gen5GlobalMemoryControl(
     bool Glc,
     bool Slc) : Gen5InstructionControl;
 
-internal sealed record Gen5BufferMemoryControl(
+public sealed record Gen5BufferMemoryControl(
     uint DwordCount,
     uint VectorAddress,
     uint VectorData,
@@ -213,34 +206,39 @@ internal sealed record Gen5BufferMemoryControl(
     bool Glc,
     bool Slc) : Gen5InstructionControl;
 
-internal sealed record Gen5ExportControl(
+public sealed record Gen5ExportControl(
     uint Target,
     uint EnableMask,
     bool Compressed,
     bool Done,
     bool ValidMask) : Gen5InstructionControl;
 
-internal sealed record Gen5InterpolationControl(
+public sealed record Gen5InterpolationControl(
     uint Attribute,
     uint Channel) : Gen5InstructionControl;
 
-internal sealed record Gen5Vop3Control(
+public sealed record Gen5Vop3Control(
+    uint AbsoluteMask,
+    uint NegateMask,
+    uint OutputModifier,
+    bool Clamp,
+    uint OperandSelect,
+    uint? ScalarDestination) : Gen5InstructionControl;
+
+public sealed record Gen5SdwaControl(
+    uint DestinationSelect,
+    uint DestinationUnused,
+    uint Source0Select,
+    uint Source1Select,
+    bool Source0SignExtend,
+    bool Source1SignExtend,
     uint AbsoluteMask,
     uint NegateMask,
     uint OutputModifier,
     bool Clamp,
     uint? ScalarDestination) : Gen5InstructionControl;
 
-internal sealed record Gen5SdwaControl(
-    uint DestinationSelect,
-    uint Source0Select,
-    uint Source1Select,
-    uint AbsoluteMask,
-    uint NegateMask,
-    uint OutputModifier,
-    bool Clamp) : Gen5InstructionControl;
-
-internal sealed record Gen5DppControl(
+public sealed record Gen5DppControl(
     uint Control,
     bool FetchInactive,
     bool BoundControl,
@@ -249,17 +247,21 @@ internal sealed record Gen5DppControl(
     uint BankMask,
     uint RowMask) : Gen5InstructionControl;
 
-internal sealed record Gen5ScalarMemoryControl(
+public sealed record Gen5Dpp8Control(
+    uint LaneSelectors,
+    bool FetchInactive) : Gen5InstructionControl;
+
+public sealed record Gen5ScalarMemoryControl(
     uint DestinationCount,
     int ImmediateOffsetBytes,
     uint? DynamicOffsetRegister) : Gen5InstructionControl;
 
-internal sealed record Gen5DataShareControl(
+public sealed record Gen5DataShareControl(
     uint Offset0,
     uint Offset1,
     bool Gds) : Gen5InstructionControl;
 
-internal sealed record Gen5ImageBinding(
+public sealed record Gen5ImageBinding(
     uint Pc,
     string Opcode,
     Gen5ImageControl Control,
@@ -267,13 +269,29 @@ internal sealed record Gen5ImageBinding(
     IReadOnlyList<uint> SamplerDescriptor,
     uint? MipLevel);
 
-internal sealed record Gen5GlobalMemoryBinding(
+// Data arrays may be rented from ArrayPool (oversized): always slice with
+// DataLength, never Data.Length. Ownership transfers to the presenter, which
+// returns pooled arrays after uploading them into host-visible buffers.
+public sealed record Gen5GlobalMemoryBinding(
     uint ScalarAddress,
     ulong BaseAddress,
     IReadOnlyList<uint> InstructionPcs,
-    byte[] Data);
+    byte[] Data,
+    int DataLength,
+    bool DataPooled)
+{
+    public bool Writable { get; set; }
 
-internal sealed record Gen5VertexInputBinding(
+    // Writable describes shader access and is also used to decide whether a
+    // compute dispatch has observable work. A statically reachable resource
+    // can nevertheless be unbound for the current scalar path; the evaluator
+    // supplies zero-filled storage for Vulkan in that case. Such synthetic
+    // storage must remain shader-writable, but must never be copied to the
+    // descriptor's unmapped guest address.
+    public bool WriteBackToGuest { get; set; } = true;
+}
+
+public sealed record Gen5VertexInputBinding(
     uint Pc,
     uint Location,
     uint ComponentCount,
@@ -282,19 +300,20 @@ internal sealed record Gen5VertexInputBinding(
     ulong BaseAddress,
     uint Stride,
     uint OffsetBytes,
-    byte[] Data);
+    byte[] Data,
+    int DataLength,
+    bool DataPooled);
 
-internal sealed record Gen5ShaderEvaluation(
+public sealed record Gen5ShaderEvaluation(
     IReadOnlyList<uint> InitialScalarRegisters,
     IReadOnlyList<uint> ScalarRegisters,
-    IReadOnlyDictionary<uint, IReadOnlyList<uint>> ScalarRegistersByPc,
     IReadOnlyList<Gen5ImageBinding> ImageBindings,
     IReadOnlyList<Gen5GlobalMemoryBinding> GlobalMemoryBindings,
     Gen5ComputeSystemRegisters? ComputeSystemRegisters = null,
     IReadOnlySet<uint>? RuntimeScalarRegisters = null,
     IReadOnlyList<Gen5VertexInputBinding>? VertexInputs = null);
 
-internal sealed record Gen5ShaderInstruction(
+public sealed record Gen5ShaderInstruction(
     uint Pc,
     Gen5ShaderEncoding Encoding,
     string Opcode,
@@ -303,12 +322,84 @@ internal sealed record Gen5ShaderInstruction(
     IReadOnlyList<Gen5Operand> Destinations,
     Gen5InstructionControl? Control);
 
-internal sealed record Gen5ShaderProgram(
+public sealed record Gen5ShaderProgram(
     ulong Address,
     IReadOnlyList<Gen5ShaderInstruction> Instructions)
 {
+    private const uint PixelColorTargetCount = 8;
+    private const int PixelColorMaskBits = 4;
+    private readonly uint _pixelColorExportMasks = ComputePixelColorExportMasks(Instructions);
+    private const int ScalarRegisterCount = 256;
+    private IReadOnlySet<uint>? _runtimeScalarRegisters;
+
+    public uint PixelColorExportMasks => _pixelColorExportMasks;
+
+    private static uint ComputePixelColorExportMasks(
+        IReadOnlyList<Gen5ShaderInstruction> instructions)
+    {
+        var masks = 0u;
+        foreach (var instruction in instructions)
+        {
+            if (instruction.Control is Gen5ExportControl export &&
+                export.Target < PixelColorTargetCount)
+            {
+                masks |= (export.EnableMask & 0xFu) <<
+                    (int)(export.Target * PixelColorMaskBits);
+            }
+        }
+
+        return masks;
+    }
+
     public IEnumerable<Gen5ImageControl> ImageResources =>
         Instructions
             .Select(instruction => instruction.Control)
             .OfType<Gen5ImageControl>();
+
+    /// <summary>
+    /// The set of scalar registers the program reads or writes as runtime
+    /// values. It depends only on the (cached) decoded program, so it is
+    /// computed once and shared read-only across every draw that uses this
+    /// shader — the evaluator previously rebuilt this HashSet by scanning
+    /// every instruction on every draw, one of the largest per-draw
+    /// allocation and CPU sources.
+    /// </summary>
+    public IReadOnlySet<uint> RuntimeScalarRegisters =>
+        _runtimeScalarRegisters ??= ComputeRuntimeScalarRegisters();
+
+    private IReadOnlySet<uint> ComputeRuntimeScalarRegisters()
+    {
+        var registers = new HashSet<uint>();
+        foreach (var instruction in Instructions)
+        {
+            foreach (var operand in instruction.Sources)
+            {
+                if (operand.Kind == Gen5OperandKind.ScalarRegister &&
+                    operand.Value < ScalarRegisterCount)
+                {
+                    registers.Add(operand.Value);
+                }
+            }
+
+            foreach (var operand in instruction.Destinations)
+            {
+                if (operand.Kind == Gen5OperandKind.ScalarRegister &&
+                    operand.Value < ScalarRegisterCount)
+                {
+                    registers.Add(operand.Value);
+                }
+            }
+
+            if (instruction.Control is Gen5ScalarMemoryControl
+                {
+                    DynamicOffsetRegister: { } offsetRegister,
+                } &&
+                offsetRegister < ScalarRegisterCount)
+            {
+                registers.Add(offsetRegister);
+            }
+        }
+
+        return registers;
+    }
 }

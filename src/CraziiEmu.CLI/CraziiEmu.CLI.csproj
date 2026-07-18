@@ -1,5 +1,5 @@
 <!--
-Copyright (C) 2026 SharpEmu Emulator Project
+Copyright (C) 2026 CraziiEmu Emulator Project
 Copyright (C) 2026 craze1pirate - CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
@@ -8,20 +8,41 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.Core\CraziiEmu.Core.csproj" />
+
     <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- GUI subsystem so starting without arguments opens the frontend with no
+         console window; CLI mode re-attaches to the parent terminal's console. -->
+    <OutputType>WinExe</OutputType>
     <AssemblyName>CraziiEmu</AssemblyName>
-    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+    <!-- osx-x64 is the macOS target: the CPU backend executes guest x86-64
+         natively, so on Apple Silicon it runs under Rosetta 2. -->
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <!-- <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract> -->
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.0.1</Version>
+    <!-- Server GC reserves one large heap range per logical processor. On
+         high-core-count hosts those ranges can overlap fixed PS5 image bases
+         before the guest address space is established. Workstation GC avoids
+         that collision and keeps the emulator's required mappings available. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <!-- Background GC's write-watch revisit calls FlushProcessWriteBuffers,
+       which on macOS uses thread_get_register_pointer_values; under Rosetta 2
+       that Mach call can stall indefinitely on threads executing translated
+       guest code, wedging the whole runtime (every allocating thread then
+       blocks behind the never-finishing GC). Non-concurrent GC never takes
+       that path. Windows and Linux keep concurrent GC. -->
+  <PropertyGroup Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))">
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -36,6 +57,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <Win32Icon>..\..\assets\images\CraziiEmu.ico</Win32Icon>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+  
   <ItemGroup>
     <Content Include="..\..\LICENSE.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
@@ -43,5 +68,18 @@ SPDX-License-Identifier: GPL-2.0-or-later
       <Visible>False</Visible>
     </Content>
   </ItemGroup>
+
+  <!-- Keep glfw as a loose file next to the executable; every other native
+       library is embedded into the single-file bundle. -->
+  <Target Name="KeepGlfwOutsideSingleFile" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <_GlfwPublishFiles Include="@(ResolvedFileToPublish)"
+                         Condition="$([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('glfw')) Or $([System.String]::Copy('%(ResolvedFileToPublish.Filename)').StartsWith('libglfw'))" />
+      <ResolvedFileToPublish Remove="@(_GlfwPublishFiles)" />
+      <ResolvedFileToPublish Include="@(_GlfwPublishFiles)">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 
 </Project>

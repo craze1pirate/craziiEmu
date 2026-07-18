@@ -9,12 +9,26 @@ namespace CraziiEmu.Libs.VideoOut;
 
 internal static class PngSplashLoader
 {
+    private const uint CrcPolynomial = 0xEDB88320;
+    private static readonly uint[] CrcTable = BuildCrcTable();
+
     private static ReadOnlySpan<byte> PngSignature =>
     [
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
     ];
 
     public static bool TryLoad(out byte[] pixels, out uint width, out uint height)
+        => TryLoad("pic0.png", requestRgba: false, out pixels, out width, out height);
+
+    public static bool TryLoadIcon(out byte[] pixels, out uint width, out uint height)
+        => TryLoad("icon0.png", requestRgba: true, out pixels, out width, out height);
+
+    private static bool TryLoad(
+        string fileName,
+        bool requestRgba,
+        out byte[] pixels,
+        out uint width,
+        out uint height)
     {
         pixels = [];
         width = 0;
@@ -28,13 +42,18 @@ internal static class PngSplashLoader
                 return false;
             }
 
-            var path = Path.Combine(app0Root, "sce_sys", "pic0.png");
+            var path = Path.Combine(app0Root, "sce_sys", fileName);
             if (!File.Exists(path))
             {
                 return false;
             }
 
-            return TryDecode(File.ReadAllBytes(path), out pixels, out width, out height);
+            return TryDecode(
+                File.ReadAllBytes(path),
+                out pixels,
+                out width,
+                out height,
+                requestRgba);
         }
         catch
         {
@@ -49,7 +68,8 @@ internal static class PngSplashLoader
         ReadOnlySpan<byte> png,
         out byte[] pixels,
         out uint width,
-        out uint height)
+        out uint height,
+        bool requestRgba)
     {
         pixels = [];
         width = 0;
@@ -74,6 +94,13 @@ internal static class PngSplashLoader
 
             var chunkType = png.Slice(offset + 4, 4);
             var chunkData = png.Slice(offset + 8, (int)chunkLength);
+            var expectedCrc = BinaryPrimitives.ReadUInt32BigEndian(
+                png.Slice(offset + 8 + (int)chunkLength, 4));
+            if (CalculateCrc(chunkType, chunkData) != expectedCrc)
+            {
+                return false;
+            }
+
             if (chunkType.SequenceEqual("IHDR"u8))
             {
                 if (chunkData.Length != 13)
@@ -155,15 +182,54 @@ internal static class PngSplashLoader
              sourceOffset < reconstructed.Length;
              sourceOffset += sourceBytesPerPixel, targetOffset += 4)
         {
-            pixels[targetOffset] = reconstructed[sourceOffset + 2];
+            pixels[targetOffset] = requestRgba
+                ? reconstructed[sourceOffset]
+                : reconstructed[sourceOffset + 2];
             pixels[targetOffset + 1] = reconstructed[sourceOffset + 1];
-            pixels[targetOffset + 2] = reconstructed[sourceOffset];
+            pixels[targetOffset + 2] = requestRgba
+                ? reconstructed[sourceOffset + 2]
+                : reconstructed[sourceOffset];
             pixels[targetOffset + 3] = sourceBytesPerPixel == 4
                 ? reconstructed[sourceOffset + 3]
                 : (byte)0xFF;
         }
 
         return true;
+    }
+
+    private static uint CalculateCrc(ReadOnlySpan<byte> chunkType, ReadOnlySpan<byte> chunkData)
+    {
+        var crc = UpdateCrc(uint.MaxValue, chunkType);
+        return ~UpdateCrc(crc, chunkData);
+    }
+
+    private static uint UpdateCrc(uint crc, ReadOnlySpan<byte> bytes)
+    {
+        foreach (var value in bytes)
+        {
+            crc = CrcTable[(byte)(crc ^ value)] ^ (crc >> 8);
+        }
+
+        return crc;
+    }
+
+    private static uint[] BuildCrcTable()
+    {
+        var table = new uint[256];
+        for (var index = 0; index < table.Length; index++)
+        {
+            var value = (uint)index;
+            for (var bit = 0; bit < 8; bit++)
+            {
+                value = (value & 1) != 0
+                    ? CrcPolynomial ^ (value >> 1)
+                    : value >> 1;
+            }
+
+            table[index] = value;
+        }
+
+        return table;
     }
 
     private static bool TryUnfilter(
