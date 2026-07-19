@@ -40,11 +40,6 @@ public static class HostWindowInput
         {
             keyboard.KeyDown += (_, key, _) =>
             {
-                if (key == Key.F1)
-                {
-                    VideoOut.PerfOverlay.Toggle();
-                }
-
                 lock (Gate)
                 {
                     Pressed.Add(key);

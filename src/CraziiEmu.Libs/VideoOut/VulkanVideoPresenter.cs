@@ -2761,8 +2761,7 @@ internal static unsafe class VulkanVideoPresenter
         // buffers into one image, then blitted onto the swapchain.
         private Image _overlayImage;
         private DeviceMemory _overlayImageMemory;
-        private bool _overlayImageInitialized;
-        private VkBuffer[] _overlayStagingBuffers = [];
+private VkBuffer[] _overlayStagingBuffers = [];
         private DeviceMemory[] _overlayStagingMemory = [];
         private nint[] _overlayStagingMapped = [];
         private long _presentedSequence;
@@ -4379,186 +4378,9 @@ internal static unsafe class VulkanVideoPresenter
             CreateOverlayResources();
         }
 
-        private void CreateOverlayResources()
-        {
-            const ulong overlayBytes = PerfOverlay.PanelWidth * PerfOverlay.PanelHeight * 4;
-            var imageInfo = new ImageCreateInfo
-            {
-                SType = StructureType.ImageCreateInfo,
-                ImageType = ImageType.Type2D,
-                Format = Format.B8G8R8A8Unorm,
-                Extent = new Extent3D(PerfOverlay.PanelWidth, PerfOverlay.PanelHeight, 1),
-                MipLevels = 1,
-                ArrayLayers = 1,
-                Samples = SampleCountFlags.Count1Bit,
-                Tiling = ImageTiling.Optimal,
-                Usage = ImageUsageFlags.TransferDstBit | ImageUsageFlags.TransferSrcBit,
-                SharingMode = SharingMode.Exclusive,
-                InitialLayout = ImageLayout.Undefined,
-            };
-            Check(_vk.CreateImage(_device, &imageInfo, null, out _overlayImage), "vkCreateImage(overlay)");
-            _vk.GetImageMemoryRequirements(_device, _overlayImage, out var requirements);
-            var memoryInfo = new MemoryAllocateInfo
-            {
-                SType = StructureType.MemoryAllocateInfo,
-                AllocationSize = requirements.Size,
-                MemoryTypeIndex = FindMemoryType(
-                    requirements.MemoryTypeBits,
-                    MemoryPropertyFlags.DeviceLocalBit),
-            };
-            Check(
-                _vk.AllocateMemory(_device, &memoryInfo, null, out _overlayImageMemory),
-                "vkAllocateMemory(overlay)");
-            Check(
-                _vk.BindImageMemory(_device, _overlayImage, _overlayImageMemory, 0),
-                "vkBindImageMemory(overlay)");
-            _overlayImageInitialized = false;
+        private void CreateOverlayResources() { }
 
-            _overlayStagingBuffers = new VkBuffer[MaxFramesInFlight];
-            _overlayStagingMemory = new DeviceMemory[MaxFramesInFlight];
-            _overlayStagingMapped = new nint[MaxFramesInFlight];
-            for (var slot = 0; slot < MaxFramesInFlight; slot++)
-            {
-                _overlayStagingBuffers[slot] = CreateBuffer(
-                    overlayBytes,
-                    BufferUsageFlags.TransferSrcBit,
-                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
-                    out _overlayStagingMemory[slot]);
-                void* mapped;
-                Check(
-                    _vk.MapMemory(_device, _overlayStagingMemory[slot], 0, overlayBytes, 0, &mapped),
-                    "vkMapMemory(overlay staging)");
-                _overlayStagingMapped[slot] = (nint)mapped;
-            }
-        }
-
-        private void RecordOverlayBlit(uint imageIndex, int frameSlot)
-        {
-            if (_overlayImage.Handle == 0 || _overlayStagingMapped.Length <= frameSlot)
-            {
-                return;
-            }
-
-            int pendingWork;
-            lock (_gate)
-            {
-                pendingWork = _pendingGuestWorkCount;
-            }
-
-            var pixels = new Span<byte>(
-                (void*)_overlayStagingMapped[frameSlot],
-                PerfOverlay.PanelWidth * PerfOverlay.PanelHeight * 4);
-            PerfOverlay.Fill(pixels, pendingWork, _pendingGuestSubmissions.Count);
-
-            var toTransferDst = new ImageMemoryBarrier
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                SrcAccessMask = _overlayImageInitialized ? AccessFlags.TransferReadBit : 0,
-                DstAccessMask = AccessFlags.TransferWriteBit,
-                OldLayout = _overlayImageInitialized
-                    ? ImageLayout.TransferSrcOptimal
-                    : ImageLayout.Undefined,
-                NewLayout = ImageLayout.TransferDstOptimal,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = _overlayImage,
-                SubresourceRange = ColorSubresourceRange(),
-            };
-            _vk.CmdPipelineBarrier(
-                _commandBuffer,
-                PipelineStageFlags.TransferBit,
-                PipelineStageFlags.TransferBit,
-                0, 0, null, 0, null, 1, &toTransferDst);
-
-            var copyRegion = new BufferImageCopy
-            {
-                ImageSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-                ImageExtent = new Extent3D(PerfOverlay.PanelWidth, PerfOverlay.PanelHeight, 1),
-            };
-            _vk.CmdCopyBufferToImage(
-                _commandBuffer,
-                _overlayStagingBuffers[frameSlot],
-                _overlayImage,
-                ImageLayout.TransferDstOptimal,
-                1,
-                &copyRegion);
-
-            var toTransferSrc = new ImageMemoryBarrier
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                SrcAccessMask = AccessFlags.TransferWriteBit,
-                DstAccessMask = AccessFlags.TransferReadBit,
-                OldLayout = ImageLayout.TransferDstOptimal,
-                NewLayout = ImageLayout.TransferSrcOptimal,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = _overlayImage,
-                SubresourceRange = ColorSubresourceRange(),
-            };
-            var swapchainToDst = new ImageMemoryBarrier
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                SrcAccessMask = 0,
-                DstAccessMask = AccessFlags.TransferWriteBit,
-                OldLayout = ImageLayout.PresentSrcKhr,
-                NewLayout = ImageLayout.TransferDstOptimal,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = _swapchainImages[imageIndex],
-                SubresourceRange = ColorSubresourceRange(),
-            };
-            var preBlitBarriers = stackalloc ImageMemoryBarrier[2] { toTransferSrc, swapchainToDst };
-            _vk.CmdPipelineBarrier(
-                _commandBuffer,
-                PipelineStageFlags.TransferBit | PipelineStageFlags.ColorAttachmentOutputBit,
-                PipelineStageFlags.TransferBit,
-                0, 0, null, 0, null, 2, preBlitBarriers);
-
-            const int margin = 12;
-            var panelWidth = (int)Math.Min(PerfOverlay.PanelWidth, _extent.Width - margin);
-            var panelHeight = (int)Math.Min(PerfOverlay.PanelHeight, _extent.Height - margin);
-            // Source and destination are both B8G8R8A8 and the panel is not
-            // scaled. MoltenVK has corrupted pixels outside the blit region
-            // for this transfer-on-swapchain path (horizontal red/yellow
-            // scanlines across the entire window). An exact image copy has
-            // the required semantics and avoids the driver's blit conversion
-            // path altogether.
-            var copy = new ImageCopy
-            {
-                SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-                DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
-                SrcOffset = new Offset3D(0, 0, 0),
-                DstOffset = new Offset3D(margin, margin, 0),
-                Extent = new Extent3D((uint)panelWidth, (uint)panelHeight, 1),
-            };
-            _vk.CmdCopyImage(
-                _commandBuffer,
-                _overlayImage,
-                ImageLayout.TransferSrcOptimal,
-                _swapchainImages[imageIndex],
-                ImageLayout.TransferDstOptimal,
-                1,
-                &copy);
-
-            var swapchainToPresent = new ImageMemoryBarrier
-            {
-                SType = StructureType.ImageMemoryBarrier,
-                SrcAccessMask = AccessFlags.TransferWriteBit,
-                DstAccessMask = 0,
-                OldLayout = ImageLayout.TransferDstOptimal,
-                NewLayout = ImageLayout.PresentSrcKhr,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = _swapchainImages[imageIndex],
-                SubresourceRange = ColorSubresourceRange(),
-            };
-            _vk.CmdPipelineBarrier(
-                _commandBuffer,
-                PipelineStageFlags.TransferBit,
-                PipelineStageFlags.BottomOfPipeBit,
-                0, 0, null, 0, null, 1, &swapchainToPresent);
-            _overlayImageInitialized = true;
-        }
+        private void RecordOverlayBlit(uint imageIndex, int frameSlot) { }
 
         private CommandBuffer AllocateGuestCommandBuffer()
         {
@@ -9393,7 +9215,6 @@ internal static unsafe class VulkanVideoPresenter
         {
             var perfStart = Stopwatch.GetTimestamp();
             Interlocked.Increment(ref _perfDrawCount);
-            PerfOverlay.RecordDraw();
             try
             {
                 ExecuteComputeDispatchCore(work);
@@ -10187,7 +10008,6 @@ internal static unsafe class VulkanVideoPresenter
 
             var perfStart = System.Diagnostics.Stopwatch.GetTimestamp();
             Interlocked.Increment(ref _perfDrawCount);
-            PerfOverlay.RecordDraw();
             try
             {
                 ExecuteOffscreenDrawCore(work);
@@ -12045,30 +11865,7 @@ internal static unsafe class VulkanVideoPresenter
                 System.Threading.Monitor.Wait(_gate, gpuWorkInFlight ? 1 : 8);
             }
         }
-
-        private bool _overlayHotkeyWasDown;
-
-        private void PollPerfOverlayHotkey()
-        {
-            // POSIX hosts route F1 through the GLFW window's keyboard events
-            // (HostWindowInput.Attach). Windows never attaches that path — its
-            // input comes from user32 polling — so sample the hotkey here for
-            // both the standalone window and the embedded host surface.
-            if (!OperatingSystem.IsWindows())
-            {
-                return;
-            }
-
-            const int VkF1 = 0x70;
-            var input = CraziiEmu.HLE.Host.HostPlatform.Current.Input;
-            var down = input.IsKeyDown(VkF1) && input.IsHostWindowFocused();
-            if (down && !_overlayHotkeyWasDown)
-            {
-                PerfOverlay.Toggle();
-            }
-
-            _overlayHotkeyWasDown = down;
-        }
+private void PollPerfOverlayHotkey() { }
 
         private void Render(double _)
         {
@@ -12555,11 +12352,6 @@ internal static unsafe class VulkanVideoPresenter
                     $"Unsupported translated guest draw: {presentation.DrawKind}.");
             }
 
-            if (PerfOverlay.Enabled)
-            {
-                RecordOverlayBlit(imageIndex, frameSlot);
-            }
-
             Check(_vk.EndCommandBuffer(_commandBuffer), "vkEndCommandBuffer");
 
             var imageAvailable = _frameImageAvailable[frameSlot];
@@ -12614,7 +12406,6 @@ internal static unsafe class VulkanVideoPresenter
             CheckSwapchainResult(presentResult, "vkQueuePresentKHR");
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             VideoOutExports.ReportPresentedFrame();
-            PerfOverlay.RecordPresent();
             if (_hostSurface is not null && !_firstHostFramePresented)
             {
                 _firstHostFramePresented = true;
@@ -15121,8 +14912,7 @@ internal static unsafe class VulkanVideoPresenter
             _overlayStagingBuffers = [];
             _overlayStagingMemory = [];
             _overlayStagingMapped = [];
-            _overlayImageInitialized = false;
-            foreach (var fence in _frameFences)
+foreach (var fence in _frameFences)
             {
                 if (fence.Handle != 0)
                 {

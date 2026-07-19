@@ -192,7 +192,7 @@ public partial class ConfigWindow : Window
         PanelGraphics.IsVisible = tag == "Graphics";
         PanelAudio.IsVisible    = tag == "Audio";
         PanelControls.IsVisible = tag == "Controls";
-        PanelVisual.IsVisible   = tag == "Visual";
+        PanelVisual.IsVisible   = tag == "Debug";
     }
 
     private async void OnBtnBrowseFirmware(object? sender, RoutedEventArgs e)

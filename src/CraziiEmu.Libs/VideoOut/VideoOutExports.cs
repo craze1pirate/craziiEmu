@@ -1161,7 +1161,6 @@ public static class VideoOutExports
         }
 
         PaceFlip(port.FlipRate);
-        PerfOverlay.RecordSubmit();
 
         var guestImageSubmitted = false;
         ulong guestImageAddress = 0;

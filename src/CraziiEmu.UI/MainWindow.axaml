@@ -499,7 +499,7 @@
                             <ListBoxItem Content="Graphics" Tag="Graphics" />
                             <ListBoxItem Content="Audio"    Tag="Audio"    />
                             <ListBoxItem Content="Controls" Tag="Controls" />
-                            <ListBoxItem Content="Visual"   Tag="Visual"   />
+                            <ListBoxItem Content="Debug"   Tag="Debug"   />
                         </ListBox>
                 
                         <!-- Content Area -->
@@ -695,7 +695,7 @@
                 
                                     <!-- ── Visual ── -->
                                     <StackPanel x:Name="PanelVisual" IsVisible="False" Spacing="20">
-                                        <TextBlock Classes="SectionHeader" Text="Visual" />
+                                        <TextBlock Classes="SectionHeader" Text="Debug" />
                                         
                                         <CheckBox x:Name="ChkConsoleVisible" Content="Show Emulator Console" IsChecked="False" Foreground="#FFFFFF" Margin="0,10,0,0" />
                                     </StackPanel>

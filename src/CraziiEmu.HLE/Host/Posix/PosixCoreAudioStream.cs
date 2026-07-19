@@ -80,7 +80,7 @@ internal sealed unsafe class PosixCoreAudioStream : IHostAudioStream
                 {
                     // Dispose can free the event while this thread waits
                     // outside the gate; treat that like a timed-out wait.
-                    if (!_completion.WaitOne(TimeSpan.FromSeconds(1)))
+                    if (HostSessionControl.IsShutdownRequested || !_completion.WaitOne(TimeSpan.FromSeconds(1)))
                     {
                         return false;
                     }

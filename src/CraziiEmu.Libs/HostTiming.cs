@@ -30,17 +30,32 @@ internal static class HostTiming
 
             if (remainingTicks > Stopwatch.Frequency * 60)
             {
+                if (CraziiEmu.HLE.HostSessionControl.IsShutdownRequested)
+                {
+                    return;
+                }
+
                 // Far-future target: coarse sleep avoids overflowing the
                 // microsecond conversion below and needs no precision.
-                Thread.Sleep(30_000);
+                Thread.Sleep(500);
                 continue;
             }
 
             var remainingMicroseconds = remainingTicks * 1_000_000 / Stopwatch.Frequency;
             if (remainingMicroseconds > 2200)
             {
+                if (CraziiEmu.HLE.HostSessionControl.IsShutdownRequested)
+                {
+                    return;
+                }
+
                 // Coarse sleep for the bulk; macOS overshoots ~0.5-1.5 ms.
-                Thread.Sleep((int)((remainingMicroseconds - 1200) / 1000));
+                var sleepMs = (int)((remainingMicroseconds - 1200) / 1000);
+                if (sleepMs > 500)
+                {
+                    sleepMs = 500;
+                }
+                Thread.Sleep(sleepMs);
             }
             else if (remainingMicroseconds > 1200)
             {
@@ -72,7 +87,13 @@ internal static class HostTiming
             // Long/sentinel sleeps (usleep(-1) parks): sub-millisecond
             // precision is irrelevant and the tick conversion below would
             // overflow, which used to turn the park into a hot spin.
-            Thread.Sleep((int)Math.Min(microseconds / 1000, int.MaxValue));
+            var totalMilliseconds = Math.Min(microseconds / 1000, int.MaxValue);
+            while (totalMilliseconds > 0 && !CraziiEmu.HLE.HostSessionControl.IsShutdownRequested)
+            {
+                var chunk = Math.Min(totalMilliseconds, 1000);
+                Thread.Sleep((int)chunk);
+                totalMilliseconds -= chunk;
+            }
             return;
         }
 

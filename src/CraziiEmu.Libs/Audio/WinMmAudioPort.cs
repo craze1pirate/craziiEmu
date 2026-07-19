@@ -72,7 +72,7 @@ internal sealed class WinMmAudioPort : IDisposable
             while (_queuedPcmBytes != 0 &&
                    _queuedPcmBytes + outputLength > MaximumQueuedPcmBytes)
             {
-                if (!_completion.WaitOne(TimeSpan.FromSeconds(1)))
+                if (CraziiEmu.HLE.HostSessionControl.IsShutdownRequested || !_completion.WaitOne(TimeSpan.FromSeconds(1)))
                 {
                     return false;
                 }
