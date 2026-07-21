@@ -12,13 +12,20 @@ namespace CraziiEmu.Libs.Pad;
 
 /// <summary>
 /// Keyboard and gamepad state sampled from the presenter's window, feeding
-/// the POSIX host input seam. Incorporates CraziiEmuConfig bindings.
+/// the host input seam. Incorporates CraziiEmuConfig bindings.
 /// </summary>
 public static class HostWindowInput
 {
     private static readonly object Gate = new();
     private static readonly HashSet<Key> Pressed = new();
     private static volatile bool _connected;
+    private static WindowInputSource? _source;
+
+    /// <summary>
+    /// The window-level input source that maps keyboard/mouse/gamepad state
+    /// into <see cref="HostGamepadState"/> values. Set after <see cref="Attach"/>.
+    /// </summary>
+    internal static WindowInputSource? Source => _source;
 
     // Mouse state
     private static bool _mouseLeftDown;
@@ -94,6 +101,8 @@ public static class HostWindowInput
             }
         };
 
+        _source = new WindowInputSource();
+        CraziiEmu.HLE.Host.WindowInputBridge.SetSource(_source.GetGamepadStates);
     }
 
     private static void AttachMouse(IMouse mouse)
@@ -138,7 +147,7 @@ public static class HostWindowInput
         }
     }
 
-    private sealed class WindowInputSource
+    internal sealed class WindowInputSource
     {
         public bool HasKeyboardFocus => _connected;
 

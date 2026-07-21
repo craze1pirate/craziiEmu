@@ -32,7 +32,14 @@ internal sealed partial class WindowsHostInput : IHostInput
             destination[count++] = xinput;
         }
 
-
+        if (count < destination.Length)
+        {
+            Span<HostGamepadState> windowState = stackalloc HostGamepadState[1];
+            if (WindowInputBridge.Source?.Invoke(windowState) > 0)
+            {
+                destination[count++] = windowState[0];
+            }
+        }
 
         return count;
     }
