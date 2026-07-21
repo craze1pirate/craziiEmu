@@ -18,6 +18,41 @@ public class ControllerConfig
         Bindings = new Dictionary<PsControllerButton, int>();
     }
 
+    public void SetGlobalDefaults()
+    {
+        Bindings[PsControllerButton.Cross] = 0x20; // Space
+        Bindings[PsControllerButton.Circle] = 0xA0; // LShift
+        Bindings[PsControllerButton.Square] = 0x46; // F
+        Bindings[PsControllerButton.Triangle] = 0x45; // E
+
+        Bindings[PsControllerButton.L1] = 0x51; // Q
+        Bindings[PsControllerButton.R1] = 0x52; // R
+        Bindings[PsControllerButton.L2] = 0x09; // Tab
+        Bindings[PsControllerButton.R2] = InputMap.MouseLeft; // LMB
+
+        Bindings[PsControllerButton.DpadUp] = 0x26; // Up Arrow
+        Bindings[PsControllerButton.DpadDown] = 0x28; // Down Arrow
+        Bindings[PsControllerButton.DpadLeft] = 0x25; // Left Arrow
+        Bindings[PsControllerButton.DpadRight] = 0x27; // Right Arrow
+
+        Bindings[PsControllerButton.LeftStickUp] = 0x57; // W
+        Bindings[PsControllerButton.LeftStickDown] = 0x53; // S
+        Bindings[PsControllerButton.LeftStickLeft] = 0x41; // A
+        Bindings[PsControllerButton.LeftStickRight] = 0x44; // D
+
+        Bindings[PsControllerButton.RightStickUp] = InputMap.MouseYNeg;
+        Bindings[PsControllerButton.RightStickDown] = InputMap.MouseYPos;
+        Bindings[PsControllerButton.RightStickLeft] = InputMap.MouseXNeg;
+        Bindings[PsControllerButton.RightStickRight] = InputMap.MouseXPos;
+
+        Bindings[PsControllerButton.Options] = 0x1B; // Esc
+        Bindings[PsControllerButton.Create] = 0x08; // Backspace
+        Bindings[PsControllerButton.PsButton] = 0x24; // Home
+
+        if (!Bindings.ContainsKey(PsControllerButton.L3)) Bindings[PsControllerButton.L3] = 0x43; // C
+        if (!Bindings.ContainsKey(PsControllerButton.R3)) Bindings[PsControllerButton.R3] = 0x56; // V
+    }
+
     /// <summary>
     /// Updates the backend CraziiEmuConfig with the current bindings.
     /// </summary>

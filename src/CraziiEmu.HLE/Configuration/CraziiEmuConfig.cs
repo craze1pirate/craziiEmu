@@ -35,6 +35,7 @@ public class CraziiEmuConfig
 
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
+    public bool UiFullscreenOnStartup { get; set; } = false;
     public static void Load()
     {
         try

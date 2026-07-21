@@ -458,23 +458,15 @@ public partial class MainWindow : Window
 
     private void OnGlobalPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (_bindingButton != null && _bindingProperty.HasValue)
-        {
-            var currentPos = e.GetPosition(this);
-            if (_lastMousePos != default)
-            {
-                var dx = currentPos.X - _lastMousePos.X;
-                var dy = currentPos.Y - _lastMousePos.Y;
-                if (Math.Abs(dx) > 10) ApplyBinding(dx > 0 ? InputMap.MouseXPos : InputMap.MouseXNeg);
-                else if (Math.Abs(dy) > 10) ApplyBinding(dy > 0 ? InputMap.MouseYPos : InputMap.MouseYNeg);
-            }
-            _lastMousePos = currentPos;
-            e.Handled = true;
-        }
-        else
-        {
-            _lastMousePos = e.GetPosition(this);
-        }
+        // Removed mouse movement bindings per user request
+        _lastMousePos = e.GetPosition(this);
+    }
+
+    private void OnRestoreDefaultControlsClicked(object? sender, RoutedEventArgs e)
+    {
+        _controllerConfig.SetGlobalDefaults();
+        _controllerConfig.SaveToBackend();
+        InitializeBindings();
     }
 
     private void ApplyBinding(int newKey)
@@ -896,6 +888,17 @@ public partial class MainWindow : Window
     {
         var config = CraziiEmuConfig.Instance;
         
+        if (config.UiFullscreenOnStartup)
+        {
+            WindowState = Avalonia.Controls.WindowState.FullScreen;
+        }
+
+        ChkUiFullscreen.IsChecked = config.UiFullscreenOnStartup;
+        ChkUiFullscreen.IsCheckedChanged += (s, e) => 
+        { 
+            config.UiFullscreenOnStartup = ChkUiFullscreen.IsChecked == true; 
+            config.Save(); 
+        };
 
         CmbGraphicsApi.SelectedIndex = config.GraphicsApi == "OpenGL" ? 1 : 0;
         CmbGraphicsApi.SelectionChanged += (s, e) => 

@@ -239,6 +239,8 @@
                                     </Grid>
                                 </StackPanel>
                             </Border>
+                            <!-- Restore Default -->
+                            <Button x:Name="BtnRestoreDefaultControls" Content="Restore Defaults" Click="OnRestoreDefaultControlsClicked" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Center" Padding="20,10" Margin="0,10,0,0" />
                         </StackPanel>
                     </DockPanel>
 

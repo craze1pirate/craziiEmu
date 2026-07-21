@@ -1,127 +1,136 @@
-# Project craziiEmu
+<div align="center">
+  <img src="./assets/images/logo.png" width="28%" alt="CraziiEmu Logo"/>
+  <h1>CraziiEmu</h1>
+  <p><strong>An experimental PlayStation 5 compatibility layer and research platform built with C# and .NET.</strong></p>
 
-<p align="center">
-  <img src="./assets/images/logo.png" width="30%" height="30%" alt="craziiEmu Logo" />
-</p>
-
-<p align="center">
-  <strong>An experimental, high-contrast PlayStation 5 research platform and compatibility layer.</strong>
-</p>
+  ![Platform](https://img.shields.io/badge/Platform-Windows%20x64-blue)
+  ![Framework](https://img.shields.io/badge/.NET-10-purple)
+  ![Graphics](https://img.shields.io/badge/Graphics-Vulkan-orange)
+  ![License](https://img.shields.io/badge/License-GPL--2.0-green)
+</div>
 
 ---
 
 > [!WARNING]  
-> **ANTI-PIRACY & INTELLECTUAL PROPERTY DISCLAIMER**  
-> *   **Project craziiEmu strictly condemns the use of software piracy, copyrighted hacks, and unauthorized game distribution.** 
-> *   The use of pirated software, leaked keys, or copyrighted assets is strictly not entertained, supported, or tolerated by this project.
-> *   This is an independent, non-profit research and educational project built on top of sharpemu, focused on studying microarchitecture and systems virtualization.
-> *   This repository does **not** contain or distribute any copyrighted Sony system firmware, proprietary BIOS, cryptographic keys, or official PlayStation assets. Users must provide their own legally obtained, decrypted system files and game dumps extracted from hardware they physically own.
+> ### 🧪 Experimental Software
+> CraziiEmu is an early-stage PlayStation 5 emulator intended for research, reverse engineering, and emulator development. Compatibility is currently limited, many kernel services remain incomplete, and crashes or missing functionality are expected.
 
-> [!WARNING]  
-> **GRAPHICS API COMPATIBILITY STATUS**  
-> *   **Vulkan:** Highly recommended and stable. It serves as the primary presentation target for graphics hardware rendering.
-> *   **OpenGL:** Currently supported as a legacy presentation fallback, but is considered **unstable and may experience crashes** under heavy rendering workloads.
-
----
-
-## Overview
-
-**Project craziiEmu** is an experimental PlayStation 5 compatibility layer and virtual machine emulator built entirely in C# on modern .NET. 
-
-The name **craziiEmu** represents a dual identity: **crazii** (derived from my online handle `crazii`) merged with **Emu** (retaining the naming heritage of the original `sharpemu` repository as a direct sign of respect to the upstream codebase and its creator).
-
-This project is built directly on top of the excellent groundwork laid by the open-source **[sharpemu](https://github.com/par274/sharpemu)** emulator project. Our focus is on optimizing memory management bounds, standardizing high-level operating system system calls (HLE), and introducing a premium, console-like desktop experience for research testing.
-
-Currently, development and compilation primarily target 64-bit Windows systems (refer original developer page).
+> [!IMPORTANT]  
+> ### ⚖️ Legal Notice
+> CraziiEmu does **not** include or distribute:
+> * PlayStation 5 firmware or Sony proprietary libraries
+> * Cryptographic keys, game content, or copyrighted assets
+> 
+> Users are strictly responsible for supplying legally obtained files extracted from hardware they own. **This project does not support piracy.**
 
 ---
 
-## Key Features
+## 📖 Overview
 
-### 🖥️ Premium Console-Like Desktop GUI (Avalonia UI)
-Instead of a standard, cluttered desktop window, `craziiEmu` features a highly custom, minimalist, dark-themed console dashboard designed natively using **Avalonia UI**:
-*   **Fluid Game Carousel:** A horizontally scrolling, responsive card system representing your executable library, modeled directly after modern console interfaces.
-*   **Custom Brand Integration:** Displays the project's custom compiled identity and boot splash screen cleanly.
-*   **On-Demand Ambient Particles:** Integrates an active, lightweight background rendering control that draws subtle, floating physics-based dust particles updating at 60 FPS.
-*   **Dynamic Wallpaper & VRAM Blitting:** Automatically maps the game's native background artwork assets (`pic1.png`) dynamically to the dashboard when focused, rendering color sweeps with high contrast.
-*   **Real-time Log Console:** A toggleable, built-in diagnostic terminal pane at the bottom of the dashboard that streams active CPU tracing, symbol relocation logs, and system alerts.
-*   **Settings Configuration Dialog:** A dedicated, clean settings menu to configure directory paths, choose CPU accuracy modes (Accurate vs. Fast/Native), and select graphics devices.
-*   **Proper fullscreen support:** The emulator can now run games with fullscreen functionality. F11 acts as fullscreen toggle.
+**CraziiEmu** is an experimental PlayStation 5 compatibility layer written entirely in C# using modern .NET. 
 
-### 🎮 Advanced Keyboard & Controller Mapping
-*   **Dynamic Customization:** Allows users to interactively map any physical keyboard key directly to virtual PlayStation controller inputs.
-*   **Duplicate-Swapping Conflict Resolution:** If you assign a key that is already mapped to another button, the system automatically swaps the two bindings in memory, preventing double-bind conflicts.
-*   **Broad Controller Support:** Natively supports standard controller inputs (including DualShock 3, DualShock 4, DualSense, and Xbox controllers) mapped via local XInput polling.
+Built upon the excellent open-source foundation of the **[SharpEmu](https://github.com/par274/sharpemu)** project, CraziiEmu extends the architecture with a highly-polished desktop frontend, runtime optimizations, expanded High-Level Emulation (HLE) implementations, and ongoing compatibility work. 
 
-### 🧠 Dual-Mode CPU Execution Engine
-`craziiEmu` features a highly advanced, dual-mode execution pipeline. Users can toggle between accuracy and raw speed inside the System Configuration window:
-*   **Accurate Mode (Software Interpreter):** An instruction-by-instruction decoder powered by the `Iced` library, useful for rigorous step-by-step debugging and absolute trace diagnostics. It decodes standard arithmetic, stack frames, relative jumps, and loop control instructions (`push`, `pop`, `cmp`, conditional jumps).
-*   **Fast Mode (Direct/Native Execution):** Bypasses the software interpreter entirely and executes guest x86-64 code directly on the host CPU using the native `DirectExecutionBackend` at full hardware speed. This bypasses the instruction limit of the interpreter, allowing fully optimized compiler binaries to execute.
-
-### ⚙️ Core Virtualization & Emulation Engine
-*   **Dual ELF & SELF Loading:** Seamlessly detects and parses standard 64-bit ELF binaries as well as Sony's custom, compressed `SELF` (`SCE\0`) container formats, extracting entry points natively.
-*   **Dynamic Linker & Relocation Engine:** Parses `PT_DYNAMIC` program headers, recursively loads dependent `.sprx` system modules, and patches complex standard pointer relocations (`R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`).
-*   **Unmanaged memory manager (VMM):** Allocates a massive 64GB contiguous address space pool. Features a pure **native x86-64 assembly page-fault VEH trampoline** to bypass strict .NET 10 hardware exception thread-boundary blocks.
-*   **Page-Aligned Address Translation:** Implements a lightweight, TLB-style translation Page Table inside the memory manager to safely map sparse high-memory guest ranges (like the `0x700000000000` system call table) to safe physical RAM offsets.
-*   **PS5 `libkernel` HLE Stubs:** Houses completed C# system-call implementations for core OS operations, including thread sleeping (`sceKernelUsleep`), system time (`sceKernelGettimeofday`), and memory allocation (`sceKernelAllocateDirectMemory`).
+Currently, development and compilation natively target **Windows x64**.
 
 ---
 
-## Interface & Mapping Preview
+## ✨ Features
 
-<p align="center">
-  <em>Main Dashboard (Games Library Tab)</em><br/>
-  <img src="./assets/images/dashboard.png" width="80%" alt="craziiEmu Dashboard" />
-</p>
+### 🖥️ Premium Desktop Interface
+Built using **Avalonia UI**, the frontend provides a console-like experience rather than a traditional windowed debugger:
+- **Modern, Dark-Themed Dashboard:** A highly responsive, console-inspired scrolling game library.
+- **Dynamic Theming:** Seamlessly maps native background artwork (`pic1.png`) from your game library, adapting the interface on the fly.
+- **Integrated Console:** A real-time, built-in diagnostic logging terminal for trace monitoring.
+- **Configurable Settings:** Manage graphics, audio, debugging, and comprehensive controller configurations all within the UI.
+- **Fullscreen Experience:** The emulator natively defaults to fullscreen mode, seamlessly toggled via `F11`.
 
-<p align="center">
-  <em>Advanced Key-Mapping Controller Configuration</em><br/>
-  <img src="./assets/images/controls.png" width="80%" alt="craziiEmu Controls" />
-</p>
+### 🎮 Advanced Input Mapping
+- Native support for Keyboard, DualSense, DualShock 4, and Xbox controllers.
+- Interactive custom key mapping and dynamic controller remapping.
+- **Conflict Resolution:** Automatically swaps duplicate bindings in memory to prevent input overlap.
+
+### ⚙️ Core Architecture & Runtime
+- **Direct Execution Backend:** Bypasses software interpretation entirely, executing guest x86-64 code directly on the host CPU for maximum hardware speed.
+- **Advanced Executable Loading:** Detects and parses both standard 64-bit ELF binaries and Sony's compressed SELF (`SCE\0`) containers, automatically extracting entry points.
+- **Dynamic Linker:** Parses `PT_DYNAMIC` program headers, recursively loads dependent `.sprx` modules, and resolves complex relocations (`R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`).
+
+### 🧠 Memory & HLE Virtualization
+- **Virtual Memory Manager:** Allocates a massive guest virtual address space utilizing page-based allocation.
+- **Native VEH Trampoline:** Features native x86-64 assembly page-fault handling to safely bridge Windows hardware exceptions.
+- **`libkernel` HLE Stubs:** Houses active implementations for critical PlayStation OS services, including thread management, memory allocation, synchronization primitives, and sleep/timing functions.
+
+### 🎥 Graphics (Vulkan)
+Graphics presentation is built exclusively on **Vulkan**, offering a high-performance rendering pathway. Implementations include swapchain creation, direct video output, and splash image presentation. *(Internal resolution scaling is planned for future updates).*
 
 ---
 
-## Build & Installation
+## 🖼️ Interface Preview
 
-To compile and run `craziiEmu` natively on your computer:
+<div align="center">
+  <p><em>Main Dashboard (Games Library Tab)</em></p>
+  <img src="./assets/images/dashboard.png" width="85%" alt="CraziiEmu Dashboard">
+
+  <br><br>
+
+  <p><em>Advanced Controller Configuration</em></p>
+  <img src="./assets/images/controls.png" width="85%" alt="CraziiEmu Controls">
+</div>
+
+---
+
+## 🛠️ Build & Installation
 
 ### Prerequisites
-*   **.NET 10 SDK** (or newer)
-*   A 64-bit Windows operating system (Windows 11 recommended)
+* **.NET 10 SDK** (or newer)
+* **Windows x64** (Windows 11 recommended)
+* A Vulkan-compatible GPU
 
 ### Compilation Steps
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/craziiEmu.git
-    cd craziiEmu
-    ```
-2.  Build the solution:
-    ```bash
-    dotnet build -c Release
-    ```
-3.  Publish as a standalone, single-file native Windows executable:
-    ```bash
-    dotnet publish src/CraziiEmu.UI/CraziiEmu.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false
-    ```
-4.  The final, standalone binary **`CraziiEmu.UI.exe`** will be located in the `artifacts/publish/` folder.
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/craze1pirate/craziiEmu.git
+   cd craziiEmu
+   ```
+2. **Build the solution:**
+   ```bash
+   dotnet build -c Release
+   ```
+3. **Run directly via CLI:**
+   ```bash
+   dotnet run --project src/CraziiEmu.UI
+   ```
+4. **Publish as a standalone native executable:**
+   ```bash
+   dotnet publish src/CraziiEmu.UI/CraziiEmu.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+   ```
 
 ---
 
-## Community Feedback
-
-This is an early-stage experimental research project. Community feedback, detailed bug reports, and pull requests are highly appreciated. If you encounter missing instructions or unmapped system calls, please open an issue in the tracker with your absolute terminal log trace.
-
----
-
-## Special Thanks
-
-*   **[par274 / sharpemu](https://github.com/par274/sharpemu):** This project is built directly on top of `sharpemu`'s original source code. We are immensely grateful to the original creator for providing the brilliant architectural codebase and reverse-engineering research.
-*   **[ShadPS4](https://github.com/shadps4-emu/shadPS4):** Extremely helpful for studying the PlayStation shared library and kernel behaviors.
-*   **Ryujinx:** Provided outstanding design references for high-performance C# filesystem and unmanaged memory abstractions.
+## 🚀 Roadmap
+CraziiEmu is under active development. Current and planned priorities include:
+- Expanding `libkernel` HLE coverage and boot compatibility.
+- Enhancing runtime stability and module loading.
+- Implementing internal graphics resolution scaling.
+- Audio backend improvements.
+- Expanding the integrated debugging toolset.
 
 ---
 
-## License
+## 🤝 Contributing
+Bug reports, pull requests, and reverse engineering research are highly welcome. 
+When opening an issue, please provide your **Build Version**, **OS/Hardware Specs**, the **Game/Executable** tested, and an absolute **Emulator Log Trace** or stack trace.
 
-This project is licensed under the terms of the **GNU General Public License v2.0 (GPL-2.0)**.
-See the [LICENSE](https://github.com/craze1pirate/craziiEmu/blob/main/LICENSE) file for details.
+---
+
+## 🙏 Acknowledgements
+Special thanks to the following projects for making this possible:
+- **[SharpEmu](https://github.com/par274/sharpemu)** — The original architectural foundation and initial research.
+- **[shadPS4](https://github.com/shadps4-emu/shadPS4)** — An invaluable reference for PlayStation 5 kernel and shared library behaviors.
+- **[Ryujinx](https://github.com/Ryujinx/Ryujinx)** — Inspiration for high-performance C# runtime and systems programming techniques.
+
+---
+
+## 📝 License
+CraziiEmu is licensed under the **GNU General Public License v2.0 (GPL-2.0)**. 
+See the [LICENSE](LICENSE) file for more information.

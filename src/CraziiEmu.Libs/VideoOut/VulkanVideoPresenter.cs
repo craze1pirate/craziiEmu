@@ -3087,6 +3087,7 @@ private VkBuffer[] _overlayStagingBuffers = [];
             options.VSync = true;
             options.FramesPerSecond = 60;
             options.UpdatesPerSecond = 60;
+            options.WindowState = WindowState.Fullscreen;
             _window = Window.Create(options);
             _window.Load += Initialize;
             _window.Render += Render;
@@ -3143,7 +3144,20 @@ private VkBuffer[] _overlayStagingBuffers = [];
                 LogGlfwPlatformInUse();
                 try
                 {
-                    Pad.HostWindowInput.Attach(_window.CreateInput());
+                    var inputContext = _window.CreateInput();
+                    Pad.HostWindowInput.Attach(inputContext);
+                    foreach (var kb in inputContext.Keyboards)
+                    {
+                        kb.KeyDown += (_, key, _) =>
+                        {
+                            if (key == Silk.NET.Input.Key.F11)
+                            {
+                                _window.WindowState = _window.WindowState == WindowState.Fullscreen 
+                                    ? WindowState.Normal 
+                                    : WindowState.Fullscreen;
+                            }
+                        };
+                    }
                     Console.Error.WriteLine("[LOADER][INFO] Window keyboard input attached for pad emulation.");
                 }
                 catch (Exception exception)
