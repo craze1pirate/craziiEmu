@@ -51,7 +51,7 @@ jobs:
         run: |
           short_sha="${GITHUB_SHA::7}"
           safe_ref="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
-          version="$(python3 -c 'import sys, xml.etree.ElementTree as ET; version = ET.parse("Directory.Build.props").getroot().findtext(".//SharpEmuVersion"); sys.exit("Directory.Build.props is missing SharpEmuVersion") if not version or not version.strip() else print(version.strip())')"
+          version="$(python3 -c 'import sys, xml.etree.ElementTree as ET; version = ET.parse("Directory.Build.props").getroot().findtext(".//CraziiEmuVersion"); sys.exit("Directory.Build.props is missing CraziiEmuVersion") if not version or not version.strip() else print(version.strip())')"
           release_tag="v${version}"
           release_name="CraziiEmu v${version}"
 
@@ -113,7 +113,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path $env:RELEASE_DIR -Force | Out-Null
 
-          $archiveName = "sharpemu-${{ needs.init.outputs.version }}-win-x64.zip"
+          $archiveName = "craziiemu-${{ needs.init.outputs.version }}-win-x64.zip"
           $archivePath = Join-Path $env:RELEASE_DIR $archiveName
           if (Test-Path $archivePath) {
             Remove-Item $archivePath -Force
@@ -124,8 +124,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sharpemu-win-x64-${{ needs.init.outputs.short-sha }}
-          path: ${{ env.RELEASE_DIR }}\sharpemu-${{ needs.init.outputs.version }}-win-x64.zip
+          name: craziiemu-win-x64-${{ needs.init.outputs.short-sha }}
+          path: ${{ env.RELEASE_DIR }}\craziiemu-${{ needs.init.outputs.version }}-win-x64.zip
           if-no-files-found: error
 
   build-posix:
@@ -161,18 +161,18 @@ jobs:
             Directory.Build.props
 
       - name: Restore solution
-        run: dotnet restore SharpEmu.slnx
+        run: dotnet restore CraziiEmu.slnx
 
       - name: Build solution
-        run: dotnet build SharpEmu.slnx -c Release --no-restore
+        run: dotnet build CraziiEmu.slnx -c Release --no-restore
 
       # Also runs on Linux/macOS: the aerolib.bin MSBuild task does platform-sensitive
       # path handling, so a cross-platform generation regression surfaces here.
       - name: Run tests
-        run: dotnet test SharpEmu.slnx -c Release --no-build --verbosity normal
+        run: dotnet test CraziiEmu.slnx -c Release --no-build --verbosity normal
 
       - name: Publish ${{ matrix.rid }} CLI
-        run: dotnet publish src/SharpEmu.CLI/SharpEmu.CLI.csproj -c Release -r ${{ matrix.rid }} --self-contained true --no-restore -p:PublishDir="$PUBLISH_DIR"
+        run: dotnet publish src/CraziiEmu.CLI/CraziiEmu.CLI.csproj -c Release -r ${{ matrix.rid }} --self-contained true --no-restore -p:PublishDir="$PUBLISH_DIR"
 
       - name: Stage MoltenVK next to the build
         if: matrix.rid == 'osx-x64'
@@ -182,14 +182,14 @@ jobs:
         run: |
           mkdir -p "$RELEASE_DIR"
           # tar keeps the executable bit, which zip would drop.
-          tar -czf "$RELEASE_DIR/sharpemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz" \
+          tar -czf "$RELEASE_DIR/craziiemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz" \
             -C "$PUBLISH_DIR" .
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sharpemu-${{ matrix.rid }}-${{ needs.init.outputs.short-sha }}
-          path: ${{ env.RELEASE_DIR }}/sharpemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz
+          name: craziiemu-${{ matrix.rid }}-${{ needs.init.outputs.short-sha }}
+          path: ${{ env.RELEASE_DIR }}/craziiemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -225,7 +225,7 @@ jobs:
             exit 1
           fi
 
-          notes="Automated SharpEmu v${VERSION} build for commit ${GITHUB_SHA}."
+          notes="Automated CraziiEmu v${VERSION} build for commit ${GITHUB_SHA}."
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} already exists and will not be modified." >&2
