@@ -6316,8 +6316,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 	}
 
+	partial void PrintHc4Stats(DirectExecutionBackend backend);
+
 	public unsafe void Dispose()
 	{
+		PrintHc4Stats(this);
 		// Guest workers unwind cooperatively at their next import or block
 		// boundary once the forced-exit flag is set. Everything freed below is
 		// still reachable from a worker inside guest code, so drain the

@@ -362,7 +362,7 @@ public static class KernelExports
         ExportName = "open",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int Open(CpuContext ctx) => KernelMemoryCompatExports.KernelOpenUnderscore(ctx);
+    public static int Open(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelMemoryCompatExports.KernelOpenUnderscore(ctx));
 
     [SysAbiExport(
         Nid = "1G3lF1Gg1k8",
@@ -376,7 +376,7 @@ public static class KernelExports
         ExportName = "fstat",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libc")]
-    public static int Fstat(CpuContext ctx) => KernelMemoryCompatExports.KernelFstat(ctx);
+    public static int Fstat(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelMemoryCompatExports.KernelFstat(ctx));
 
     [SysAbiExport(
         Nid = "hcuQgD53UxM",

@@ -747,6 +747,11 @@ public sealed class SelfLoader : ISelfLoader
 
         foreach (var descriptor in descriptors)
         {
+            ulong relOffset = descriptor.TargetAddress >= imageBase ? descriptor.TargetAddress - imageBase : descriptor.TargetAddress;
+            if (relOffset == 0x0DFA0 || relOffset == 0x02322A38UL || (relOffset >= 0x0DF80 && relOffset <= 0x0DFC0))
+            {
+                Console.Error.WriteLine($"[LOADER][TARGET_REL_OFFSET] imageBase=0x{imageBase:X16} relOffset=0x{relOffset:X} ImportNid={descriptor.ImportNid ?? "null"} TargetAddr=0x{descriptor.TargetAddress:X16}");
+            }
             ulong symbolValue;
             if (descriptor.ImportNid is null)
             {
@@ -772,6 +777,10 @@ public sealed class SelfLoader : ISelfLoader
             }
 
             var targetValue = ComputeRelocationValue(descriptor, symbolValue);
+            if (descriptor.TargetAddress >= 0x0000000802322A00UL && descriptor.TargetAddress <= 0x0000000802322A70UL)
+            {
+                Console.Error.WriteLine($"[LOADER][TARGET_GOT_RANGE] TargetAddress=0x{descriptor.TargetAddress:X16} ImportNid={descriptor.ImportNid ?? "null"} SymbolValue=0x{descriptor.SymbolValue:X16} ValueKind={descriptor.ValueKind} TargetValue=0x{targetValue:X16}");
+            }
 
             if (targetValue < 0x1000 && descriptor.ValueKind is
                 RelocationValueKind.TlsOffset or
@@ -1522,6 +1531,10 @@ public sealed class SelfLoader : ISelfLoader
             var symbolAddress = symbol.Value >= imageBase
                 ? symbol.Value
                 : unchecked(imageBase + symbol.Value);
+            if (imageBase == 0x00000008043E0000UL)
+            {
+                Console.Error.WriteLine($"[LOADER][WEBAPI_SYM] symbol='{symbolName}' offset=0x{symbol.Value:X} addr=0x{symbolAddress:X16}");
+            }
             if (symbolAddress < 0x10000)
             {
                 continue;

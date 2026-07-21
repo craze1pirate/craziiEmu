@@ -647,6 +647,36 @@ public static class KernelRuntimeCompatExports
         return address != 0 && TryWriteInt32(ctx, address, value);
     }
 
+    public static int PosixSyscallResult(CpuContext ctx, OrbisGen2Result sceResult)
+    {
+        return PosixSyscallResult(ctx, (int)sceResult);
+    }
+
+    public static int PosixSyscallResult(CpuContext ctx, int sceResult)
+    {
+        if (sceResult == (int)OrbisGen2Result.ORBIS_GEN2_OK)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        int errnoValue = (OrbisGen2Result)sceResult switch
+        {
+            OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED => 13, // EACCES
+            OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND => 2, // ENOENT
+            OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT => 22, // EINVAL
+            OrbisGen2Result.ORBIS_GEN2_ERROR_ALREADY_EXISTS => 17, // EEXIST
+            OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY => 16, // EBUSY
+            OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT => 14, // EFAULT
+            OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK => 11, // EDEADLK
+            (OrbisGen2Result)unchecked((int)0x80020009) => 9, // EBADF
+            _ => sceResult & 0xFFFF
+        };
+
+        TrySetErrno(ctx, errnoValue);
+        ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     [SysAbiExport(
         Nid = "bnZxYgAFeA0",
         ExportName = "sceKernelGetSanitizerNewReplaceExternal",

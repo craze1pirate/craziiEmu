@@ -1542,7 +1542,7 @@ public static partial class KernelMemoryCompatExports
         ExportName = "close",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int PosixClose(CpuContext ctx) => KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi]));
+    public static int PosixClose(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelCloseCore(ctx, unchecked((int)ctx[CpuRegister.Rdi])));
 
     [SysAbiExport(
         Nid = "UK2Tl2DWUns",
@@ -1604,27 +1604,7 @@ public static partial class KernelMemoryCompatExports
         ExportName = "stat",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libc")]
-    public static int PosixStat(CpuContext ctx)
-    {
-        var result = KernelStat(ctx);
-        if (result == (int)OrbisGen2Result.ORBIS_GEN2_OK)
-        {
-            return 0;
-        }
-
-        // stat(2) follows the libc/POSIX ABI: failures return -1 and expose
-        // the reason through errno. Returning the raw Orbis kernel code here
-        // makes callers treat a missing file as a non-negative success value.
-        var errno = result switch
-        {
-            (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT => Einval,
-            (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT => Efault,
-            _ => 2, // ENOENT
-        };
-        KernelRuntimeCompatExports.TrySetErrno(ctx, errno);
-        ctx[CpuRegister.Rax] = ulong.MaxValue;
-        return -1;
-    }
+    public static int PosixStat(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelStat(ctx));
 
     [SysAbiExport(
         Nid = "gEpBkcwxUjw",
@@ -2093,7 +2073,7 @@ public static partial class KernelMemoryCompatExports
         ExportName = "read",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int PosixRead(CpuContext ctx) => KernelReadUnderscore(ctx);
+    public static int PosixRead(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelReadUnderscore(ctx));
 
     [SysAbiExport(
         Nid = "Cg4srZ6TKbU",
@@ -2109,20 +2089,11 @@ public static partial class KernelMemoryCompatExports
         LibraryName = "libKernel")]
     public static int PosixLseek(CpuContext ctx)
     {
-        var result = KernelLseekCore(
+        return KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelLseekCore(
             unchecked((int)ctx[CpuRegister.Rdi]),
             unchecked((long)ctx[CpuRegister.Rsi]),
             unchecked((int)ctx[CpuRegister.Rdx]),
-            out var position);
-
-        if (result != OrbisGen2Result.ORBIS_GEN2_OK)
-        {
-            ctx[CpuRegister.Rax] = ulong.MaxValue;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)position);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            out _));
     }
 
     [SysAbiExport(
@@ -2292,7 +2263,7 @@ public static partial class KernelMemoryCompatExports
         ExportName = "write",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int PosixWrite(CpuContext ctx) => KernelWriteUnderscore(ctx);
+    public static int PosixWrite(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelWriteUnderscore(ctx));
 
     [SysAbiExport(
         Nid = "4wSze92BhLI",

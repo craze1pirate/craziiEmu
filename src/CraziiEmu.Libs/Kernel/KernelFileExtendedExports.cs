@@ -46,7 +46,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "ezv-RSBNKqI", ExportName = "pread",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixPread(CpuContext ctx) => KernelPreadCore(ctx);
+    public static int PosixPread(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelPreadCore(ctx));
 
     [SysAbiExport(Nid = "+r3rMFwItV4", ExportName = "sceKernelPread",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -97,7 +97,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "C2kJ-byS5rM", ExportName = "pwrite",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixPwrite(CpuContext ctx) => KernelPwriteCore(ctx);
+    public static int PosixPwrite(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelPwriteCore(ctx));
 
     [SysAbiExport(Nid = "nKWi-N2HBV4", ExportName = "sceKernelPwrite",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -149,7 +149,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "juWbTNM+8hw", ExportName = "fsync",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixFsync(CpuContext ctx) => KernelFsyncCore(ctx);
+    public static int PosixFsync(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelFsyncCore(ctx));
 
     [SysAbiExport(Nid = "fTx66l5iWIA", ExportName = "sceKernelFsync",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -157,7 +157,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "KIbJFQ0I1Cg", ExportName = "fdatasync",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixFdatasync(CpuContext ctx) => KernelFsyncCore(ctx);
+    public static int PosixFdatasync(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelFsyncCore(ctx));
 
     [SysAbiExport(Nid = "30Rh4ixbKy4", ExportName = "sceKernelFdatasync",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -210,7 +210,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "ih4CD9-gghM", ExportName = "ftruncate",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixFtruncate(CpuContext ctx) => KernelFtruncateCore(ctx);
+    public static int PosixFtruncate(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelFtruncateCore(ctx));
 
     [SysAbiExport(Nid = "VW3TVZiM4-E", ExportName = "sceKernelFtruncate",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -246,7 +246,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "ayrtszI7GBg", ExportName = "truncate",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixTruncate(CpuContext ctx) => KernelTruncateCore(ctx);
+    public static int PosixTruncate(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelTruncateCore(ctx));
 
     [SysAbiExport(Nid = "WlyEA-sLDf0", ExportName = "sceKernelTruncate",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -289,7 +289,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "NN01qLRhiqU", ExportName = "rename",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixRename(CpuContext ctx) => KernelRenameCore(ctx);
+    public static int PosixRename(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelRenameCore(ctx));
 
     [SysAbiExport(Nid = "52NcYU9+lEo", ExportName = "sceKernelRename",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
@@ -402,7 +402,7 @@ public static partial class KernelMemoryCompatExports
 
     [SysAbiExport(Nid = "8nY19bKoiZk", ExportName = "fcntl",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixFcntl(CpuContext ctx) => KernelFcntlCore(ctx);
+    public static int PosixFcntl(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelFcntlCore(ctx));
 
     [SysAbiExport(Nid = "SoZkxZkCHaw", ExportName = "sceKernelFcntl",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]

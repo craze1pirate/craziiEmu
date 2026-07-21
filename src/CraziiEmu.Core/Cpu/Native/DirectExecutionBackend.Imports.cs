@@ -19,6 +19,8 @@ namespace CraziiEmu.Core.Cpu.Native;
 
 public sealed partial class DirectExecutionBackend
 {
+	private static int _hc4CallCount = 0;
+	
 	// The native import trampoline keeps the original guest GPR stack layout at
 	// argPackPtr and stores volatile SysV-only state immediately below it.  This
 	// lets the managed gateway observe AL (the variadic vector-argument count)
@@ -80,11 +82,62 @@ public sealed partial class DirectExecutionBackend
 	private unsafe static int TryRecoverUnresolvedSentinel(void* exceptionInfo)
 	{
 		EXCEPTION_RECORD* exceptionRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ExceptionRecord;
+		void* contextRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ContextRecord;
+		
+		if (exceptionRecord->ExceptionCode == 0xC0000005u) // STATUS_ACCESS_VIOLATION
+		{
+			ulong rip = (ulong)exceptionRecord->ExceptionAddress;
+			Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] Access Violation at {rip:X16}");
+			
+			ulong rax = ReadCtxU64(contextRecord, 120);
+			ulong rbx = ReadCtxU64(contextRecord, 144);
+			ulong rcx = ReadCtxU64(contextRecord, 128);
+			ulong rdx = ReadCtxU64(contextRecord, 136);
+			ulong rsi = ReadCtxU64(contextRecord, 168);
+			ulong rdi = ReadCtxU64(contextRecord, 176);
+			ulong tracerRsp = ReadCtxU64(contextRecord, 152);
+			ulong rbp = ReadCtxU64(contextRecord, 160);
+			ulong r8 = ReadCtxU64(contextRecord, 184);
+			ulong r9 = ReadCtxU64(contextRecord, 192);
+			Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RAX={rax:X16} RBX={rbx:X16} RCX={rcx:X16} RDX={rdx:X16}");
+			Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RSI={rsi:X16} RDI={rdi:X16} RSP={tracerRsp:X16} RBP={rbp:X16}");
+			Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R8={r8:X16} R9={r9:X16}");
+			
+			Console.Error.WriteLine("\n[CRASH DIAGNOSTICS] --- Disassembly around crash site ---");
+			
+			ulong startRip = rip - 60;
+			byte[] code = new byte[120];
+			if (TryReadHostBytes(startRip, code))
+			{
+				var reader = new Iced.Intel.ByteArrayCodeReader(code);
+				var decoder = Iced.Intel.Decoder.Create(64, reader);
+				decoder.IP = startRip;
+				var formatter = new Iced.Intel.NasmFormatter();
+				var output = new Iced.Intel.StringOutput();
+				
+				while (decoder.IP < rip + 20)
+				{
+					decoder.Decode(out var instr);
+					if (instr.IsInvalid) continue;
+					
+					formatter.Format(instr, output);
+					string marker = (instr.IP == rip) ? "=> " : "   ";
+					Console.Error.WriteLine($"[CRASH DIAGNOSTICS] {marker}{instr.IP:X16} | {output.ToStringAndReset()}");
+				}
+			}
+			else
+			{
+				Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory around RIP>");
+			}
+			Console.Error.WriteLine("[CRASH DIAGNOSTICS] -------------------------------------\n");
+			
+			return 0;
+		}
+
 		if (exceptionRecord->ExceptionCode != 3221225477u)
 		{
 			return 0;
 		}
-		void* contextRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ContextRecord;
 		ulong value = ReadCtxU64(contextRecord, 248);
 		ulong value2 = (ulong)exceptionRecord->ExceptionAddress;
 		if (value == StackCheckGuardValue && TryRecoverCanaryReturn(contextRecord))
@@ -412,6 +465,15 @@ public sealed partial class DirectExecutionBackend
 		{
 			Console.Error.WriteLine($"[LOADER][TRACE] {importStubEntry.Nid}#{num}: rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} rdx=0x{cpuContext[CpuRegister.Rdx]:X16} ret=0x{num7:X16}");
 		}
+		// Trace the import called just before the crash loop (return address = 0x0000000800D1504C)
+		if (num7 == 0x0000000800D1504C)
+		{
+			Console.Error.WriteLine(
+				$"[CRASH-TRACE] Import called before crash loop: nid={importStubEntry.Nid} " +
+				$"export={importStubEntry.Export?.Name ?? "<null>"} lib={importStubEntry.Export?.LibraryName ?? "<null>"} " +
+				$"rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} " +
+				$"rdx=0x{cpuContext[CpuRegister.Rdx]:X16} rcx=0x{cpuContext[CpuRegister.Rcx]:X16}");
+		}
 		if (flag6 || flag || flag2 || flag3)
 		{
 			Console.Error.WriteLine($"[LOADER][TRACE] ImportCtx#{num}: nid={importStubEntry.Nid} ret=0x{num7:X16} rdi=0x{cpuContext[CpuRegister.Rdi]:X16} rsi=0x{cpuContext[CpuRegister.Rsi]:X16} rdx=0x{cpuContext[CpuRegister.Rdx]:X16} rcx=0x{cpuContext[CpuRegister.Rcx]:X16}");
@@ -552,6 +614,43 @@ public sealed partial class DirectExecutionBackend
 				{
 					DumpIl2CppExceptionDiagnostic(cpuContext, value, num7);
 				}
+				if (importStubEntry.Nid == "Hc4CaR6JBL0")
+				{
+					// Hc4CaR6JBL0 appears to be a synchronization primitive (like _umtx_op or sceKernelYield).
+					// Games call this in a tight loop checking if memory has been mutated by another thread.
+					// We must yield the host thread so the other guest thread can run and unlock it.
+					int count = System.Threading.Interlocked.Increment(ref _hc4CallCount);
+					if (count == 2500000)
+					{
+						ulong guestTid = GuestThreadExecution.CurrentGuestThreadHandle;
+						ulong lockValue = 0;
+						try { lockValue = *(ulong*)value; } catch { }
+						Console.Error.WriteLine("\n[SYNC-TRACER] === FATAL DEADLOCK DETECTED ===");
+						Console.Error.WriteLine($"[SYNC-TRACER] Waiter TID: 0x{guestTid:X16}");
+						Console.Error.WriteLine($"[SYNC-TRACER] Lock Address: 0x{value:X16}");
+						Console.Error.WriteLine($"[SYNC-TRACER] Lock Value:   0x{lockValue:X16}");
+						Console.Error.WriteLine("[SYNC-TRACER] =================================\n");
+					}
+					System.Threading.Thread.Sleep(1);
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "q2y-wDIVWZA")
+				{
+					// q2y-wDIVWZA is a blocking wait primitive (like sceKernelWaitSema).
+					// Because we don't currently track the underlying sync object state, returning
+					// success immediately tricks the caller into a tight spin loop, starving the 
+					// owner thread. Surrendering the CPU time slice allows the owner to progress.
+					
+					if (num7 == 0x0000000800B2AEAA) // Crashing thread's return address
+					{
+						// We no longer inject INT 3 here. We wait for the crash.
+					}
+					
+					System.Threading.Thread.Sleep(1);
+					return 0ul;
+				}
+
 				Console.Error.WriteLine(
 					$"[LOADER][WARN] Import#{num} unresolved: nid={importStubEntry.Nid} ret=0x{num7:X16} " +
 					$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} r8=0x{num5:X16} r9=0x{num6:X16}");
@@ -2029,6 +2128,10 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine(
 				$"[LOADER][TRACE] sceKernelDlsym: handle=0x{moduleHandle:X} symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
 		}
+		if (outputAddress == 0x0000000802322A38UL)
+		{
+			Console.Error.WriteLine($"[LOADER][DLSYM_GOT_HIT] handle=0x{moduleHandle:X} symbol='{symbolName}' -> resolvedAddress=0x{resolvedAddress:X16}");
+		}
 		if (outputAddress == 0L || !TryWriteUInt64Compat(outputAddress, resolvedAddress))
 		{
 			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
@@ -2093,10 +2196,17 @@ public sealed partial class DirectExecutionBackend
 
 		var symbolNameAddress = cpuContext[CpuRegister.Rdi];
 		var outputAddress = cpuContext[CpuRegister.Rsi];
-		if (!TryReadAsciiZ(symbolNameAddress, 512, out var symbolName) ||
-			outputAddress == 0 ||
-			!TryResolveIl2CppApiAddress(symbolName, out var resolvedAddress) ||
-			!TryWriteUInt64Compat(outputAddress, resolvedAddress))
+
+		if (!TryReadAsciiZ(symbolNameAddress, 512, out var symbolName))
+		{
+			symbolName = "<invalid>";
+		}
+		bool il2cppSuccess = TryResolveIl2CppApiAddress(symbolName, out var resolvedAddress);
+		if (outputAddress == 0x0000000802322A38UL)
+		{
+			Console.Error.WriteLine($"[LOADER][IL2CPP_GOT_HIT] symbol='{symbolName}' -> resolvedAddress=0x{resolvedAddress:X16}");
+		}
+		if (!il2cppSuccess || outputAddress == 0 || !TryWriteUInt64Compat(outputAddress, resolvedAddress))
 		{
 			Console.Error.WriteLine(
 				$"[LOADER][WARN] il2cpp_api_lookup_symbol failed: name='{symbolName}' out=0x{outputAddress:X16}");

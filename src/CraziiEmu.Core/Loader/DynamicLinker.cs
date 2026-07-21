@@ -178,6 +178,20 @@ public class DynamicLinker
                 case R_X86_64_JUMP_SLOT:
                     result = symValue + (ulong)rela.Addend;
                     System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(span, result);
+                    // Diagnostic: log the specific GOT slot that the crash-site caller uses
+                    if (targetAddress == 0x0000000802322A38UL)
+                    {
+                        string? diagSymName = null;
+                        if (rela.SymbolIndex != 0 && rela.SymbolIndex < module.Image.Symbols.Count)
+                        {
+                            var diagSym = module.Image.Symbols[(int)rela.SymbolIndex];
+                            module.Image.StringTable.TryGetValue(diagSym.NameIndex, out diagSymName);
+                        }
+                        Console.Error.WriteLine(
+                            $"[CRASH-DIAG] GOT slot 0x{targetAddress:X16} resolved to 0x{result:X16} " +
+                            $"symName='{diagSymName ?? "<null>"}' type={rela.RelocationType} " +
+                            $"symIdx={rela.SymbolIndex}");
+                    }
                     break;
                     
                 case R_X86_64_RELATIVE:

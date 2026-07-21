@@ -1009,6 +1009,13 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                 return false;
             }
 
+            if ((ulong)destPtr <= 0x0000000802322A38UL && (ulong)destPtr + (ulong)source.Length > 0x0000000802322A38UL)
+            {
+                ulong writtenVal = source.Length >= 8 ? BitConverter.ToUInt64(source) : 0;
+                Console.Error.WriteLine($"[VMEM_WRITE_GOT] destPtr=0x{(ulong)destPtr:X16} len={source.Length} value=0x{writtenVal:X16}");
+                Console.Error.WriteLine(new System.Diagnostics.StackTrace(true).ToString());
+            }
+
             if (CanWriteWithoutProtectionChange((ulong)destPtr, (ulong)source.Length, region))
             {
                 fixed (byte* srcPtr = source)

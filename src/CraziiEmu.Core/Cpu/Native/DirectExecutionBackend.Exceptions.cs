@@ -427,6 +427,204 @@ public sealed partial class DirectExecutionBackend
 				}
 				if (hostExit >= 0x10000)
 				{
+					Console.Error.WriteLine("\n[CRASH DIAGNOSTICS] --- Disassembly around crash site ---");
+					ulong startRip = rip - 200;
+					byte[] code = new byte[300];
+					if (TryReadHostBytes(startRip, code))
+					{
+						var reader = new Iced.Intel.ByteArrayCodeReader(code);
+						var decoder = Iced.Intel.Decoder.Create(64, reader);
+						decoder.IP = startRip;
+						var formatter = new Iced.Intel.NasmFormatter();
+						var output = new Iced.Intel.StringOutput();
+						
+						while (decoder.IP < rip + 20)
+						{
+							decoder.Decode(out var instr);
+							if (instr.IsInvalid) continue;
+							
+							formatter.Format(instr, output);
+							string marker = (instr.IP == rip) ? "=> " : "   ";
+							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] {marker}{instr.IP:X16} | {output.ToStringAndReset()}");
+						}
+					}
+					else
+					{
+						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory around RIP>");
+					}
+					Console.Error.WriteLine("[CRASH DIAGNOSTICS] -------------------------------------\n");
+					
+					Console.Error.WriteLine("\n[CRASH DIAGNOSTICS] --- Stack Dump ---");
+					byte[] stackMem = new byte[64];
+					if (TryReadHostBytes(rsp, stackMem))
+					{
+						for (int i = 0; i < 8; i++)
+						{
+							ulong val = BitConverter.ToUInt64(stackMem, i * 8);
+							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RSP+{i * 8:X2}: {val:X16}");
+						}
+					}
+					else
+					{
+						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory at RSP>");
+					}
+					Console.Error.WriteLine("[CRASH DIAGNOSTICS] ----------------------------------\n");
+					
+					if (TryReadHostBytes(rsp, stackMem))
+					{
+						ulong retAddr = BitConverter.ToUInt64(stackMem, 0);
+						Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Disassembly of Caller at {retAddr:X16} ---");
+						ulong callerStart = retAddr - 120;
+						byte[] callerCode = new byte[150];
+						if (TryReadHostBytes(callerStart, callerCode))
+						{
+							var reader = new Iced.Intel.ByteArrayCodeReader(callerCode);
+							var decoder = Iced.Intel.Decoder.Create(64, reader);
+							decoder.IP = callerStart;
+							var formatter = new Iced.Intel.NasmFormatter();
+							var output = new Iced.Intel.StringOutput();
+							
+							while (decoder.IP < retAddr + 10)
+							{
+								decoder.Decode(out var instr);
+								if (instr.IsInvalid) continue;
+								formatter.Format(instr, output);
+								string marker = (instr.IP + (ulong)instr.Length == retAddr) ? "=> " : "   ";
+								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] {marker}{instr.IP:X16} | {output.ToStringAndReset()}");
+							}
+						}
+						Console.Error.WriteLine("[CRASH DIAGNOSTICS] ---------------------------------------------\n");
+					}
+					
+					// Dump key struct contents to trace the source of bad data
+					// Windows x64 CONTEXT offsets: R12=216, R13=224, R14=232, R15=240
+					ulong r15Val = ReadCtxU64(contextRecord, 240); // R15
+					ulong r14Val = ReadCtxU64(contextRecord, 232); // R14
+					ulong r13Val = ReadCtxU64(contextRecord, 224); // R13
+					ulong r12Val = ReadCtxU64(contextRecord, 216); // R12
+					ulong raxVal = ReadCtxU64(contextRecord, 120); // RAX (at crash = 0x580)
+					ulong rsiVal = ReadCtxU64(contextRecord, 168); // RSI (at crash = 0x3F800010)
+					ulong rdiVal = ReadCtxU64(contextRecord, 176); // RDI
+					
+					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Key registers at crash ---");
+					Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RAX=0x{raxVal:X16} RSI=0x{rsiVal:X16} RDI=0x{rdiVal:X16}");
+					Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R12=0x{r12Val:X16} R13=0x{r13Val:X16} R14=0x{r14Val:X16} R15=0x{r15Val:X16}");
+					
+					// Read the GOT slot that the pre-crash call goes through
+					// call qword [rel 802322A38h] at 0x0000000800D15046
+					const ulong PreCrashGotSlot = 0x0000000802322A38UL;
+					byte[] gotSlotMem = new byte[8];
+					if (TryReadHostBytes(PreCrashGotSlot, gotSlotMem))
+					{
+						ulong gotTarget = BitConverter.ToUInt64(gotSlotMem, 0);
+						Console.Error.WriteLine($"[CRASH DIAGNOSTICS] GOT[0x{PreCrashGotSlot:X16}] = 0x{gotTarget:X16} (function called before crash loop)");
+						
+						// Try to reverse-lookup: check if gotTarget is a guest stub address
+						// that maps to an import entry
+						string? matchedNid = null;
+						for (int idx = 0; idx < _importEntries.Length; idx++)
+						{
+							if (_importEntries[idx].Address == gotTarget)
+							{
+								matchedNid = _importEntries[idx].Nid;
+								var exp = _importEntries[idx].Export;
+								Console.Error.WriteLine(
+									$"[CRASH DIAGNOSTICS] GOT target matches import stub #{idx}: " +
+									$"nid={matchedNid} export={exp?.LibraryName}:{exp?.Name}");
+								break;
+							}
+						}
+						
+						// If no direct match, the GOT might contain a patched-stub target.
+						// Read the first 12 bytes at the GOT value to check for mov rax,imm64; jmp rax
+						if (matchedNid == null)
+						{
+							byte[] stubCode = new byte[12];
+							if (TryReadHostBytes(gotTarget, stubCode))
+							{
+								Console.Error.WriteLine(
+									$"[CRASH DIAGNOSTICS] Code at GOT target: " +
+									$"{stubCode[0]:X2} {stubCode[1]:X2} " +
+									$"{BitConverter.ToUInt64(stubCode, 2):X16} " +
+									$"{stubCode[10]:X2} {stubCode[11]:X2}");
+							}
+							else
+							{
+								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] Cannot read code at GOT target 0x{gotTarget:X16}");
+							}
+							
+							// Also scan all import entries to see if GOT target is
+							// the trampoline destination of any stub
+							for (int idx = 0; idx < _importEntries.Length; idx++)
+							{
+								byte[] entryCode = new byte[12];
+								if (TryReadHostBytes(_importEntries[idx].Address, entryCode) &&
+									entryCode[0] == 0x48 && entryCode[1] == 0xB8)
+								{
+									ulong trampolineTarget = BitConverter.ToUInt64(entryCode, 2);
+									if (trampolineTarget == gotTarget)
+									{
+										var exp = _importEntries[idx].Export;
+										Console.Error.WriteLine(
+											$"[CRASH DIAGNOSTICS] GOT target is trampoline of import stub #{idx}: " +
+											$"nid={_importEntries[idx].Nid} " +
+											$"export={exp?.LibraryName}:{exp?.Name} " +
+											$"stubAddr=0x{_importEntries[idx].Address:X16}");
+										break;
+									}
+								}
+							}
+						}
+					}
+					else
+					{
+						Console.Error.WriteLine($"[CRASH DIAGNOSTICS] Could not read GOT slot at 0x{PreCrashGotSlot:X16}");
+					}
+					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Memory at R15=0x{r15Val:X16} (callback struct / original RSI) ---");
+					byte[] r15Mem = new byte[64];
+					if (TryReadHostBytes(r15Val, r15Mem))
+					{
+						for (int i = 0; i < 8; i++)
+						{
+							ulong val = BitConverter.ToUInt64(r15Mem, i * 8);
+							float f1 = BitConverter.ToSingle(r15Mem, i * 8);
+							float f2 = BitConverter.ToSingle(r15Mem, i * 8 + 4);
+							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R15+{i * 8:X2}: {val:X16}  (floats: {f1}, {f2})");
+						}
+					}
+					else
+					{
+						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory at R15>");
+					}
+					
+					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Memory at R14=0x{r14Val:X16} (iterator struct in caller) ---");
+					byte[] r14Mem = new byte[48];
+					if (TryReadHostBytes(r14Val, r14Mem))
+					{
+						for (int i = 0; i < 6; i++)
+						{
+							ulong val = BitConverter.ToUInt64(r14Mem, i * 8);
+							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R14+{i * 8:X2}: {val:X16}");
+						}
+						// Also dump the element that was being iterated (the prior element, since [r14+8] was advanced by 0x88)
+						ulong elemPtr = BitConverter.ToUInt64(r14Mem, 8); // [r14+8] = current iterator ptr
+						// The crash was inside the function called via [rax+8] where rax was the
+						// element pointer BEFORE the advance. The caller did [r14+8] = rax + 0x88,
+						// so the element that caused the crash = elemPtr - 0x88
+						ulong crashElem = elemPtr >= 0x88 ? elemPtr - 0x88 : elemPtr;
+						Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Crash element at 0x{crashElem:X16} (elemPtr - 0x88) ---");
+						byte[] elemMem = new byte[160];
+						if (TryReadHostBytes(crashElem, elemMem))
+						{
+							for (int i = 0; i < 20; i++)
+							{
+								ulong val = BitConverter.ToUInt64(elemMem, i * 8);
+								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] ELEM+{i * 8:X2}: {val:X16}");
+							}
+						}
+					}
+					Console.Error.WriteLine("[CRASH DIAGNOSTICS] =============================================\n");
+					
 					Console.Error.WriteLine("[LOADER][WARN] Forcing graceful abort of guest execution to prevent process crash...");
 					_ = TryPatchActiveGuestReturnSlot(hostExit);
 					WriteCtxU64(contextRecord, 120, 0);
