@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -12,49 +11,11 @@ namespace CraziiEmu.UI.Input;
 
 public class ControllerConfig
 {
-    public Dictionary<PsControllerButton, Key> Bindings { get; private set; }
+    public Dictionary<PsControllerButton, int> Bindings { get; private set; }
 
     public ControllerConfig()
     {
-        Bindings = new Dictionary<PsControllerButton, Key>
-        {
-            // Left Stick
-            { PsControllerButton.LeftStickUp, Key.W },
-            { PsControllerButton.LeftStickDown, Key.S },
-            { PsControllerButton.LeftStickLeft, Key.A },
-            { PsControllerButton.LeftStickRight, Key.D },
-            { PsControllerButton.L3, Key.LeftCtrl },
-            
-            // Right Stick
-            { PsControllerButton.RightStickUp, Key.Up },
-            { PsControllerButton.RightStickDown, Key.Down },
-            { PsControllerButton.RightStickLeft, Key.Left },
-            { PsControllerButton.RightStickRight, Key.Right },
-            { PsControllerButton.R3, Key.RightCtrl },
-            
-            // Face Buttons
-            { PsControllerButton.Cross, Key.Space },
-            { PsControllerButton.Circle, Key.LeftShift },
-            { PsControllerButton.Square, Key.F },
-            { PsControllerButton.Triangle, Key.E },
-            
-            // Shoulder Buttons
-            { PsControllerButton.L1, Key.Q },
-            { PsControllerButton.R1, Key.R },
-            { PsControllerButton.L2, Key.Tab },
-            { PsControllerButton.R2, Key.Enter },
-            
-            // D-Pad
-            { PsControllerButton.DpadUp, Key.D1 },
-            { PsControllerButton.DpadDown, Key.D2 },
-            { PsControllerButton.DpadLeft, Key.D3 },
-            { PsControllerButton.DpadRight, Key.D4 },
-            
-            // System
-            { PsControllerButton.Options, Key.Escape },
-            { PsControllerButton.Create, Key.Back },
-            { PsControllerButton.PsButton, Key.Home }
-        };
+        Bindings = new Dictionary<PsControllerButton, int>();
     }
 
     /// <summary>
@@ -70,15 +31,44 @@ public class ControllerConfig
             var propInfo = type.GetProperty(kvp.Key.ToString(), BindingFlags.Public | BindingFlags.Instance);
             if (propInfo != null && propInfo.CanWrite)
             {
-                int vk = KeyToVirtualKey(kvp.Value);
-                if (vk != 0)
-                {
-                    propInfo.SetValue(inputMap, vk);
-                }
+                propInfo.SetValue(inputMap, kvp.Value);
             }
         }
         
         CraziiEmuConfig.Instance.Save();
+    }
+
+    public void LoadFromBackend()
+    {
+        var inputMap = CraziiEmuConfig.Instance.Input;
+        var type = typeof(InputMap);
+
+        foreach (PsControllerButton button in Enum.GetValues(typeof(PsControllerButton)))
+        {
+            var propInfo = type.GetProperty(button.ToString(), BindingFlags.Public | BindingFlags.Instance);
+            if (propInfo != null && propInfo.CanRead)
+            {
+                if (propInfo.GetValue(inputMap) is int vk)
+                {
+                    Bindings[button] = vk;
+                }
+            }
+        }
+    }
+
+    public static string GetBindingName(int vk)
+    {
+        return vk switch
+        {
+            InputMap.MouseLeft => "Mouse Left",
+            InputMap.MouseRight => "Mouse Right",
+            InputMap.MouseMiddle => "Mouse Middle",
+            InputMap.MouseXNeg => "Mouse X (-)",
+            InputMap.MouseXPos => "Mouse X (+)",
+            InputMap.MouseYNeg => "Mouse Y (-)",
+            InputMap.MouseYPos => "Mouse Y (+)",
+            _ => VirtualKeyToKey(vk).ToString()
+        };
     }
 
     /// <summary>
@@ -96,24 +86,6 @@ public class ControllerConfig
             Key.LeftCtrl => 0xA2, Key.RightCtrl => 0xA3, Key.LeftAlt => 0xA4, Key.RightAlt => 0xA5,
             _ => 0
         };
-    }
-
-    public void LoadFromBackend()
-    {
-        var inputMap = CraziiEmuConfig.Instance.Input;
-        var type = typeof(InputMap);
-
-        foreach (var key in Bindings.Keys)
-        {
-            var propInfo = type.GetProperty(key.ToString(), BindingFlags.Public | BindingFlags.Instance);
-            if (propInfo != null && propInfo.CanRead)
-            {
-                if (propInfo.GetValue(inputMap) is int vk && vk != 0)
-                {
-                    Bindings[key] = VirtualKeyToKey(vk);
-                }
-            }
-        }
     }
 
     public static Key VirtualKeyToKey(int vk)

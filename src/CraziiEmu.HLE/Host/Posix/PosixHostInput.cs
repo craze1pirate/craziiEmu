@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 namespace CraziiEmu.HLE.Host.Posix;
@@ -30,6 +31,9 @@ public interface IPosixWindowInputSource
 public sealed class PosixHostInput : IHostInput
 {
     private static volatile IPosixWindowInputSource? _source;
+
+    /// <summary>Internal access for Windows host input to merge keyboard mapping</summary>
+    internal static IPosixWindowInputSource? Source => _source;
 
     /// <summary>Called by the presenter's window layer when input is ready.</summary>
     public static void SetSource(IPosixWindowInputSource source)

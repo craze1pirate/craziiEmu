@@ -1,3 +1,6 @@
+<!-- Copyright (C) 2026 craze1pirate - CraziiEmu Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:CraziiEmu.UI"
@@ -493,9 +496,7 @@
                     <Grid ColumnDefinitions="200,*">
                         <!-- Sidebar -->
                         <ListBox x:Name="SidebarList" Classes="Sidebar" SelectedIndex="0">
-                            <ListBoxItem Content="General"  Tag="General"  />
-                            <ListBoxItem Content="System"   Tag="System"   />
-                            <ListBoxItem Content="CPU"      Tag="CPU"      />
+
                             <ListBoxItem Content="Graphics" Tag="Graphics" />
                             <ListBoxItem Content="Audio"    Tag="Audio"    />
                             <ListBoxItem Content="Controls" Tag="Controls" />
@@ -506,45 +507,7 @@
                         <Border Grid.Column="1" Background="#000000" BorderBrush="#1F1F28" BorderThickness="1,0,0,0">
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <Grid Margin="28">
-                                    <!-- ── General ── -->
-                                    <StackPanel x:Name="PanelGeneral" IsVisible="True" Spacing="20">
-                                        <TextBlock Classes="SectionHeader" Text="General" />
-                                        <StackPanel Spacing="12">
-                                            <CheckBox x:Name="ChkLimitSpeed" Content="Limit Speed" IsChecked="True" Foreground="#FFFFFF" />
-                                            <CheckBox x:Name="ChkMulticore" Content="Enable Multicore CPU" IsChecked="True" Foreground="#FFFFFF" />
-                                        </StackPanel>
-                                    </StackPanel>
-                
-                                    <!-- ── System ── -->
-                                    <StackPanel x:Name="PanelSystem" IsVisible="False" Spacing="20">
-                                        <TextBlock Classes="SectionHeader" Text="System" />
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Classes="SettingsLabel" Text="DECRYPTED FIRMWARE DIRECTORY" />
-                                            <DockPanel>
-                                                <Button DockPanel.Dock="Right" Content="Browse…"
-                                                        x:Name="BtnBrowseFirmware"
-                                                        Padding="14,7" Margin="8,0,0,0"
-                                                        Background="#1A1A1A" Foreground="#FFFFFF"
-                                                        CornerRadius="4" FontSize="12" BorderBrush="#333333" BorderThickness="1" />
-                                                <TextBox x:Name="TxtFirmwarePath"
-                                                         PlaceholderText="No directory selected"
-                                                         IsReadOnly="True"
-                                                         FontSize="12" Background="#0A0A0A" Foreground="#FFFFFF" BorderBrush="#333333" />
-                                            </DockPanel>
-                                        </StackPanel>
-                                    </StackPanel>
-                
-                                    <!-- ── CPU ── -->
-                                    <StackPanel x:Name="PanelCPU" IsVisible="False" Spacing="20">
-                                        <TextBlock Classes="SectionHeader" Text="CPU" />
-                                        <StackPanel Spacing="4">
-                                            <TextBlock Classes="SettingsLabel" Text="ACCURACY" />
-                                            <ComboBox x:Name="CmbAccuracy" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
-                                                <ComboBoxItem Content="Accurate" />
-                                                <ComboBoxItem Content="Fast" />
-                                            </ComboBox>
-                                        </StackPanel>
-                                    </StackPanel>
+
                 
                                     <!-- ── Graphics ── -->
                                     <StackPanel x:Name="PanelGraphics" IsVisible="False" Spacing="20">
@@ -558,11 +521,11 @@
                                             <TextBlock Classes="SettingsLabel" Text="GRAPHICS API" />
                                             <ComboBox x:Name="CmbGraphicsApi" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
                                                 <ComboBoxItem Content="Vulkan" />
-                                                <ComboBoxItem Content="OpenGL" />
+
                                             </ComboBox>
                                         </StackPanel>
                                         <StackPanel Spacing="4">
-                                            <TextBlock Classes="SettingsLabel" Text="RESOLUTION SCALE" />
+                                            <TextBlock Classes="SettingsLabel" Text="RESOLUTION SCALE (will be implemented soon)" />
                                             <ComboBox x:Name="CmbGraphicsScale" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
                                                 <ComboBoxItem Content="1× Native (720p)" />
                                                 <ComboBoxItem Content="2× (1440p)" />
@@ -636,25 +599,37 @@
                                                         <TextBlock Text="Up" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
                                                         <Button x:Name="BindDpadUp" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
-                                                        <TextBlock Text="Cross (✕)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3">
+                                                            <TextBlock Text="Cross" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                            <Path Data="M 4 4 L 20 20 M 4 20 L 20 4" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
+                                                        </StackPanel>
                                                         <Button x:Name="BindCross" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
                                                         <TextBlock Text="Down" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadDown" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <TextBlock Text="Circle (◯)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0">
+                                                            <TextBlock Text="Circle" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                            <Path Data="M 12 2 A 10 10 0 1 1 12 21.9 A 10 10 0 1 1 12 2" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
+                                                        </StackPanel>
                                                         <Button x:Name="BindCircle" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
                                                         <TextBlock Text="Left" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadLeft" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <TextBlock Text="Square (□)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0">
+                                                            <TextBlock Text="Square" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                            <Path Data="M 4 4 H 20 V 20 H 4 Z" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
+                                                        </StackPanel>
                                                         <Button x:Name="BindSquare" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
                                                         <TextBlock Text="Right" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadRight" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <TextBlock Text="Triangle (△)" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0">
+                                                            <TextBlock Text="Triangle" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                            <Path Data="M 12 2 L 22 20 H 2 Z" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
+                                                        </StackPanel>
                                                         <Button x:Name="BindTriangle" Grid.Row="4" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                                                     </Grid>
                                                 </StackPanel>

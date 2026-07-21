@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
@@ -500,16 +501,15 @@ public static class PadExports
         }
 
         var input = HostPlatform.Current.Input;
-        var acceptsKeyboardInput = input.IsHostWindowFocused();
-        var buttons = acceptsKeyboardInput ? ReadKeyboardButtons(input) : 0;
-        var leftX = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x41), input.IsKeyDown(0x44)) : (byte)128;
-        var leftY = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x57), input.IsKeyDown(0x53)) : (byte)128;
-        var rightX = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x4A), input.IsKeyDown(0x4C)) : (byte)128;
-        var rightY = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x49), input.IsKeyDown(0x4B)) : (byte)128;
-        var l2 = acceptsKeyboardInput && input.IsKeyDown(0x52) ? (byte)255 : (byte)0;
-        var r2 = acceptsKeyboardInput && input.IsKeyDown(0x46) ? (byte)255 : (byte)0;
+        var buttons = 0u;
+        var leftX = (byte)128;
+        var leftY = (byte)128;
+        var rightX = (byte)128;
+        var rightY = (byte)128;
+        var l2 = (byte)0;
+        var r2 = (byte)0;
 
-        Span<HostGamepadState> gamepads = stackalloc HostGamepadState[2];
+        Span<HostGamepadState> gamepads = stackalloc HostGamepadState[4];
         var gamepadCount = input.GetGamepadStates(gamepads);
         for (var index = 0; index < gamepadCount; index++)
         {
@@ -611,35 +611,7 @@ public static class PadExports
         return result;
     }
 
-    private static uint ReadKeyboardButtons(IHostInput input)
-    {
-        uint buttons = 0;
-        // D-pad
-        if (input.IsKeyDown(0x25)) buttons |= OrbisPadButton.Left;
-        if (input.IsKeyDown(0x27)) buttons |= OrbisPadButton.Right;
-        if (input.IsKeyDown(0x26)) buttons |= OrbisPadButton.Up;
-        if (input.IsKeyDown(0x28)) buttons |= OrbisPadButton.Down;
-        // Face buttons
-        if (input.IsKeyDown(0x5A) || input.IsKeyDown(0x0D)) buttons |= OrbisPadButton.Cross;    // Z / Enter
-        if (input.IsKeyDown(0x58) || input.IsKeyDown(0x1B)) buttons |= OrbisPadButton.Circle;   // X / Escape
-        if (input.IsKeyDown(0x43)) buttons |= OrbisPadButton.Square;                            // C
-        if (input.IsKeyDown(0x56)) buttons |= OrbisPadButton.Triangle;                          // V
-        // Shoulder buttons
-        if (input.IsKeyDown(0x51)) buttons |= OrbisPadButton.L1;                                // Q
-        if (input.IsKeyDown(0x45)) buttons |= OrbisPadButton.R1;                                // E
-        if (input.IsKeyDown(0x52)) buttons |= OrbisPadButton.L2;                                // R (digital)
-        if (input.IsKeyDown(0x46)) buttons |= OrbisPadButton.R2;                                // F (digital)
-        // Options (Start)
-        if (input.IsKeyDown(0x09) || input.IsKeyDown(0x08)) buttons |= OrbisPadButton.Options;  // Tab / Backspace
-        return buttons;
-    }
-
-    private static byte ReadAnalogStick(bool negative, bool positive)
-    {
-        if (negative && !positive) return 0;
-        if (positive && !negative) return 255;
-        return 128;
-    }
+    // Removed hardcoded keyboard and analog mapping functions
 
     private static byte MergeAxis(byte controller, byte keyboard)
     {

@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Runtime.InteropServices;
@@ -29,6 +30,15 @@ internal sealed partial class WindowsHostInput : IHostInput
         if (count < destination.Length && WindowsXInputReader.TryGetState(out var xinput))
         {
             destination[count++] = xinput;
+        }
+
+        if (count < destination.Length)
+        {
+            Span<HostGamepadState> windowState = stackalloc HostGamepadState[1];
+            if (Posix.PosixHostInput.Source?.GetGamepadStates(windowState) > 0)
+            {
+                destination[count++] = windowState[0];
+            }
         }
 
         return count;

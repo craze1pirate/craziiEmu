@@ -1,5 +1,4 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -39,7 +38,7 @@ public partial class MainWindow : Window
     private const ulong VmmPoolSize = 64UL * 1024 * 1024 * 1024;
 
     private string? _selectedExecutablePath;
-    private string? _firmwareDirectoryPath;
+
     private Thread? _cpuThread;
     private ICraziiEmuRuntime? _runtime;
     private readonly UiLogSink _logSink;
@@ -123,7 +122,7 @@ public partial class MainWindow : Window
         _controllerConfig.LoadFromBackend();
 
         SidebarList.SelectionChanged += OnSidebarSelectionChanged;
-        BtnBrowseFirmware.Click      += OnBtnBrowseFirmware;
+
 
         InitializeConfigBindings();
         InitializeGpuName();
@@ -135,6 +134,8 @@ public partial class MainWindow : Window
         };
 
         AddHandler(KeyDownEvent, OnGlobalKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(PointerPressedEvent, OnGlobalPointerPressed, RoutingStrategies.Tunnel);
+        AddHandler(PointerMovedEvent, OnGlobalPointerMoved, RoutingStrategies.Tunnel);
 
         InitializeBindings();
 
@@ -351,36 +352,36 @@ public partial class MainWindow : Window
     {
         var binds = _controllerConfig.Bindings;
         
-        BindCross.Content = binds[PsControllerButton.Cross].ToString();
-        BindCircle.Content = binds[PsControllerButton.Circle].ToString();
-        BindSquare.Content = binds[PsControllerButton.Square].ToString();
-        BindTriangle.Content = binds[PsControllerButton.Triangle].ToString();
+        BindCross.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Cross]);
+        BindCircle.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Circle]);
+        BindSquare.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Square]);
+        BindTriangle.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Triangle]);
         
-        BindDpadUp.Content = binds[PsControllerButton.DpadUp].ToString();
-        BindDpadDown.Content = binds[PsControllerButton.DpadDown].ToString();
-        BindDpadLeft.Content = binds[PsControllerButton.DpadLeft].ToString();
-        BindDpadRight.Content = binds[PsControllerButton.DpadRight].ToString();
+        BindDpadUp.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.DpadUp]);
+        BindDpadDown.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.DpadDown]);
+        BindDpadLeft.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.DpadLeft]);
+        BindDpadRight.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.DpadRight]);
 
-        BindL1.Content = binds[PsControllerButton.L1].ToString();
-        BindR1.Content = binds[PsControllerButton.R1].ToString();
-        BindL2.Content = binds[PsControllerButton.L2].ToString();
-        BindR2.Content = binds[PsControllerButton.R2].ToString();
+        BindL1.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.L1]);
+        BindR1.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.R1]);
+        BindL2.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.L2]);
+        BindR2.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.R2]);
 
-        BindLeftStickUp.Content = binds[PsControllerButton.LeftStickUp].ToString();
-        BindLeftStickDown.Content = binds[PsControllerButton.LeftStickDown].ToString();
-        BindLeftStickLeft.Content = binds[PsControllerButton.LeftStickLeft].ToString();
-        BindLeftStickRight.Content = binds[PsControllerButton.LeftStickRight].ToString();
+        BindLeftStickUp.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.LeftStickUp]);
+        BindLeftStickDown.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.LeftStickDown]);
+        BindLeftStickLeft.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.LeftStickLeft]);
+        BindLeftStickRight.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.LeftStickRight]);
 
-        BindRightStickUp.Content = binds[PsControllerButton.RightStickUp].ToString();
-        BindRightStickDown.Content = binds[PsControllerButton.RightStickDown].ToString();
-        BindRightStickLeft.Content = binds[PsControllerButton.RightStickLeft].ToString();
-        BindRightStickRight.Content = binds[PsControllerButton.RightStickRight].ToString();
+        BindRightStickUp.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.RightStickUp]);
+        BindRightStickDown.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.RightStickDown]);
+        BindRightStickLeft.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.RightStickLeft]);
+        BindRightStickRight.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.RightStickRight]);
 
-        BindL3.Content = binds[PsControllerButton.L3].ToString();
-        BindR3.Content = binds[PsControllerButton.R3].ToString();
-        BindOptions.Content = binds[PsControllerButton.Options].ToString();
-        BindCreate.Content = binds[PsControllerButton.Create].ToString();
-        BindPsButton.Content = binds[PsControllerButton.PsButton].ToString();
+        BindL3.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.L3]);
+        BindR3.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.R3]);
+        BindOptions.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Options]);
+        BindCreate.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.Create]);
+        BindPsButton.Content = ControllerConfig.GetBindingName(binds[PsControllerButton.PsButton]);
 
         AttachBinding(BindCross, PsControllerButton.Cross); AttachBinding(BindCircle, PsControllerButton.Circle);
         AttachBinding(BindSquare, PsControllerButton.Square); AttachBinding(BindTriangle, PsControllerButton.Triangle);
@@ -422,25 +423,11 @@ public partial class MainWindow : Window
     {
         if (SidebarList.SelectedItem is not ListBoxItem item) return;
         var tag = item.Tag?.ToString() ?? string.Empty;
-        PanelGeneral.IsVisible  = tag == "General";
-        PanelSystem.IsVisible   = tag == "System";
-        PanelCPU.IsVisible      = tag == "CPU";
+
         PanelGraphics.IsVisible = tag == "Graphics";
         PanelAudio.IsVisible    = tag == "Audio";
         PanelControls.IsVisible = tag == "Controls";
         PanelVisual.IsVisible   = tag == "Debug";
-    }
-
-    private async void OnBtnBrowseFirmware(object? sender, RoutedEventArgs e)
-    {
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Select Decrypted Firmware Directory", AllowMultiple = false });
-        if (folders.Count > 0) 
-        { 
-            var path = folders[0].Path.LocalPath; 
-            TxtFirmwarePath.Text = path; 
-            _firmwareDirectoryPath = path;
-            AppendConsole($"[System] Firmware directory: {path}");
-        }
     }
 
     // Removed wallpaper methods
@@ -449,35 +436,72 @@ public partial class MainWindow : Window
     {
         if (_bindingButton != null && _bindingProperty.HasValue)
         {
-            var newKey = e.Key;
-            var targetBtn = _bindingProperty.Value;
-            var map = _controllerConfig.Bindings;
-
-            // Duplicate Swapping Algorithm
-            if (map.ContainsValue(newKey))
-            {
-                var conflictKey = map.First(x => x.Value == newKey).Key;
-                if (conflictKey != targetBtn)
-                {
-                    // Conflict detected: Swap!
-                    var oldKey = map[targetBtn];
-                    map[targetBtn] = newKey;
-                    map[conflictKey] = oldKey;
-                }
-            }
-            else
-            {
-                // No conflict
-                map[targetBtn] = newKey;
-            }
-
-            _controllerConfig.SaveToBackend();
-
-            _bindingButton = null;
-            _bindingProperty = null;
-            InitializeBindings();
+            var vk = ControllerConfig.KeyToVirtualKey(e.Key);
+            if (vk != 0) ApplyBinding(vk);
             e.Handled = true;
         }
+    }
+
+    private Avalonia.Point _lastMousePos;
+
+    private void OnGlobalPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_bindingButton != null && _bindingProperty.HasValue)
+        {
+            var props = e.GetCurrentPoint(this).Properties;
+            if (props.IsLeftButtonPressed) ApplyBinding(InputMap.MouseLeft);
+            else if (props.IsRightButtonPressed) ApplyBinding(InputMap.MouseRight);
+            else if (props.IsMiddleButtonPressed) ApplyBinding(InputMap.MouseMiddle);
+            e.Handled = true;
+        }
+    }
+
+    private void OnGlobalPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_bindingButton != null && _bindingProperty.HasValue)
+        {
+            var currentPos = e.GetPosition(this);
+            if (_lastMousePos != default)
+            {
+                var dx = currentPos.X - _lastMousePos.X;
+                var dy = currentPos.Y - _lastMousePos.Y;
+                if (Math.Abs(dx) > 10) ApplyBinding(dx > 0 ? InputMap.MouseXPos : InputMap.MouseXNeg);
+                else if (Math.Abs(dy) > 10) ApplyBinding(dy > 0 ? InputMap.MouseYPos : InputMap.MouseYNeg);
+            }
+            _lastMousePos = currentPos;
+            e.Handled = true;
+        }
+        else
+        {
+            _lastMousePos = e.GetPosition(this);
+        }
+    }
+
+    private void ApplyBinding(int newKey)
+    {
+        var targetBtn = _bindingProperty!.Value;
+        var map = _controllerConfig.Bindings;
+
+        // Duplicate Swapping Algorithm
+        if (map.ContainsValue(newKey))
+        {
+            var conflictKey = map.First(x => x.Value == newKey).Key;
+            if (conflictKey != targetBtn)
+            {
+                var oldKey = map[targetBtn];
+                map[targetBtn] = newKey;
+                map[conflictKey] = oldKey;
+            }
+        }
+        else
+        {
+            map[targetBtn] = newKey;
+        }
+
+        _controllerConfig.SaveToBackend();
+        _bindingButton = null;
+        _bindingProperty = null;
+        InitializeBindings();
     }
 
 
@@ -872,11 +896,6 @@ public partial class MainWindow : Window
     {
         var config = CraziiEmuConfig.Instance;
         
-        ChkLimitSpeed.IsChecked = config.LimitSpeed;
-        ChkLimitSpeed.IsCheckedChanged += (s, e) => { config.LimitSpeed = ChkLimitSpeed.IsChecked == true; config.Save(); };
-
-        ChkMulticore.IsChecked = config.EnableMulticore;
-        ChkMulticore.IsCheckedChanged += (s, e) => { config.EnableMulticore = ChkMulticore.IsChecked == true; config.Save(); };
 
         CmbGraphicsApi.SelectedIndex = config.GraphicsApi == "OpenGL" ? 1 : 0;
         CmbGraphicsApi.SelectionChanged += (s, e) => 

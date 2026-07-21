@@ -1,5 +1,5 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -100,8 +100,8 @@ public class EmulatorEngine
     public void Run()
     {
         var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
-        bool limitSpeed = config.LimitSpeed;
-        bool multicore = config.EnableMulticore;
+        bool limitSpeed = false;
+        bool multicore = false;
 
         if (multicore)
         {

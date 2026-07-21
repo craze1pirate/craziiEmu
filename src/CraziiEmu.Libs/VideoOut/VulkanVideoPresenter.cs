@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using Silk.NET.Core;
@@ -3140,17 +3141,14 @@ private VkBuffer[] _overlayStagingBuffers = [];
             if (_window is not null)
             {
                 LogGlfwPlatformInUse();
-                if (!OperatingSystem.IsWindows())
+                try
                 {
-                    try
-                    {
-                        Pad.HostWindowInput.Attach(_window.CreateInput());
-                        Console.Error.WriteLine("[LOADER][INFO] Window keyboard input attached for pad emulation.");
-                    }
-                    catch (Exception exception)
-                    {
-                        Console.Error.WriteLine($"[LOADER][WARN] Window keyboard input unavailable: {exception.Message}");
-                    }
+                    Pad.HostWindowInput.Attach(_window.CreateInput());
+                    Console.Error.WriteLine("[LOADER][INFO] Window keyboard input attached for pad emulation.");
+                }
+                catch (Exception exception)
+                {
+                    Console.Error.WriteLine($"[LOADER][WARN] Window keyboard input unavailable: {exception.Message}");
                 }
 
                 if (PngSplashLoader.TryLoadIcon(out var iconPixels, out var iconWidth, out var iconHeight))

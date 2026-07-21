@@ -1,5 +1,5 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
-// Copyright (C) 2026 craze1pirate - CraziiEmu Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -32,12 +32,9 @@ public class CraziiEmuConfig
 
     public bool EnableAudio { get; set; } = true;
     public float MasterVolume { get; set; } = 100f;
-    public bool LimitSpeed { get; set; } = false;
-    public bool EnableMulticore { get; set; } = false;
+
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
-    public string DecryptedFirmwarePath { get; set; } = "";
-
     public static void Load()
     {
         try
@@ -76,11 +73,19 @@ public class CraziiEmuConfig
 
 public class InputMap
 {
+    public const int MouseLeft = 0x100;
+    public const int MouseRight = 0x101;
+    public const int MouseMiddle = 0x102;
+    public const int MouseXNeg = 0x110;
+    public const int MouseXPos = 0x111;
+    public const int MouseYNeg = 0x112;
+    public const int MouseYPos = 0x113;
+
     // D-Pad
-    public int DpadUp { get; set; } = 0x31;    // 1
-    public int DpadDown { get; set; } = 0x32;  // 2
-    public int DpadLeft { get; set; } = 0x33;  // 3
-    public int DpadRight { get; set; } = 0x34; // 4
+    public int DpadUp { get; set; } = 0x26;    // Up Arrow
+    public int DpadDown { get; set; } = 0x28;  // Down Arrow
+    public int DpadLeft { get; set; } = 0x25;  // Left Arrow
+    public int DpadRight { get; set; } = 0x27; // Right Arrow
 
     // Face Buttons
     public int Cross { get; set; } = 0x20;     // Space
@@ -92,7 +97,7 @@ public class InputMap
     public int L1 { get; set; } = 0x51;        // Q
     public int R1 { get; set; } = 0x52;        // R
     public int L2 { get; set; } = 0x09;        // Tab
-    public int R2 { get; set; } = 0x0D;        // Enter
+    public int R2 { get; set; } = MouseLeft;   // Left Mouse
 
     // System
     public int Options { get; set; } = 0x1B;   // Escape
@@ -109,9 +114,9 @@ public class InputMap
     public int LeftStickUp { get; set; } = 0x57;    // W
     public int LeftStickDown { get; set; } = 0x53;  // S
 
-    public int RightStickLeft { get; set; } = 0x25;  // Left Arrow
-    public int RightStickRight { get; set; } = 0x27; // Right Arrow
-    public int RightStickUp { get; set; } = 0x26;    // Up Arrow
-    public int RightStickDown { get; set; } = 0x28;  // Down Arrow
+    public int RightStickLeft { get; set; } = MouseXNeg;  // Mouse X (-)
+    public int RightStickRight { get; set; } = MouseXPos; // Mouse X (+)
+    public int RightStickUp { get; set; } = MouseYNeg;    // Mouse Y (-)
+    public int RightStickDown { get; set; } = MouseYPos;  // Mouse Y (+)
 }
 

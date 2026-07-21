@@ -1,3 +1,6 @@
+<!-- Copyright (C) 2026 craze1pirate - CraziiEmu Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="CraziiEmu.UI.App"
