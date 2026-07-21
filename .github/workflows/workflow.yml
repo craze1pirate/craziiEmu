@@ -104,7 +104,7 @@ jobs:
         run: dotnet test CraziiEmu.slnx -c Release --no-build --verbosity normal
 
       - name: Validate synthetic shaders
-        run: dotnet run --project tools/CraziiEmu.Tools.ShaderDump/CraziiEmu.Tools.ShaderDump.csproj -c Release -- artifacts/shader-dump
+        run: dotnet run --project tools/SharpEmu.Tools.ShaderDump/SharpEmu.Tools.ShaderDump.csproj -c Release -- artifacts/shader-dump
 
       - name: Publish win-x64 CLI
         run: dotnet publish src/CraziiEmu.CLI/CraziiEmu.CLI.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishDir="${env:PUBLISH_DIR}"
