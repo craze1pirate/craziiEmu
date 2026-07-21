@@ -122,7 +122,7 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.0.2-beta.2, )"
+          "CraziiEmu.Logging": "[0.22.0-alpha, )"
         }
       },
       "craziiemu.logging": {
@@ -131,13 +131,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.0.2-beta.2, )"
+          "CraziiEmu.HLE": "[0.22.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )"
+          "CraziiEmu.ShaderCompiler": "[0.22.0-alpha, )"
         }
       },
       "Silk.NET.Maths": {
@@ -145,6 +145,13 @@
         "requested": "[2.23.0, )",
         "resolved": "2.23.0",
         "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
+      }
+    },
+    "net10.0/win-x64": {
+      "Ultz.Native.GLFW": {
+        "type": "Transitive",
+        "resolved": "3.4.0",
+        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
       }
     }
   }

@@ -1,6 +1,6 @@
 <!--
 Copyright (C) 2026 SharpEmu Emulator Project
-Copyright (C) 2026 craze1pirate - CraziiEmu Project
+Copyright (C) 2026 CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -9,6 +9,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
