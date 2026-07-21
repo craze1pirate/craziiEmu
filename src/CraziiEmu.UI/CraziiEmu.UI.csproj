@@ -8,10 +8,16 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>CraziiEmu</AssemblyName>
     <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ApplicationIcon>..\..\assets\images\CraziiEmu.ico</ApplicationIcon>
+    <Win32Icon>..\..\assets\images\CraziiEmu.ico</Win32Icon>
   </PropertyGroup>
 
   <ItemGroup>
