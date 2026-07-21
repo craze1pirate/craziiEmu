@@ -56,7 +56,7 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
     private readonly ulong _poolBase;
     private readonly ulong _gpuBaseOffset;
 
-    private ulong _cpuOffset;
+    private ulong _cpuOffset = 4096;
     private ulong _gpuOffset;
 
     // Page table for translating 115TB guest virtual addresses down to CPU-pool physical offsets
@@ -68,9 +68,7 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
     /// <summary>Pointer to the native x86-64 VEH stub allocated with PAGE_EXECUTE_READWRITE (Windows only).</summary>
     private readonly nint _nativeVehStub;
 
-    // Linux sigaction handler fields
-    private readonly SigactionDelegate? _sigactionDelegate;
-    private readonly GCHandle _sigactionDelegateHandle;
+
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VirtualMemoryManager"/> class.
@@ -82,23 +80,11 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
         _gpuBaseOffset = _poolSize / 2;
         _gpuOffset = _gpuBaseOffset;
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            _poolBase = (ulong)VirtualAlloc(IntPtr.Zero, (nuint)_poolSize, MEM_RESERVE, PAGE_READWRITE);
-            if (_poolBase == 0) throw new OutOfMemoryException("Failed to reserve virtual memory pool on Windows.");
+        _poolBase = (ulong)VirtualAlloc(IntPtr.Zero, (nuint)_poolSize, MEM_RESERVE, PAGE_READWRITE);
+        if (_poolBase == 0) throw new OutOfMemoryException("Failed to reserve virtual memory pool on Windows.");
 
-            _nativeVehStub = CreateNativeVehStub(_poolBase, _poolBase + _poolSize);
-            _vehHandle = AddVectoredExceptionHandler(1, _nativeVehStub);
-        }
-        else
-        {
-            _poolBase = (ulong)mmap(IntPtr.Zero, (nuint)_poolSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, IntPtr.Zero);
-            if (_poolBase == ulong.MaxValue || _poolBase == 0) throw new OutOfMemoryException("Failed to reserve virtual memory pool on Linux.");
-
-            _sigactionDelegate = SigsegvHandler;
-            _sigactionDelegateHandle = GCHandle.Alloc(_sigactionDelegate);
-            InstallSigaction();
-        }
+        _nativeVehStub = CreateNativeVehStub(_poolBase, _poolBase + _poolSize);
+        _vehHandle = AddVectoredExceptionHandler(1, _nativeVehStub);
     }
 
     /// <summary>
@@ -136,6 +122,8 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
     /// <summary>
     /// Safely gets a span of memory from the unified pool given an address.
     /// </summary>
+    public void* GetPointer(ulong virtualAddress) { return (void*)(_poolBase + virtualAddress); }
+
     public Span<byte> GetSpan(ulong virtualAddress, int length)
     {
         ulong translatedAddress = virtualAddress;
@@ -297,77 +285,16 @@ public sealed unsafe class VirtualMemoryManager : IDisposable
         return (nint)stub;
     }
 
-    /// <summary>
-    /// Linux SIGSEGV handler that commits pages within the pool via mprotect.
-    /// </summary>
-    private void SigsegvHandler(int sig, IntPtr infoPtr, IntPtr ucontext)
-    {
-        var info = (siginfo_t*)infoPtr;
-        ulong faultAddress = (ulong)info->si_addr;
-        if (faultAddress >= _poolBase && faultAddress < _poolBase + _poolSize)
-        {
-            ulong pageAddress = faultAddress & ~(PageSize - 1);
-            mprotect((IntPtr)pageAddress, (nuint)PageSize, PROT_READ | PROT_WRITE);
-        }
-    }
-
-    /// <summary>
-    /// Installs the SIGSEGV signal handler on Linux.
-    /// </summary>
-    private void InstallSigaction()
-    {
-        var sa = new sigaction_t();
-        sa.sa_sigaction = Marshal.GetFunctionPointerForDelegate(_sigactionDelegate!);
-        sa.sa_flags = 0x0004; // SA_SIGINFO
-        sigaction(11, ref sa, IntPtr.Zero); // 11 is SIGSEGV
-    }
-
-    /// <summary>
-    /// Disposes the virtual memory manager and releases the reserved pool.
-    /// </summary>
     public void Dispose()
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            if (_vehHandle != IntPtr.Zero) RemoveVectoredExceptionHandler(_vehHandle);
-            if (_nativeVehStub != 0) VirtualFree((IntPtr)_nativeVehStub, 0, MEM_RELEASE);
-            if (_poolBase != 0) VirtualFree((IntPtr)_poolBase, 0, MEM_RELEASE);
-        }
-        else
-        {
-            if (_poolBase != 0) munmap((IntPtr)_poolBase, (nuint)_poolSize);
-            if (_sigactionDelegateHandle.IsAllocated) _sigactionDelegateHandle.Free();
-        }
+        if (_vehHandle != IntPtr.Zero) RemoveVectoredExceptionHandler(_vehHandle);
+        if (_nativeVehStub != 0) VirtualFree((IntPtr)_nativeVehStub, 0, MEM_RELEASE);
+        if (_poolBase != 0) VirtualFree((IntPtr)_poolBase, 0, MEM_RELEASE);
     }
 
     [DllImport("kernel32.dll")] private static extern IntPtr VirtualAlloc(IntPtr lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);
     [DllImport("kernel32.dll")] private static extern bool VirtualFree(IntPtr lpAddress, nuint dwSize, uint dwFreeType);
     [DllImport("kernel32.dll")] private static extern IntPtr AddVectoredExceptionHandler(uint First, IntPtr Handler);
     [DllImport("kernel32.dll")] private static extern uint RemoveVectoredExceptionHandler(IntPtr Handle);
-
-    [DllImport("libc")] private static extern IntPtr mmap(IntPtr addr, nuint length, int prot, int flags, int fd, IntPtr offset);
-    [DllImport("libc")] private static extern int munmap(IntPtr addr, nuint length);
-    [DllImport("libc")] private static extern int mprotect(IntPtr addr, nuint len, int prot);
-    [DllImport("libc")] private static extern int sigaction(int signum, ref sigaction_t act, IntPtr oldact);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate void SigactionDelegate(int sig, IntPtr info, IntPtr ucontext);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct sigaction_t {
-        public IntPtr sa_sigaction;
-        public ulong sa_mask;
-        public int sa_flags;
-        public IntPtr sa_restorer;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct siginfo_t {
-        public int si_signo;
-        public int si_errno;
-        public int si_code;
-        public IntPtr si_addr;
-        public fixed byte _pad[112];
-    }
 }
 

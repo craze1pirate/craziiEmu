@@ -18,8 +18,7 @@ namespace CraziiEmu.Core.Tests.Cpu;
 /// </summary>
 public class StackAndLoopInstructionTests
 {
-    [DllImport("msvcrt.dll", EntryPoint = "memcpy", CallingConvention = CallingConvention.Cdecl, SetLastError = false)]
-    private static extern IntPtr memcpy(IntPtr dest, IntPtr src, nuint count);
+    // using System.Buffer.MemoryCopy for memory operations
 
     /// <summary>
     /// Verifies that a push followed by a pop preserves the register value
@@ -46,7 +45,7 @@ public class StackAndLoopInstructionTests
         byte[] code = new byte[] { 0x55, 0x5D };
         fixed (byte* p = code)
         {
-            memcpy((IntPtr)codeBase, (IntPtr)p, (nuint)code.Length);
+            System.Buffer.MemoryCopy(p, vmm.GetPointer(codeBase), code.Length, code.Length);
         }
 
         engine.Context.Rip = codeBase;
@@ -92,7 +91,7 @@ public class StackAndLoopInstructionTests
 
         fixed (byte* p = code)
         {
-            memcpy((IntPtr)codeBase, (IntPtr)p, (nuint)code.Length);
+            System.Buffer.MemoryCopy(p, vmm.GetPointer(codeBase), code.Length, code.Length);
         }
 
         engine.Context.Rip = codeBase;

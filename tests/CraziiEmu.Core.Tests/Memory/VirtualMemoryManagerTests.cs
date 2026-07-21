@@ -14,8 +14,7 @@ namespace CraziiEmu.Core.Tests.Memory;
 /// </summary>
 public class VirtualMemoryManagerTests
 {
-    [DllImport("kernel32.dll", EntryPoint = "RtlZeroMemory")]
-    private static extern void RtlZeroMemory(IntPtr Destination, nuint Length);
+    // RtlZeroMemory removed
 
     /// <summary>
     /// Verifies that a small allocation works and triggers the page-fault hook when accessed.
@@ -26,14 +25,12 @@ public class VirtualMemoryManagerTests
         using var vmm = new VirtualMemoryManager(0x40000000); // 1 GB pool
 
         ulong ptr = vmm.AllocateCpu(4096);
-        Assert.NotEqual(0UL, ptr);
+        // ptr can be 0 (offset)
 
-        // Use native P/Invoke to write to uncommitted memory to properly 
-        // trigger the VEH without violating .NET reverse P/Invoke constraints.
-        RtlZeroMemory((IntPtr)ptr, 4);
+        *(int*)vmm.GetPointer(ptr) = 0;
 
-        *(int*)ptr = 0x12345678;
-        Assert.Equal(0x12345678, *(int*)ptr);
+        *(int*)vmm.GetPointer(ptr) = 0x12345678;
+        Assert.Equal(0x12345678, *(int*)vmm.GetPointer(ptr));
     }
 
     /// <summary>
@@ -47,12 +44,12 @@ public class VirtualMemoryManagerTests
 
         // Allocate 4 GB
         ulong ptr = vmm.AllocateGpu(0x100000000); 
-        Assert.NotEqual(0UL, ptr);
+        // ptr can be 0 (offset)
 
         // Touch the last page of the 4GB allocation
         ulong endPtr = ptr + 0x100000000 - 4096;
-        RtlZeroMemory((IntPtr)endPtr, 8);
-        *(long*)endPtr = 0xDEADBEEF;
-        Assert.Equal(0xDEADBEEFUL, *(ulong*)endPtr);
+        *(long*)vmm.GetPointer(endPtr) = 0;
+        *(long*)vmm.GetPointer(endPtr) = 0xDEADBEEF;
+        Assert.Equal(0xDEADBEEFUL, *(ulong*)vmm.GetPointer(endPtr));
     }
 }

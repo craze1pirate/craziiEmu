@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Runtime.InteropServices;
-using CraziiEmu.HLE.Host.Posix;
 using CraziiEmu.HLE.Host.Windows;
 
 namespace CraziiEmu.HLE.Host;
@@ -25,19 +24,12 @@ public static class HostPlatform
         // The Windows backend executes guest x86-64 natively and emits x86-64
         // stubs, so a native ARM64 process must be rejected here rather than
         // crash undefined later (x64 processes under emulation report X64).
-        if (OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
+        if (RuntimeInformation.ProcessArchitecture == Architecture.X64)
         {
             return new WindowsHostPlatform();
         }
 
-        if ((OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) &&
-            RuntimeInformation.ProcessArchitecture == Architecture.X64)
-        {
-            return new PosixHostPlatform();
-        }
-
         throw new PlatformNotSupportedException(
-            "CraziiEmu native guest execution requires an x86-64 process on Windows, Linux, or macOS. " +
-            "On Apple Silicon, use the osx-x64 build under Rosetta 2.");
+            "CraziiEmu native guest execution requires an x86-64 process on Windows.");
     }
 }

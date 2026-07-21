@@ -150,9 +150,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	// See CpuDispatcher: the 0x7FFx window is Windows-only; POSIX hosts
 	// (dyld shared cache, Rosetta 2 runtime) use 0x6FFx instead.
-	private static readonly ulong GuestThreadStackBaseAddress = OperatingSystem.IsWindows() ? 0x7FFF_E000_0000UL : 0x6FFF_E000_0000UL;
+	private static readonly ulong GuestThreadStackBaseAddress = 0x7FFF_E000_0000UL;
 
-	private static readonly ulong GuestThreadTlsBaseAddress = OperatingSystem.IsWindows() ? 0x7FFE_0000_0000UL : 0x6FFE_0000_0000UL;
+	private static readonly ulong GuestThreadTlsBaseAddress = 0x7FFE_0000_0000UL;
 
 	private const ulong GuestThreadStackSize = 0x0020_0000UL;
 

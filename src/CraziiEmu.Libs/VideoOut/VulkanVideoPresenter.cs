@@ -760,7 +760,6 @@ internal static unsafe class VulkanVideoPresenter
             {
                 _hostSurface = null;
             }
-            else
             {
                 _hostSurfacePendingDetach = surface;
             }
@@ -2617,7 +2616,6 @@ internal static unsafe class VulkanVideoPresenter
             {
                 _pendingGuestImageUploads.Remove(key);
             }
-            else
             {
                 _pendingGuestImageUploads[key] = pendingUpload with
                 {
@@ -4088,7 +4086,6 @@ private VkBuffer[] _overlayStagingBuffers = [];
                     "[LOADER][INFO] Vulkan pipeline cache ready: memory-only " +
                     "(persistence disabled with CRAZIIEMU_VK_PIPELINE_CACHE=0).");
             }
-            else
             {
                 Console.Error.WriteLine(
                     $"[LOADER][INFO] Vulkan pipeline cache ready: path={_pipelineCachePath} initial={initialData.Length} bytes");
@@ -6042,7 +6039,6 @@ private VkBuffer[] _overlayStagingBuffers = [];
                     "vkResetDescriptorPool");
                 resources.DescriptorPool = recycledPool;
             }
-            else
             {
                 // Generously sized so any draw's set fits, making the pool
                 // recyclable regardless of the draw's binding mix. AAA titles
@@ -8538,7 +8534,6 @@ private VkBuffer[] _overlayStagingBuffers = [];
             {
                 allocation = pooled;
             }
-            else
             {
                 var buffer = CreateBuffer(
                     capacity,

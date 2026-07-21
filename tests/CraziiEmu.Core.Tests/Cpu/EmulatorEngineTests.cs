@@ -17,8 +17,7 @@ namespace CraziiEmu.Core.Tests.Cpu;
 /// </summary>
 public class EmulatorEngineTests
 {
-    [DllImport("msvcrt.dll", EntryPoint = "memcpy", CallingConvention = CallingConvention.Cdecl, SetLastError = false)]
-    private static extern IntPtr memcpy(IntPtr dest, IntPtr src, nuint count);
+    // using System.Buffer.MemoryCopy;
 
     /// <summary>
     /// Verifies that the engine correctly decodes and executes a single 'mov rax, 1' instruction.
@@ -38,7 +37,7 @@ public class EmulatorEngineTests
 
         fixed (byte* pCode = code)
         {
-            memcpy((IntPtr)entryPoint, (IntPtr)pCode, (nuint)code.Length);
+            System.Buffer.MemoryCopy(pCode, vmm.GetPointer(entryPoint), code.Length, code.Length);
         }
 
         engine.Context.Rip = entryPoint;
@@ -77,7 +76,7 @@ public class EmulatorEngineTests
 
         fixed (byte* pPayload = payload)
         {
-            memcpy((IntPtr)entryPoint, (IntPtr)pPayload, (nuint)payload.Length);
+            System.Buffer.MemoryCopy(pPayload, vmm.GetPointer(entryPoint), payload.Length, payload.Length);
         }
 
         // Act
@@ -106,7 +105,7 @@ public class EmulatorEngineTests
         byte[] garbage = new byte[] { 0xFF, 0xFF };
         fixed (byte* pGarbage = garbage)
         {
-            memcpy((IntPtr)entryPoint, (IntPtr)pGarbage, (nuint)garbage.Length);
+            System.Buffer.MemoryCopy(pGarbage, vmm.GetPointer(entryPoint), garbage.Length, garbage.Length);
         }
 
         engine.Context.Rip = entryPoint;
@@ -135,7 +134,7 @@ public class EmulatorEngineTests
 
         fixed (byte* pCode = code)
         {
-            memcpy((IntPtr)entryPoint, (IntPtr)pCode, (nuint)code.Length);
+            System.Buffer.MemoryCopy(pCode, vmm.GetPointer(entryPoint), code.Length, code.Length);
         }
 
         engine.Context.Rip = entryPoint;

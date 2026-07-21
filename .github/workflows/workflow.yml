@@ -128,75 +128,11 @@ jobs:
           path: ${{ env.RELEASE_DIR }}\craziiemu-${{ needs.init.outputs.version }}-win-x64.zip
           if-no-files-found: error
 
-  build-posix:
-    name: Build ${{ matrix.rid }}
-    needs:
-      - init
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-          - os: macos-latest
-            rid: osx-x64
-    env:
-      DOTNET_NOLOGO: true
-      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
-      PUBLISH_DIR: ${{ github.workspace }}/artifacts/publish/${{ matrix.rid }}
-      RELEASE_DIR: ${{ github.workspace }}/artifacts/release
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 10.0.103
-          cache: true
-          cache-dependency-path: |
-            Directory.Packages.props
-            Directory.Build.props
-
-      - name: Restore solution
-        run: dotnet restore CraziiEmu.slnx
-
-      - name: Build solution
-        run: dotnet build CraziiEmu.slnx -c Release --no-restore
-
-      # Also runs on Linux/macOS: the aerolib.bin MSBuild task does platform-sensitive
-      # path handling, so a cross-platform generation regression surfaces here.
-      - name: Run tests
-        run: dotnet test CraziiEmu.slnx -c Release --no-build --verbosity normal
-
-      - name: Publish ${{ matrix.rid }} CLI
-        run: dotnet publish src/CraziiEmu.CLI/CraziiEmu.CLI.csproj -c Release -r ${{ matrix.rid }} --self-contained true --no-restore -p:PublishDir="$PUBLISH_DIR"
-
-      - name: Stage MoltenVK next to the build
-        if: matrix.rid == 'osx-x64'
-        run: scripts/fetch-macos-moltenvk.sh "$PUBLISH_DIR"
-
-      - name: Create release archive
-        run: |
-          mkdir -p "$RELEASE_DIR"
-          # tar keeps the executable bit, which zip would drop.
-          tar -czf "$RELEASE_DIR/craziiemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz" \
-            -C "$PUBLISH_DIR" .
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: craziiemu-${{ matrix.rid }}-${{ needs.init.outputs.short-sha }}
-          path: ${{ env.RELEASE_DIR }}/craziiemu-${{ needs.init.outputs.version }}-${{ matrix.rid }}.tar.gz
-          if-no-files-found: error
-
   release:
     name: Publish GitHub Release
     needs:
       - init
       - build
-      - build-posix
     # Versioned releases are immutable and tag-driven. Branch and manual runs
     # still produce Actions artifacts without modifying a published release.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

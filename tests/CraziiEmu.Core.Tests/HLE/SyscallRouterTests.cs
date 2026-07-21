@@ -28,8 +28,7 @@ public class SyscallRouterTests
         public ulong? GetPhysicalAddress(ulong virtualAddress) => throw new NotImplementedException();
     }
 
-    [DllImport("msvcrt.dll", EntryPoint = "memcpy", CallingConvention = CallingConvention.Cdecl, SetLastError = false)]
-    private static extern IntPtr memcpy(IntPtr dest, IntPtr src, nuint count);
+    // using System.Buffer.MemoryCopy;
 
     /// <summary>
     /// Verifies that the sys_write syscall successfully reads from memory and fires the OnStdoutWrite event.
@@ -48,7 +47,7 @@ public class SyscallRouterTests
         // Write manually into VMM using an unmanaged copy to safely trigger the VEH hook
         fixed (byte* pBytes = bytes)
         {
-            memcpy((IntPtr)bufferAddress, (IntPtr)pBytes, (nuint)bytes.Length);
+            System.Buffer.MemoryCopy(pBytes, vmm.GetPointer(bufferAddress), bytes.Length, bytes.Length);
         }
 
         var ctx = new CpuContext(new DummyMemory(), Generation.Gen5)

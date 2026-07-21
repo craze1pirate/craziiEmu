@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE.Host;
-using CraziiEmu.HLE.Host.Posix;
 using CraziiEmu.HLE.Configuration;
 using Silk.NET.Input;
 using System;
@@ -95,7 +94,6 @@ public static class HostWindowInput
             }
         };
 
-        PosixHostInput.SetSource(new WindowInputSource());
     }
 
     private static void AttachMouse(IMouse mouse)
@@ -140,7 +138,7 @@ public static class HostWindowInput
         }
     }
 
-    private sealed class WindowInputSource : IPosixWindowInputSource
+    private sealed class WindowInputSource
     {
         public bool HasKeyboardFocus => _connected;
 

@@ -63,72 +63,11 @@ public static class WindowsMitigationHelper
             $"[LOADER][ERROR] Unsupported process architecture " +
             $"{RuntimeInformation.ProcessArchitecture}: guest code executes " +
             "natively, so CraziiEmu must run as an x86-64 process.");
-        if (OperatingSystem.IsMacOS())
-        {
-            Console.Error.WriteLine(
-                "[LOADER][ERROR] On Apple Silicon, use the osx-x64 build under " +
-                "Rosetta 2 (install with: softwareupdate --install-rosetta).");
-        }
-
+        
         return false;
     }
 
-    /// <summary>
-    /// Applies MoltenVK performance defaults before the Vulkan loader is
-    /// loaded. Existing user-provided values always take precedence.
-    /// </summary>
-    private static void ConfigureMoltenVkDefaults()
-    {
-        try
-        {
-            _ = MacSetEnv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
-            _ = MacSetEnv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
-            _ = MacSetEnv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 0);
-            _ = MacSetEnv("MVK_CONFIG_RESUME_LOST_DEVICE", "1", 0);
-        }
-        catch (Exception exception)
-        {
-            Console.Error.WriteLine(
-                $"[LOADER][WARN] Failed to set MoltenVK defaults: {exception.Message}");
-        }
-    }
 
-    /// <summary>
-    /// Makes a Vulkan loader visible to GLFW's dlopen("libvulkan.1.dylib").
-    /// Homebrew's Vulkan libraries are arm64-only and cannot load into this
-    /// x86-64 (Rosetta 2) process, so a universal libMoltenVK.dylib placed
-    /// next to the executable (named libvulkan.1.dylib) is preloaded here;
-    /// dyld then resolves GLFW's bare-name dlopen to the loaded image.
-    /// </summary>
-    private static void PreloadMacVulkanLoader()
-    {
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "libvulkan.1.dylib"),
-            Path.Combine(AppContext.BaseDirectory, "libMoltenVK.dylib"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".sharpemu", "x64lib", "libvulkan.1.dylib"),
-        };
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out _))
-            {
-                Console.Error.WriteLine($"[LOADER][INFO] Vulkan loader preloaded: {candidate}");
-                return;
-            }
-        }
-
-        if (NativeLibrary.TryLoad("libvulkan.1.dylib", out _))
-        {
-            return;
-        }
-
-        Console.Error.WriteLine(
-            "[LOADER][WARN] No x86-64 Vulkan loader found; video output will be unavailable. " +
-            "Place a universal libMoltenVK.dylib (from the MoltenVK releases) next to CraziiEmu " +
-            "as libvulkan.1.dylib.");
-    }
 
     /// <summary>
     /// Makes console writes UTF-8 so the GUI's pipe reader (and any modern
@@ -228,11 +167,6 @@ public static class WindowsMitigationHelper
     public static bool TryRunMitigatedChild(string[] args, out int childExitCode)
     {
         childExitCode = 0;
-        if (!OperatingSystem.IsWindows())
-        {
-            return false;
-        }
-
         if (string.Equals(Environment.GetEnvironmentVariable("CraziiEmu_DISABLE_MITIGATION_RELAUNCH"), "1", StringComparison.Ordinal))
         {
             return false;
@@ -721,9 +655,6 @@ public static class WindowsMitigationHelper
         uint creationDisposition,
         uint flagsAndAttributes,
         nint templateFile);
-
-    [DllImport("libSystem", EntryPoint = "setenv")]
-    private static extern int MacSetEnv(string name, string value, int overwrite);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
