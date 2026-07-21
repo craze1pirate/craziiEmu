@@ -40,7 +40,7 @@ Currently, development and compilation natively target **Windows x64**.
 ### Premium Desktop Interface
 Built using **Avalonia UI**, the frontend provides a console-like experience rather than a traditional windowed debugger:
 - **Modern, Dark-Themed Dashboard:** A highly responsive, console-inspired scrolling game library.
-- **Dynamic Theming:** Seamlessly maps native background artwork (`pic1.png`) from your game library, adapting the interface on the fly.
+- **Dynamic Theming:** Seamlessly maps native background artwork from your game library, adapting the interface on the fly.
 - **Integrated Console:** A real-time, built-in diagnostic logging terminal for trace monitoring.
 - **Configurable Settings:** Manage graphics, audio, debugging, and comprehensive controller configurations all within the UI.
 - **Fullscreen Experience:** The emulator natively defaults to fullscreen mode, seamlessly toggled via `F11`.
