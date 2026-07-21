@@ -1,5 +1,5 @@
 <!--
-Copyright (C) 2026 SharpEmu Emulator Project
+Copyright (C) 2026 CraziiEmu Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -15,8 +15,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <!-- References only the shader-compiler projects: the conformance tool is
        emulator-independent by design. -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SharpEmu.ShaderCompiler\SharpEmu.ShaderCompiler.csproj" />
-    <ProjectReference Include="..\..\src\SharpEmu.ShaderCompiler.Vulkan\SharpEmu.ShaderCompiler.Vulkan.csproj" />
+    <ProjectReference Include="..\..\src\CraziiEmu.ShaderCompiler\CraziiEmu.ShaderCompiler.csproj" />
+    <ProjectReference Include="..\..\src\CraziiEmu.ShaderCompiler.Vulkan\CraziiEmu.ShaderCompiler.Vulkan.csproj" />
   </ItemGroup>
 
 </Project>

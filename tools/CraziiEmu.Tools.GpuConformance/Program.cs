@@ -1,12 +1,12 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-// Executes the SharpEmu-emitted "exec" conformance shader on a real Vulkan
+// Executes the CraziiEmu-emitted "exec" conformance shader on a real Vulkan
 // device and compares the buffer results against CPU-computed expected values.
 //
-// The shader (exec-cs.spv, produced by SharpEmu.Tools.ShaderDump) was
-// translated by SharpEmu from hand-assembled Gen5 instruction words and stores
+// The shader (exec-cs.spv, produced by CraziiEmu.Tools.ShaderDump) was
+// translated by CraziiEmu from hand-assembled Gen5 instruction words and stores
 // results to guestBuffers[0]:
 //   [0] v_fmac_f32   -> fma(1.5f, 2.25f, 10.0f)
 //   [1] v_mul_hi_i32 -> high 32 bits of (int)0x7FFFFFFF * (int)0x00010003
@@ -18,7 +18,7 @@
 // Creating the compute pipeline doubles as a driver-acceptance check for the
 // emitted SPIR-V; the dispatch then verifies the arithmetic numerically.
 //
-// Usage: SharpEmu.Tools.GpuConformance <path-to-exec-cs.spv>
+// Usage: CraziiEmu.Tools.GpuConformance <path-to-exec-cs.spv>
 
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
@@ -41,12 +41,12 @@ unsafe
     var spvPath = args.Length > 0
         ? args[0]
         : throw new InvalidOperationException(
-            "usage: SharpEmu.Tools.GpuConformance <path-to-exec-cs.spv>");
+            "usage: CraziiEmu.Tools.GpuConformance <path-to-exec-cs.spv>");
     var code = File.ReadAllBytes(spvPath);
 
     var vk = Vk.GetApi();
 
-    var appName = (byte*)SilkMarshal.StringToPtr("SharpEmuGpuConformance");
+    var appName = (byte*)SilkMarshal.StringToPtr("CraziiEmuGpuConformance");
     var appInfo = new ApplicationInfo
     {
         SType = StructureType.ApplicationInfo,
@@ -186,7 +186,7 @@ unsafe
         words[index] = Sentinel;
     }
 
-    // SharpEmu emits all guest buffers as one descriptor array at set 0,
+    // CraziiEmu emits all guest buffers as one descriptor array at set 0,
     // binding 0; this conformance shader uses a single buffer.
     ShaderModule module;
     fixed (byte* pCode = code)

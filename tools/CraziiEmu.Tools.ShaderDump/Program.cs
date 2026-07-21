@@ -1,11 +1,11 @@
-// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Emulator Project
 // Copyright (C) 2026 craze1pirate - CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // Synthetic-shader conformance dumper.
 //
 // Feeds hand-assembled Gen5 (gfx10) instruction words through the real
-// decode -> SPIR-V pipeline (SharpEmu.ShaderCompiler + SharpEmu.ShaderCompiler.Vulkan)
+// decode -> SPIR-V pipeline (CraziiEmu.ShaderCompiler + CraziiEmu.ShaderCompiler.Vulkan)
 // and writes the resulting vertex, pixel, and compute SPIR-V blobs to disk. The blobs
 // can then be checked with spirv-val / spirv-dis.
 //
@@ -18,12 +18,12 @@
 // failure that must stay loud. Any unexpected outcome makes the tool exit
 // non-zero, so it can gate scripts/CI.
 //
-// Usage: SharpEmu.Tools.ShaderDump [output-directory]
+// Usage: CraziiEmu.Tools.ShaderDump [output-directory]
 
 using System.Buffers.Binary;
-using SharpEmu.HLE;
-using SharpEmu.ShaderCompiler;
-using SharpEmu.ShaderCompiler.Vulkan;
+using CraziiEmu.HLE;
+using CraziiEmu.ShaderCompiler;
+using CraziiEmu.ShaderCompiler.Vulkan;
 
 const ulong ProgramAddress = 0x100000;
 
