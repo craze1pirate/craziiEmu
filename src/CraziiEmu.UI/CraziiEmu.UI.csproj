@@ -45,4 +45,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <Target Name="RemovePdbsFromPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <PdbsToDelete Include="$(PublishDir)\**\*.pdb" />
+    </ItemGroup>
+    <Delete Files="@(PdbsToDelete)" />
+  </Target>
+
 </Project>

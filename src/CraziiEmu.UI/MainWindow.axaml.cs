@@ -766,10 +766,7 @@ public partial class MainWindow : Window
             {
                 try 
                 {
-                    Dispatcher.UIThread.Post(() => 
-                    {
-                        this.WindowState = WindowState.Minimized;
-                    });
+
                     
                     var result = _runtime.Run(_selectedExecutablePath);
                     AppendConsole($"[Emulation] Finished with result: {result}");
@@ -785,8 +782,6 @@ public partial class MainWindow : Window
                     Dispatcher.UIThread.Post(() => 
                     {
                         BtnPlay.IsEnabled = true;
-                        this.WindowState = WindowState.Normal;
-                        this.Activate();
                     });
                 }
             }) { IsBackground = true, Name = "CraziiEmu-CPU" };
