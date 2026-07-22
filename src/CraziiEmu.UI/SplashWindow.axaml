@@ -13,7 +13,7 @@
     
     <Grid>
         <!-- The custom black logo, cleanly scaled in the center -->
-        <Image Source="avares://CraziiEmu.UI/Assets/splashscreen.png"
+        <Image Source="avares://CraziiEmu/Assets/splashscreen.png"
                Stretch="Uniform"
                Margin="60"/>
     </Grid>

@@ -12,7 +12,7 @@
         Background="#000000"
         FontFamily="Inter, Segoe UI, sans-serif"
         WindowDecorations="None"
-        Icon="avares://CraziiEmu.UI/Assets/CraziiEmu.ico">
+        Icon="avares://CraziiEmu/Assets/CraziiEmu.ico">
 
     <Window.Styles>
 

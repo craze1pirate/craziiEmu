@@ -55,26 +55,40 @@ public static class GamepadHandler
     public const ushort BTN_X = 0x4000;
     public const ushort BTN_Y = 0x8000;
 
+    private static bool _initialized;
+    private static int _xinputVersion; // 0 = none, 1 = 1.4, 2 = 9.1.0
+
     /// <summary>
     /// Gets the current full gamepad state.
     /// Returns true if a gamepad is connected, false otherwise.
     /// </summary>
     public static bool GetState(out XINPUT_GAMEPAD pad, uint userIndex = 0)
     {
+        pad = default;
+
+        if (!_initialized)
+        {
+            _initialized = true;
+            try { XInputGetState14(0, out _); _xinputVersion = 1; }
+            catch
+            {
+                try { XInputGetState91(0, out _); _xinputVersion = 2; }
+                catch { _xinputVersion = 0; }
+            }
+        }
+
+        if (_xinputVersion == 0) return false;
+
         uint result = 1;
         XINPUT_STATE state = default;
-        
-        try 
-        { 
-            result = XInputGetState14(userIndex, out state); 
+
+        if (_xinputVersion == 1)
+        {
+            try { result = XInputGetState14(userIndex, out state); } catch { return false; }
         }
-        catch 
-        { 
-            try 
-            { 
-                result = XInputGetState91(userIndex, out state); 
-            } 
-            catch { } 
+        else
+        {
+            try { result = XInputGetState91(userIndex, out state); } catch { return false; }
         }
 
         if (result == 0)
@@ -82,8 +96,7 @@ public static class GamepadHandler
             pad = state.Gamepad;
             return true;
         }
-        
-        pad = default;
+
         return false;
     }
 

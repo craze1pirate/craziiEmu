@@ -74,7 +74,7 @@ public partial class MainWindow : Window
             InsertConsoleLine(line);
         });
         CraziiEmuLog.Sink = _logSink;
-        CraziiEmuLog.MinimumLevel = LogLevel.Debug;
+        CraziiEmuLog.MinimumLevel = LogLevel.Info;
 
         var consoleWriter = new ConsoleTextWriter(line => InsertConsoleLine(line));
         Console.SetOut(consoleWriter);
@@ -501,7 +501,7 @@ public partial class MainWindow : Window
     //  Carousel
     // ══════════════════════════════════════════════════════════════
 
-    private void OnCarouselSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    private async void OnCarouselSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (GameCarousel.SelectedItem is GameItem selected)
         {
@@ -522,7 +522,15 @@ public partial class MainWindow : Window
 
             if (picPath != null)
             {
-                try { WallpaperImage.Source = new Avalonia.Media.Imaging.Bitmap(picPath); }
+                try 
+                { 
+                    var bitmap = await System.Threading.Tasks.Task.Run(() => new Avalonia.Media.Imaging.Bitmap(picPath));
+                    // Only apply if the selection hasn't moved on
+                    if (_selectedExecutablePath == selected.ExecutablePath)
+                    {
+                        WallpaperImage.Source = bitmap;
+                    }
+                }
                 catch { WallpaperImage.Source = null; }
             }
             else
@@ -758,6 +766,11 @@ public partial class MainWindow : Window
             {
                 try 
                 {
+                    Dispatcher.UIThread.Post(() => 
+                    {
+                        this.WindowState = WindowState.Minimized;
+                    });
+                    
                     var result = _runtime.Run(_selectedExecutablePath);
                     AppendConsole($"[Emulation] Finished with result: {result}");
                 }
@@ -769,7 +782,12 @@ public partial class MainWindow : Window
                 }
                 finally
                 {
-                    Dispatcher.UIThread.Post(() => BtnPlay.IsEnabled = true);
+                    Dispatcher.UIThread.Post(() => 
+                    {
+                        BtnPlay.IsEnabled = true;
+                        this.WindowState = WindowState.Normal;
+                        this.Activate();
+                    });
                 }
             }) { IsBackground = true, Name = "CraziiEmu-CPU" };
             _cpuThread.Start();

@@ -122,7 +122,7 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.25.0-alpha, )"
+          "CraziiEmu.Logging": "[0.26.0-alpha, )"
         }
       },
       "craziiemu.logging": {
@@ -131,13 +131,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.25.0-alpha, )"
+          "CraziiEmu.HLE": "[0.26.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.25.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.26.0-alpha, )"
         }
       },
       "Silk.NET.Maths": {
