@@ -8,12 +8,6 @@
         "resolved": "1.21.0",
         "contentHash": "dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg=="
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[10.0.9, )",
-        "resolved": "10.0.9",
-        "contentHash": "4Iw41e2h7I4t70SJcX2GCmbyKJIlA273Cfm9RJMM050/3VBejGAG1KcthP5Z2L6SQcbfbf6BhNWO26+ZG+GzMg=="
-      },
       "Silk.NET.Input": {
         "type": "Direct",
         "requested": "[2.23.0, )",
@@ -121,15 +115,15 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.24.0-alpha, )"
+          "CraziiEmu.Logging": "[0.25.0-alpha, )"
         }
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.24.0-alpha, )",
-          "CraziiEmu.ShaderCompiler": "[0.24.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.24.0-alpha, )",
+          "CraziiEmu.HLE": "[0.25.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.25.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.25.0-alpha, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
@@ -143,13 +137,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.24.0-alpha, )"
+          "CraziiEmu.HLE": "[0.25.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.24.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.25.0-alpha, )"
         }
       },
       "Silk.NET.Vulkan": {

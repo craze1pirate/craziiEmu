@@ -109,6 +109,11 @@ jobs:
       - name: Publish win-x64 GUI
         run: dotnet publish src/CraziiEmu.UI/CraziiEmu.UI.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishDir="${env:PUBLISH_DIR}"
 
+      - name: Clean publish output
+        run: |
+          # Remove third-party .pdb files shipped by NuGet native packages
+          Get-ChildItem -Path $env:PUBLISH_DIR -Filter '*.pdb' -Recurse | Remove-Item -Force
+
       - name: Create release archive
         run: |
           New-Item -ItemType Directory -Path $env:RELEASE_DIR -Force | Out-Null
