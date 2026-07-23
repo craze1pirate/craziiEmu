@@ -140,3 +140,5 @@ SharpEmu.slnx
 *.ntvs*
 *.njsproj
 ehthumbs.db
+tests/
+tools/

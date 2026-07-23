@@ -1,6 +1,6 @@
 <!--
-Copyright (C) 2026 CraziiEmu Emulator Project
-Copyright (C) 2026 craze1pirate - CraziiEmu Project
+Copyright (C) 2026 SharpEmu Emulator Project
+Copyright (C) 2026 CraziiEmu Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -17,9 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
          console window; CLI mode re-attaches to the parent terminal's console. -->
     <OutputType>WinExe</OutputType>
     <AssemblyName>CraziiEmu</AssemblyName>
-    <!-- osx-x64 is the macOS target: the CPU backend executes guest x86-64
-         natively, so on Apple Silicon it runs under Rosetta 2. -->
-    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <!-- <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract> -->
@@ -33,16 +31,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <TieredPGO>true</TieredPGO>
-  </PropertyGroup>
-
-  <!-- Background GC's write-watch revisit calls FlushProcessWriteBuffers,
-       which on macOS uses thread_get_register_pointer_values; under Rosetta 2
-       that Mach call can stall indefinitely on threads executing translated
-       guest code, wedging the whole runtime (every allocating thread then
-       blocks behind the never-finishing GC). Non-concurrent GC never takes
-       that path. Windows and Linux keep concurrent GC. -->
-  <PropertyGroup Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))">
-    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

@@ -79,9 +79,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
-          "CraziiEmu.Libs": "[0.0.2-beta.2, )",
-          "CraziiEmu.Logging": "[0.0.2-beta.2, )",
+          "CraziiEmu.HLE": "[0.27.0-alpha, )",
+          "CraziiEmu.Libs": "[0.27.0-alpha, )",
+          "CraziiEmu.Logging": "[0.27.0-alpha, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Maths": "[2.23.0, )",
@@ -92,15 +92,15 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.0.2-beta.2, )"
+          "CraziiEmu.Logging": "[0.27.0-alpha, )"
         }
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.0.2-beta.2, )",
-          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.0.2-beta.2, )",
+          "CraziiEmu.HLE": "[0.27.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.27.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.27.0-alpha, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
@@ -114,13 +114,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.0.2-beta.2, )"
+          "CraziiEmu.HLE": "[0.27.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.0.2-beta.2, )"
+          "CraziiEmu.ShaderCompiler": "[0.27.0-alpha, )"
         }
       },
       "Iced": {
@@ -193,27 +193,6 @@
           "Silk.NET.Windowing.Common": "2.23.0",
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
-      }
-    },
-    "net10.0/linux-x64": {
-      "Ultz.Native.GLFW": {
-        "type": "Transitive",
-        "resolved": "3.4.0",
-        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
-      }
-    },
-    "net10.0/osx-arm64": {
-      "Ultz.Native.GLFW": {
-        "type": "Transitive",
-        "resolved": "3.4.0",
-        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
-      }
-    },
-    "net10.0/osx-x64": {
-      "Ultz.Native.GLFW": {
-        "type": "Transitive",
-        "resolved": "3.4.0",
-        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
       }
     },
     "net10.0/win-x64": {
