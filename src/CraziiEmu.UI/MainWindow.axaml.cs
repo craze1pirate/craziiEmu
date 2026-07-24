@@ -219,7 +219,7 @@ public partial class MainWindow : Window
                 if (_headerFocusIndex == 0) OnOpenConfig(this, new RoutedEventArgs());
                 else OnBtnFullscreenClick(this, new RoutedEventArgs());
             }
-            else if (GameCarousel.SelectedIndex == 0)
+            else if (Games.Count == 0)
             {
                 OnBtnAddGame(this, new RoutedEventArgs());
             }
