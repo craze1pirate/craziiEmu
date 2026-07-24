@@ -2,8 +2,6 @@
 # Copyright (C) 2026 CraziiEmu Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-# Tells the website repo to rebuild when a release is published, so
-# sharpemu.app/downloads lists the new build within a minute.
 name: Notify website
 
 on:
