@@ -10,7 +10,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);1591;0649;8602;1734;SHEM006</NoWarn>
-    <CraziiEmuVersion>0.27-alpha</CraziiEmuVersion>
+    <CraziiEmuVersion>0.28-alpha</CraziiEmuVersion>
     <Version>$(CraziiEmuVersion)</Version>
 
     <RepoRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)'))</RepoRoot>
