@@ -21,14 +21,14 @@
             <Setter Property="Width"          Value="88"/>
             <Setter Property="Height"         Value="88"/>
             <Setter Property="CornerRadius"   Value="16"/>
-            <Setter Property="Opacity"        Value="0.65"/>
+            <Setter Property="Opacity"        Value="1.0"/>
             <Setter Property="BorderBrush"    Value="Transparent"/>
             <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
             <Setter Property="Transitions">
                 <Transitions>
-                    <DoubleTransition Property="Width"   Duration="0:0:0.45" Easing="CubicEaseOut"/>
-                    <DoubleTransition Property="Height"  Duration="0:0:0.45" Easing="CubicEaseOut"/>
-                    <DoubleTransition Property="Opacity" Duration="0:0:0.30"/>
+                    <DoubleTransition Property="Width"   Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                    <DoubleTransition Property="Height"  Duration="0:0:0.35" Easing="CubicEaseOut"/>
                 </Transitions>
             </Setter>
         </Style>
@@ -37,13 +37,11 @@
         <Style Selector="ListBox.Carousel ListBoxItem:selected Border.GameCard">
             <Setter Property="Width"          Value="220"/>
             <Setter Property="Height"         Value="220"/>
-            <Setter Property="Opacity"        Value="1.0"/>
             <Setter Property="BorderBrush"    Value="White"/>
         </Style>
 
         <!-- ── Hover on non-selected ── -->
         <Style Selector="ListBox.Carousel ListBoxItem:pointerover Border.GameCard">
-            <Setter Property="Opacity"     Value="0.90"/>
             <Setter Property="BorderBrush" Value="#55FFFFFF"/>
         </Style>
 
@@ -58,6 +56,7 @@
             <Setter Property="Margin"            Value="0"/>
             <Setter Property="Background"        Value="Transparent"/>
             <Setter Property="VerticalAlignment" Value="Bottom"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
         </Style>
         <Style Selector="ListBox.Carousel ListBoxItem:selected /template/ ContentPresenter">
             <Setter Property="Background" Value="Transparent"/>
@@ -301,6 +300,7 @@
 
                         <Button x:Name="BtnMinimize"
                                 Classes="ChromeBtn"
+                                Foreground="White"
                                 Content="—"
                                 ToolTip.Tip="Minimize"/>
                         <Button x:Name="BtnClose"
@@ -370,7 +370,13 @@
                 <ScrollViewer x:Name="MainScrollViewer"
                               HorizontalScrollBarVisibility="Hidden"
                               VerticalScrollBarVisibility="Disabled"
+                              UseLayoutRounding="False"
                               Padding="40,0,40,0">
+                    <ScrollViewer.Transitions>
+                        <Transitions>
+                            <VectorTransition Property="Offset" Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                        </Transitions>
+                    </ScrollViewer.Transitions>
                     <ListBox x:Name="GameCarousel"
                              Classes="Carousel"
                              SelectedIndex="0"
@@ -380,6 +386,7 @@
                                 <!-- VerticalAlignment=Bottom so all cards anchor to the bottom edge -->
                                 <StackPanel Orientation="Horizontal"
                                             Spacing="16"
+                                            UseLayoutRounding="False"
                                             VerticalAlignment="Bottom"/>
                             </ItemsPanelTemplate>
                         </ListBox.ItemsPanel>
@@ -388,10 +395,10 @@
                             <DataTemplate x:DataType="local:GameItem">
                                 <Panel>
                                     <!-- Game Card -->
-                                    <Border Classes="GameCard" Background="#111118">
+                                    <Border Classes="GameCard" Background="Transparent">
                                         <Panel>
-                                            <Border CornerRadius="14" ClipToBounds="True" ZIndex="1">
-                                                <Image Source="{Binding CoverArt}" Stretch="UniformToFill" />
+                                            <Border CornerRadius="14" ClipToBounds="True" Background="#111118" ZIndex="1">
+                                                <Image Source="{Binding CoverArt}" Stretch="UniformToFill" RenderOptions.BitmapInterpolationMode="HighQuality" />
                                             </Border>
                                             <Grid ZIndex="0">
                                                 <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
