@@ -29,15 +29,67 @@
                 <Transitions>
                     <DoubleTransition Property="Width"   Duration="0:0:0.35" Easing="CubicEaseOut"/>
                     <DoubleTransition Property="Height"  Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                    <CornerRadiusTransition Property="CornerRadius" Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                    <ThicknessTransition Property="BorderThickness" Duration="0:0:0.35" Easing="CubicEaseOut"/>
                 </Transitions>
             </Setter>
         </Style>
 
-        <!-- ── Selected card: large ── -->
+        <Style Selector="Border.GameCardInner">
+            <Setter Property="CornerRadius"   Value="14"/>
+            <Setter Property="Transitions">
+                <Transitions>
+                    <CornerRadiusTransition Property="CornerRadius" Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                </Transitions>
+            </Setter>
+        </Style>
+
+        <!-- ── Selected card: slightly larger ── -->
         <Style Selector="ListBox.Carousel ListBoxItem:selected Border.GameCard">
-            <Setter Property="Width"          Value="220"/>
-            <Setter Property="Height"         Value="220"/>
-            <Setter Property="BorderBrush"    Value="White"/>
+            <Setter Property="Width"          Value="134"/>
+            <Setter Property="Height"         Value="134"/>
+            <Setter Property="CornerRadius"   Value="24"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="BorderBrush"    Value="Transparent"/>
+        </Style>
+
+        <Style Selector="ListBox.Carousel ListBoxItem:selected Border.GameCardInner">
+            <Setter Property="CornerRadius"   Value="22"/>
+        </Style>
+
+        <!-- ── Shimmer Overlay ── -->
+        <Style Selector="Border.ShineCover">
+            <Setter Property="Opacity" Value="0"/>
+            <Setter Property="TranslateTransform.X" Value="-200"/>
+            <Setter Property="TranslateTransform.Y" Value="-200"/>
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                        <GradientStop Color="Transparent" Offset="0.3"/>
+                        <GradientStop Color="#44FFFFFF" Offset="0.5"/>
+                        <GradientStop Color="Transparent" Offset="0.7"/>
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style Selector="ListBox.Carousel ListBoxItem:selected Border.ShineCover">
+            <Setter Property="Opacity" Value="1"/>
+            <Style.Animations>
+                <Animation Duration="0:0:3" IterationCount="INFINITE">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="TranslateTransform.X" Value="-200"/>
+                        <Setter Property="TranslateTransform.Y" Value="-200"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="66%">
+                        <Setter Property="TranslateTransform.X" Value="200"/>
+                        <Setter Property="TranslateTransform.Y" Value="200"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="TranslateTransform.X" Value="200"/>
+                        <Setter Property="TranslateTransform.Y" Value="200"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
         </Style>
 
         <!-- ── Hover on non-selected ── -->
@@ -397,8 +449,11 @@
                                     <!-- Game Card -->
                                     <Border Classes="GameCard" Background="Transparent">
                                         <Panel>
-                                            <Border CornerRadius="14" ClipToBounds="True" Background="#111118" ZIndex="1">
-                                                <Image Source="{Binding CoverArt}" Stretch="UniformToFill" RenderOptions.BitmapInterpolationMode="HighQuality" />
+                                            <Border Classes="GameCardInner" ClipToBounds="True" Background="#111118" ZIndex="1">
+                                                <Panel>
+                                                    <Image Source="{Binding CoverArt}" Stretch="UniformToFill" RenderOptions.BitmapInterpolationMode="HighQuality" />
+                                                    <Border Classes="ShineCover" IsHitTestVisible="False"/>
+                                                </Panel>
                                             </Border>
                                             <Grid ZIndex="0">
                                                 <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
