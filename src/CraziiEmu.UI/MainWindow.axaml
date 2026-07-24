@@ -661,37 +661,25 @@
                                                         <TextBlock Text="Up" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
                                                         <Button x:Name="BindDpadUp" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
-                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3">
-                                                            <TextBlock Text="Cross" Foreground="#FFFFFF" VerticalAlignment="Center" />
-                                                            <Path Data="M 4 4 L 20 20 M 4 20 L 20 4" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
-                                                        </StackPanel>
+                                                        <TextBlock Text="Cross" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
                                                         <Button x:Name="BindCross" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
                                                         <TextBlock Text="Down" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadDown" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0">
-                                                            <TextBlock Text="Circle" Foreground="#FFFFFF" VerticalAlignment="Center" />
-                                                            <Path Data="M 12 2 A 10 10 0 1 1 12 21.9 A 10 10 0 1 1 12 2" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
-                                                        </StackPanel>
+                                                        <TextBlock Text="Circle" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
                                                         <Button x:Name="BindCircle" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
                                                         <TextBlock Text="Left" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadLeft" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0">
-                                                            <TextBlock Text="Square" Foreground="#FFFFFF" VerticalAlignment="Center" />
-                                                            <Path Data="M 4 4 H 20 V 20 H 4 Z" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
-                                                        </StackPanel>
+                                                        <TextBlock Text="Square" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
                                                         <Button x:Name="BindSquare" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
                                                         <TextBlock Text="Right" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindDpadRight" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0">
-                                                            <TextBlock Text="Triangle" Foreground="#FFFFFF" VerticalAlignment="Center" />
-                                                            <Path Data="M 12 2 L 22 20 H 2 Z" Stroke="#FFFFFF" StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
-                                                        </StackPanel>
+                                                        <TextBlock Text="Triangle" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="3" Margin="0,8,0,0" />
                                                         <Button x:Name="BindTriangle" Grid.Row="4" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                                                     </Grid>
                                                 </StackPanel>
