@@ -54,9 +54,6 @@ public class UiLogSink : ICraziiEmuLogSink
             Color = color
         };
 
-        if (Dispatcher.UIThread.CheckAccess())
-            _appendLineAction(line);
-        else
-            Dispatcher.UIThread.Post(() => _appendLineAction(line));
+        _appendLineAction(line);
     }
 }

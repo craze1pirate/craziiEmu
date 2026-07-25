@@ -4534,22 +4534,19 @@ public static partial class AgcExports
     // label is genuinely written by a later submit — preserving cross-submit
     // ordering so the work after a wait (e.g. the final composite) does not run
     // ahead of the compute it samples.
-    private static readonly bool _gpuWaitSuspendEnabled = !string.Equals(
+    private static readonly bool _gpuWaitSuspendEnabled = string.Equals(
         Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_MODE"),
-        "force",
+        "suspend",
         StringComparison.OrdinalIgnoreCase);
 
-    // Optional age for one-shot missing-producer diagnostics. Stale waits are
-    // never removed or force-satisfied in the default suspend mode: doing so
-    // advances a queue without its real cross-queue producer and can publish
-    // incomplete CPU/GPU state. Only CRAZIIEMU_GPU_WAIT_MODE=force retains the
-    // explicit legacy mutation path above. Default 0 disables age diagnostics.
+    // Optional age for one-shot missing-producer diagnostics. Default to 100ms
+    // fallback timeout to prevent frozen command buffers when producers stall.
     private static readonly long _gpuWaitStaleTicks =
         (long.TryParse(
              Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_FALLBACK_MS"),
              out var fallbackMs) && fallbackMs >= 0
             ? fallbackMs
-            : 0L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
+            : 100L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
 
     // How long a suspended GPU wait may sit before the deadlock breaker may
     // release it using the last value a real producer wrote to its label. Long

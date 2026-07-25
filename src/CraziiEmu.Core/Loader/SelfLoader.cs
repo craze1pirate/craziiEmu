@@ -1532,10 +1532,6 @@ public sealed class SelfLoader : ISelfLoader
             var symbolAddress = symbol.Value >= imageBase
                 ? symbol.Value
                 : unchecked(imageBase + symbol.Value);
-            if (imageBase == 0x00000008043E0000UL)
-            {
-                Console.Error.WriteLine($"[LOADER][WEBAPI_SYM] symbol='{symbolName}' offset=0x{symbol.Value:X} addr=0x{symbolAddress:X16}");
-            }
             if (symbolAddress < 0x10000)
             {
                 continue;

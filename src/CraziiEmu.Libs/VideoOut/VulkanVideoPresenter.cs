@@ -12186,25 +12186,9 @@ private void PollPerfOverlayHotkey() { }
                     out presentedGuestImage);
             }
 
-            if (presentation.GuestImageAddress != 0 &&
-                (presentedGuestImage is null || !presentedGuestImage.Initialized))
+            if (presentation.GuestImageAddress != 0 && presentedGuestImage is not null && !presentedGuestImage.Initialized)
             {
-                if (ShouldTracePresentedGuestImageContentsForDiagnostics())
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] vk.present_dropped addr=0x{presentation.GuestImageAddress:X16} " +
-                        $"version={presentation.GuestImageVersion} " +
-                        $"found={(presentedGuestImage is not null)} " +
-                        $"initialized={(presentedGuestImage?.Initialized ?? false)} " +
-                        $"— no swapchain present this frame (black).");
-                }
-
-                if (ownsPresentedGuestImageVersion && presentedGuestImage is not null)
-                {
-                    DestroyGuestImage(presentedGuestImage);
-                }
-
-                return;
+                presentedGuestImage.Initialized = true;
             }
             if (ownsPresentedGuestImageVersion)
             {
@@ -14230,7 +14214,7 @@ private void PollPerfOverlayHotkey() { }
                 // the image into the swapchain.
                 SrcAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.ShaderReadBit,
                 DstAccessMask = AccessFlags.TransferReadBit,
-                OldLayout = ImageLayout.ShaderReadOnlyOptimal,
+                OldLayout = source.InitialUploadPending ? ImageLayout.Undefined : ImageLayout.ShaderReadOnlyOptimal,
                 NewLayout = ImageLayout.TransferSrcOptimal,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,

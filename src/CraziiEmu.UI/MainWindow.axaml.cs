@@ -3,6 +3,7 @@
 
 using System;
 using System.Linq;
+using System.Collections.Concurrent;
 using System.Management;
 using System.Threading;
 using Avalonia.Controls;
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
     private Thread? _cpuThread;
     private ICraziiEmuRuntime? _runtime;
     private readonly UiLogSink _logSink;
+    private readonly ConcurrentQueue<ConsoleLine> _logQueue = new();
     private ushort _lastGamepadButtons;
 
     // Settings fields
@@ -111,6 +113,10 @@ public partial class MainWindow : Window
         clockTimer.Tick += (_, _) => TxtClock.Text = DateTime.Now.ToString("HH:mm");
         clockTimer.Start();
         TxtClock.Text = DateTime.Now.ToString("HH:mm");
+
+        var logTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        logTimer.Tick += OnLogTimerTick;
+        logTimer.Start();
 
         // ── Gamepad polling ────────────────────────────────────────────
         var gamepadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -810,21 +816,20 @@ public partial class MainWindow : Window
     internal void AppendConsole(string message, string color = "White")
     {
         var line = new ConsoleLine { Text = $"[{DateTime.Now:HH:mm:ss}] {message}", Color = color };
-
-        if (Dispatcher.UIThread.CheckAccess())
-        {
-            InsertConsoleLine(line);
-        }
-        else
-        {
-            Dispatcher.UIThread.Post(() => InsertConsoleLine(line));
-        }
+        InsertConsoleLine(line);
     }
 
     private ScrollViewer? _consoleScroller;
 
     private void InsertConsoleLine(ConsoleLine line)
     {
+        _logQueue.Enqueue(line);
+    }
+
+    private void OnLogTimerTick(object? sender, EventArgs e)
+    {
+        if (_logQueue.IsEmpty) return;
+
         bool isAtBottom = true;
         
         if (_consoleScroller == null)
@@ -837,16 +842,23 @@ public partial class MainWindow : Window
             isAtBottom = _consoleScroller.Offset.Y >= _consoleScroller.Extent.Height - _consoleScroller.Viewport.Height - 10;
         }
 
-        ConsoleMessages.Add(line);
+        int count = 0;
+        ConsoleLine? lastLine = null;
+        while (count < 2000 && _logQueue.TryDequeue(out var line))
+        {
+            ConsoleMessages.Add(line);
+            lastLine = line;
+            count++;
+        }
         
-        if (ConsoleMessages.Count > 10000)
+        while (ConsoleMessages.Count > 10000)
         {
             ConsoleMessages.RemoveAt(0);
         }
         
-        if (isAtBottom)
+        if (isAtBottom && lastLine != null)
         {
-            ConsoleOutput.ScrollIntoView(line);
+            ConsoleOutput.ScrollIntoView(lastLine);
         }
     }
 

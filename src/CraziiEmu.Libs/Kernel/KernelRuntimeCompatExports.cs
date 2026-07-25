@@ -657,6 +657,10 @@ public static class KernelRuntimeCompatExports
     {
         if (sceResult == (int)OrbisGen2Result.ORBIS_GEN2_OK)
         {
+            if (ctx.WasRaxWritten)
+            {
+                return (int)ctx[CpuRegister.Rax];
+            }
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 

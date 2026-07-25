@@ -310,12 +310,14 @@ public static class KernelSemaphoreCompatExports
 
         lock (semaphore.Gate)
         {
-            if (semaphore.Count > semaphore.MaxCount - signalCount)
+            if (semaphore.MaxCount > 0 && semaphore.Count > semaphore.MaxCount - signalCount)
             {
                 return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
             }
 
-            semaphore.Count += signalCount;
+            semaphore.Count = semaphore.MaxCount > 0
+                ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
+                : semaphore.Count + signalCount;
             // Wake host-thread waiters parked in the fallback path.
             Monitor.PulseAll(semaphore.Gate);
             if (_traceSema)

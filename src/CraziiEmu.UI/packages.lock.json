@@ -60,12 +60,6 @@
         "resolved": "2.17.1",
         "contentHash": "HaAgFlseUcR0UEfyNOoJMqlpAtWsb5Am9Rc3Ej20+eEXNzsM2kvEs/liuUMioCslge+9Z5J0YyaPReiYbTRNvw=="
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[10.0.9, )",
-        "resolved": "10.0.9",
-        "contentHash": "4Iw41e2h7I4t70SJcX2GCmbyKJIlA273Cfm9RJMM050/3VBejGAG1KcthP5Z2L6SQcbfbf6BhNWO26+ZG+GzMg=="
-      },
       "System.Management": {
         "type": "Direct",
         "requested": "[9.0.0, )",
@@ -299,9 +293,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.26.0-alpha, )",
-          "CraziiEmu.Libs": "[0.26.0-alpha, )",
-          "CraziiEmu.Logging": "[0.26.0-alpha, )",
+          "CraziiEmu.HLE": "[0.28.0-alpha, )",
+          "CraziiEmu.Libs": "[0.28.0-alpha, )",
+          "CraziiEmu.Logging": "[0.28.0-alpha, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Maths": "[2.23.0, )",
@@ -312,15 +306,15 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.26.0-alpha, )"
+          "CraziiEmu.Logging": "[0.28.0-alpha, )"
         }
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.26.0-alpha, )",
-          "CraziiEmu.ShaderCompiler": "[0.26.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.26.0-alpha, )",
+          "CraziiEmu.HLE": "[0.28.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.28.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.28.0-alpha, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
@@ -334,13 +328,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.26.0-alpha, )"
+          "CraziiEmu.HLE": "[0.28.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.26.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.28.0-alpha, )"
         }
       },
       "Iced": {

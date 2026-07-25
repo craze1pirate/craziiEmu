@@ -4,6 +4,7 @@
 
 using System;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -20,7 +21,7 @@ namespace CraziiEmu.Core.Cpu.Native;
 
 public sealed partial class DirectExecutionBackend
 {
-	private static int _hc4CallCount = 0;
+	private static readonly ConcurrentDictionary<ulong, object> _syncWaitObjects = new();
 	
 	// The native import trampoline keeps the original guest GPR stack layout at
 	// argPackPtr and stores volatile SysV-only state immediately below it.  This
@@ -617,38 +618,90 @@ public sealed partial class DirectExecutionBackend
 				}
 				if (importStubEntry.Nid == "Hc4CaR6JBL0")
 				{
-					// Hc4CaR6JBL0 appears to be a synchronization primitive (like _umtx_op or sceKernelYield).
-					// Games call this in a tight loop checking if memory has been mutated by another thread.
-					// We must yield the host thread so the other guest thread can run and unlock it.
-					int count = System.Threading.Interlocked.Increment(ref _hc4CallCount);
-					if (count == 2500000)
+					// Hc4CaR6JBL0 is sceKernelSyncOnAddressWait.
+					LastError = null;
+					dispatchResolved = true;
+
+					if (value == 0L)
 					{
-						ulong guestTid = GuestThreadExecution.CurrentGuestThreadHandle;
-						ulong lockValue = 0;
-						try { lockValue = *(ulong*)value; } catch { }
-						Console.Error.WriteLine("\n[SYNC-TRACER] === FATAL DEADLOCK DETECTED ===");
-						Console.Error.WriteLine($"[SYNC-TRACER] Waiter TID: 0x{guestTid:X16}");
-						Console.Error.WriteLine($"[SYNC-TRACER] Lock Address: 0x{value:X16}");
-						Console.Error.WriteLine($"[SYNC-TRACER] Lock Value:   0x{lockValue:X16}");
-						Console.Error.WriteLine("[SYNC-TRACER] =================================\n");
+						return 0x80020016ul; // SCE_KERNEL_ERROR_EINVAL
 					}
-					System.Threading.Thread.Sleep(1);
+
+					ulong expectedValue = (uint)value2;
+					uint lockValue = 0;
+					bool canRead = TryReadUInt32Compat(value, out lockValue);
+
+					if (canRead && lockValue != expectedValue)
+					{
+						return 0x80020023ul; // SCE_KERNEL_ERROR_EAGAIN
+					}
+
+					object syncObj = _syncWaitObjects.GetOrAdd(value, _ => new object());
+					lock (syncObj)
+					{
+						if (TryReadUInt32Compat(value, out lockValue) && lockValue != expectedValue)
+						{
+							return 0x80020023ul; // SCE_KERNEL_ERROR_EAGAIN
+						}
+
+						// True blocking wait using 0% host CPU until pulsed or timed out
+						Monitor.Wait(syncObj, 50);
+					}
 					return 0ul;
 				}
 
 				if (importStubEntry.Nid == "q2y-wDIVWZA")
 				{
-					// q2y-wDIVWZA is a blocking wait primitive (like sceKernelWaitSema).
-					// Because we don't currently track the underlying sync object state, returning
-					// success immediately tricks the caller into a tight spin loop, starving the 
-					// owner thread. Surrendering the CPU time slice allows the owner to progress.
-					
-					if (num7 == 0x0000000800B2AEAA) // Crashing thread's return address
+					// q2y-wDIVWZA is sceKernelSyncOnAddressWake.
+					// Notifies threads waiting on address mutation.
+					LastError = null;
+					dispatchResolved = true;
+					if (value != 0L && _syncWaitObjects.TryGetValue(value, out var syncObj))
 					{
-						// We no longer inject INT 3 here. We wait for the crash.
+						lock (syncObj)
+						{
+							Monitor.PulseAll(syncObj);
+						}
 					}
-					
-					System.Threading.Thread.Sleep(1);
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "NH6xARDOVv8")
+				{
+					// NH6xARDOVv8 is sceKernelGetOperationMode.
+					// Return 0 for standard operating mode.
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "BfBDZGbti7A")
+				{
+					// BfBDZGbti7A is sceAgcGetIsTrinityMode.
+					// Return 0 (false) for non-PS5-Pro (standard console) mode.
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "Zw7uUVPulbw")
+				{
+					// Zw7uUVPulbw is sceAgcDriverGetEqContextId.
+					// Writes EqContextId to the pointer in RDI.
+					if (value != 0)
+					{
+						*(uint*)value = 1; // Return context ID 1
+					}
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "VkqLPArfFdc")
+				{
+					// VkqLPArfFdc is sceImeKeyboardGetInfo.
+					// Returns 0 (success) to bypass IME initialization errors.
+					return 0ul;
+				}
+
+				if (importStubEntry.Nid == "dbOlWdppb4o")
+				{
+					// dbOlWdppb4o is unknown (IME/AGC related).
+					// Returns 0 (success) to prevent engine loops.
 					return 0ul;
 				}
 
@@ -1866,6 +1919,8 @@ public sealed partial class DirectExecutionBackend
 			"WKAXJ4XBPQ4" or // scePthreadCondWait
 			"BmMjYxmew1w" or // scePthreadCondTimedwait
 			"Op8TBGY5KHg" or // pthread_cond_wait
+			"Hc4CaR6JBL0" or // sceKernelSyncOnAddressWait
+			"q2y-wDIVWZA" or // sceKernelSyncOnAddressWake
 			"27bAgiJmOh0";   // pthread_cond_timedwait
 
 	private void ResetImportLoopPattern()
@@ -2356,6 +2411,30 @@ public sealed partial class DirectExecutionBackend
 		}
 		catch
 		{
+			return false;
+		}
+	}
+
+	private bool TryReadUInt32Compat(ulong address, out uint value)
+	{
+		value = 0;
+		var cpuContext = ActiveCpuContext;
+		if (cpuContext == null || address == 0L)
+		{
+			return false;
+		}
+		if (cpuContext.TryReadUInt32(address, out value))
+		{
+			return true;
+		}
+		try
+		{
+			value = unchecked((uint)Marshal.ReadInt32((nint)address));
+			return true;
+		}
+		catch
+		{
+			value = 0;
 			return false;
 		}
 	}

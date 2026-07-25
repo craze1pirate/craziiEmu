@@ -10,9 +10,14 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <OutputType>WinExe</OutputType>
     <AssemblyName>CraziiEmu</AssemblyName>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -20,10 +25,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <Win32Icon>..\..\assets\images\CraziiEmu.ico</Win32Icon>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-  </PropertyGroup>
+
 
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.Core\CraziiEmu.Core.csproj" />
