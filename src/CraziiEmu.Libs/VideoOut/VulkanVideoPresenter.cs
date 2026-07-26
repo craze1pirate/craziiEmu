@@ -3051,6 +3051,7 @@ private VkBuffer[] _overlayStagingBuffers = [];
             public bool IsCpuBacked;
             public ulong CpuContentFingerprint;
             public bool SupportsStorageUsage;
+            public ImageLayout CurrentLayout = ImageLayout.Undefined;
         }
 
         private sealed record PendingGuestSubmission(
@@ -14214,13 +14215,16 @@ private void PollPerfOverlayHotkey() { }
                 // the image into the swapchain.
                 SrcAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.ShaderReadBit,
                 DstAccessMask = AccessFlags.TransferReadBit,
-                OldLayout = source.InitialUploadPending ? ImageLayout.Undefined : ImageLayout.ShaderReadOnlyOptimal,
+                OldLayout = source.CurrentLayout != ImageLayout.Undefined
+                    ? source.CurrentLayout
+                    : (source.InitialUploadPending ? ImageLayout.Undefined : ImageLayout.ShaderReadOnlyOptimal),
                 NewLayout = ImageLayout.TransferSrcOptimal,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = source.Image,
                 SubresourceRange = ColorSubresourceRange(),
             };
+            source.CurrentLayout = ImageLayout.TransferSrcOptimal;
             var destinationToTransfer = new ImageMemoryBarrier
             {
                 SType = StructureType.ImageMemoryBarrier,

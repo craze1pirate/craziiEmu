@@ -185,7 +185,7 @@ public static class RtcExports
         DateTimeOffset currentTime;
         try
         {
-            currentTime = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromMinutes(timeZoneMinutes));
+            currentTime = CraziiEmu.Libs.Kernel.KernelRuntimeCompatExports.GetVirtualUtcNow().ToOffset(TimeSpan.FromMinutes(timeZoneMinutes));
         }
         catch (ArgumentOutOfRangeException)
         {
@@ -318,7 +318,7 @@ public static class RtcExports
             ProbeRtcCaller(ctx);
         }
 
-        var tickValue = unchecked((ulong)(DateTime.UtcNow.Ticks / DateTimeTicksPerMicrosecond));
+        var tickValue = unchecked((ulong)(CraziiEmu.Libs.Kernel.KernelRuntimeCompatExports.GetVirtualUtcNow().UtcDateTime.Ticks / DateTimeTicksPerMicrosecond));
         if (!ctx.TryWriteUInt64(tickAddress, tickValue))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;

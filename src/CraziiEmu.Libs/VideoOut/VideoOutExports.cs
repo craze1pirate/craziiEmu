@@ -271,6 +271,7 @@ public static class VideoOutExports
                 OpenTimestamp = openedAt,
                 LastVblankTimestamp = openedAt,
             };
+            StartVblankThreadOnce();
             return handle;
         }
     }
@@ -1324,13 +1325,13 @@ public static class VideoOutExports
             {
                 foreach (var port in _ports.Values)
                 {
+                    refresh = port.RefreshRate == 0 ? 60 : port.RefreshRate;
+                    port.VblankCount++;
                     if (port.VblankEvents.Count == 0)
                     {
                         continue;
                     }
 
-                    refresh = port.RefreshRate == 0 ? 60 : port.RefreshRate;
-                    port.VblankCount++;
                     var dataHint = (port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16;
                     foreach (var registration in port.VblankEvents)
                     {

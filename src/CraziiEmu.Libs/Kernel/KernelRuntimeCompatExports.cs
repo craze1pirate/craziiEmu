@@ -50,6 +50,48 @@ public static class KernelRuntimeCompatExports
     private const uint PageExecuteReadWrite = 0x40;
     private static readonly object _stateGate = new();
     private static readonly long _processStartCounter = Stopwatch.GetTimestamp();
+
+    // --- Virtual guest clock ---
+    // Caps per-query time deltas so that host-side shader compilation spikes
+    // (10+ real seconds for the first frame) do not trigger Unity's TRC R5089
+    // GPU timeout watchdog. Normal frame pacing (~16ms) passes unchanged;
+    // only multi-second gaps between successive time queries are compressed.
+    // Source: TRC R5089 mandates GPU stalls < 10 seconds.
+    private static readonly long VirtualClockMaxDeltaTicks =
+        200L * Stopwatch.Frequency / 1000L; // 200 ms cap per query
+    private static long _virtualClockLastRealTicks;
+    private static long _virtualClockGuestTicks;
+    private static readonly object _virtualClockGate = new();
+
+    /// <summary>
+    /// Returns the guest-visible elapsed ticks since process start. The delta
+    /// from the previous call is clamped to <see cref="VirtualClockMaxDeltaTicks"/>
+    /// so host-side shader compilation does not make the guest perceive a
+    /// multi-second stall.
+    /// </summary>
+    internal static long GetVirtualElapsedTicks()
+    {
+        var realNow = Stopwatch.GetTimestamp() - _processStartCounter;
+        lock (_virtualClockGate)
+        {
+            var realDelta = realNow - _virtualClockLastRealTicks;
+            if (realDelta < 0) realDelta = 0;
+            // Clamp the delta so spikes are invisible to the guest.
+            if (realDelta > VirtualClockMaxDeltaTicks)
+                realDelta = VirtualClockMaxDeltaTicks;
+            _virtualClockLastRealTicks = realNow;
+            _virtualClockGuestTicks += realDelta;
+            return _virtualClockGuestTicks;
+        }
+    }
+
+    internal static DateTimeOffset GetVirtualUtcNow()
+    {
+        var ticks = GetVirtualElapsedTicks();
+        var processStartUtc = DateTimeOffset.UtcNow.AddTicks(-Stopwatch.GetTimestamp() * TimeSpan.TicksPerSecond / Stopwatch.Frequency);
+        return processStartUtc.AddTicks(ticks * TimeSpan.TicksPerSecond / Stopwatch.Frequency);
+    }
+
     private static readonly RdtscDelegate? _rdtscReader = CreateRdtscReader();
     private static readonly ulong _kernelTscFrequency = ResolveKernelTscFrequency();
     private static readonly ulong _stackChkGuardValue = 0xC0DEC0DECAFEBA00UL;
@@ -209,13 +251,13 @@ public static class KernelRuntimeCompatExports
         long nanoseconds;
         if (clockId == 0)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = GetVirtualUtcNow();
             seconds = now.ToUnixTimeSeconds();
             nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
         }
         else
         {
-            var elapsedTicks = Stopwatch.GetTimestamp() - _processStartCounter;
+            var elapsedTicks = GetVirtualElapsedTicks();
             if (_stopwatchTicksAreNanoseconds)
             {
                 // Constant divisors let the JIT strength-reduce the division;
@@ -253,7 +295,7 @@ public static class KernelRuntimeCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = GetVirtualUtcNow();
         var seconds = now.ToUnixTimeSeconds();
         var microseconds = (now.Ticks % TimeSpan.TicksPerSecond) / 10;
         if (!ctx.TryWriteUInt64(timeAddress, unchecked((ulong)seconds)) ||
@@ -275,7 +317,7 @@ public static class KernelRuntimeCompatExports
     {
         var timeAddress = ctx[CpuRegister.Rdi];
         var timezoneAddress = ctx[CpuRegister.Rsi];
-        var now = DateTimeOffset.UtcNow;
+        var now = GetVirtualUtcNow();
         var seconds = now.ToUnixTimeSeconds();
         var microseconds = (now.Ticks % TimeSpan.TicksPerSecond) / 10;
 
@@ -304,14 +346,11 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelReadTsc(CpuContext ctx)
     {
-        if (TryReadHostTsc(out ulong counter))
-        {
-            ctx[CpuRegister.Rax] = counter;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        var stopwatchTicks = Stopwatch.GetTimestamp();
-        ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(0, stopwatchTicks));
+        var virtualTicks = GetVirtualElapsedTicks();
+        // Convert virtual stopwatch ticks to TSC frequency.
+        // tsc = virtualTicks * _kernelTscFrequency / Stopwatch.Frequency
+        var tsc = (ulong)virtualTicks * _kernelTscFrequency / (ulong)Stopwatch.Frequency;
+        ctx[CpuRegister.Rax] = tsc;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -333,7 +372,7 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelGetProcessTime(CpuContext ctx)
     {
-        var elapsedTicks = Stopwatch.GetTimestamp() - _processStartCounter;
+        var elapsedTicks = GetVirtualElapsedTicks();
         var micros = elapsedTicks * 1_000_000L / Stopwatch.Frequency;
         ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(0, micros));
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -346,7 +385,7 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelGetProcessTimeCounter(CpuContext ctx)
     {
-        var elapsedTicks = Stopwatch.GetTimestamp() - _processStartCounter;
+        var elapsedTicks = GetVirtualElapsedTicks();
         ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(0, elapsedTicks));
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -2198,4 +2237,110 @@ public static class KernelRuntimeCompatExports
         ctx[CpuRegister.Rax] = unchecked((uint)processId);
         return processId;
     }
+
+    [SysAbiExport(
+        Nid = "kOcnerypnQA",
+        ExportName = "sceKernelGettimezone",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelGettimezone(CpuContext ctx)
+    {
+        var tzAddress = ctx[CpuRegister.Rdi];
+        if (tzAddress != 0)
+        {
+            var tzInfo = TimeZoneInfo.Local;
+            var minutesWest = (int)(-tzInfo.BaseUtcOffset.TotalMinutes);
+            var isDst = tzInfo.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
+            _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
+            _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
+        }
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, bool> _loggedWaitAddrs = new();
+
+    [SysAbiExport(
+        Nid = "Hc4CaR6JBL0",
+        ExportName = "_sync_on_address_v1_alias1",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelSyncOnAddressV1(CpuContext ctx)
+    {
+        var waitAddress = ctx[CpuRegister.Rdi];         // uaddr
+        var futexOp = (uint)ctx[CpuRegister.Rsi];       // op
+        var expectedValue = (uint)ctx[CpuRegister.Rdx]; // val
+
+        // FUTEX_WAIT is 0
+        if (futexOp == 0 && waitAddress != 0)
+        {
+            var waitStart = Stopwatch.GetTimestamp();
+            
+            // Read initial value
+            if (ctx.TryReadUInt32(waitAddress, out var initialVal))
+            {
+                if (initialVal != expectedValue)
+                {
+                    // MISMATCH (e.g. guest polling).
+                    // Delay for 1 second before returning EAGAIN to force the virtual clock clamp
+                    // to trigger and mask the GPU ThreadPool compilation stalls.
+                    while (Stopwatch.GetTimestamp() - waitStart < Stopwatch.Frequency)
+                    {
+                        GuestThreadExecution.Scheduler?.Pump(ctx, "_sync_on_address_v1");
+                        System.Threading.Thread.Sleep(1);
+                        
+                        // If it magically becomes what the guest wanted to wait ON, we should switch to waiting.
+                        if (ctx.TryReadUInt32(waitAddress, out var newVal) && newVal == expectedValue)
+                        {
+                            break;
+                        }
+                    }
+
+                    // If it's still mismatched after the delay, return EAGAIN.
+                    if (ctx.TryReadUInt32(waitAddress, out var finalVal) && finalVal != expectedValue)
+                    {
+                        ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN);
+                        return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
+                    }
+                }
+
+                // If we reach here, memory MATCHES expectedValue. We should block until it CHANGES.
+                while (Stopwatch.GetTimestamp() - waitStart < Stopwatch.Frequency)
+                {
+                    GuestThreadExecution.Scheduler?.Pump(ctx, "_sync_on_address_v1");
+                    System.Threading.Thread.Sleep(1);
+
+                    if (ctx.TryReadUInt32(waitAddress, out var currentVal) && currentVal != expectedValue)
+                    {
+                        // It changed! The wait is successfully over.
+                        ctx[CpuRegister.Rax] = 0;
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+                }
+                
+                // Timed out (1 second elapsed). Return OK so the guest loops and virtual clock clamps.
+                ctx[CpuRegister.Rax] = 0;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+        }
+        else
+        {
+            if (_loggedWaitAddrs.TryAdd(ctx[CpuRegister.Rsi], true))
+            {
+                Console.WriteLine($"[DEBUG] KernelSyncOnAddressV1 UNHANDLED OP: rdi={ctx[CpuRegister.Rdi]:X16} rsi={ctx[CpuRegister.Rsi]:X16} rdx={ctx[CpuRegister.Rdx]:X16} rcx={ctx[CpuRegister.Rcx]:X16} r8={ctx[CpuRegister.R8]:X16}");
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "q2y-wDIVWZA",
+        ExportName = "_sync_on_address_v1_alias2",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelSyncOnAddressV1Alias2(CpuContext ctx) => KernelSyncOnAddressV1(ctx);
 }

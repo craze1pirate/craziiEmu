@@ -2286,7 +2286,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = KernelRuntimeCompatExports.GetVirtualUtcNow();
         var seconds = now.ToUnixTimeSeconds();
         var nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
         if (!ctx.TryWriteUInt64(timespecAddress, unchecked((ulong)seconds)) ||

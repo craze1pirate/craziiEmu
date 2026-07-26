@@ -129,7 +129,39 @@ public static class KernelSemaphoreCompatExports
                 return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
             }
 
-            semaphore.WaitingThreads++;
+            // If it's a polling wait (timeout == 0), don't go through the cooperative block,
+            // because the cooperative block would return instantly and the guest would spin 100% CPU.
+            // Instead, we delay for up to 1 real second to trigger the virtual clock clamp!
+            if (timeoutAddress != 0 && timeoutUsec == 0)
+            {
+                // Drop the lock during the delay
+            }
+            else
+            {
+                semaphore.WaitingThreads++;
+            }
+        }
+
+        if (timeoutAddress != 0 && timeoutUsec == 0)
+        {
+            var waitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (System.Diagnostics.Stopwatch.GetTimestamp() - waitStart < System.Diagnostics.Stopwatch.Frequency)
+            {
+                GuestThreadExecution.Scheduler?.Pump(ctx, "sceKernelWaitSema_poll");
+                System.Threading.Thread.Sleep(1);
+
+                lock (semaphore.Gate)
+                {
+                    if (semaphore.Count >= needCount)
+                    {
+                        semaphore.Count -= needCount;
+                        _ = TryWriteUInt32(ctx, timeoutAddress, timeoutUsec);
+                        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+                    }
+                }
+            }
+            
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
         }
 
         // Block cooperatively: the wake predicate atomically acquires the

@@ -398,7 +398,7 @@ public static class KernelPthreadCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = KernelRuntimeCompatExports.GetVirtualUtcNow();
         var deltaSeconds = seconds - now.ToUnixTimeSeconds();
         var nowNanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100L;
         uint timeoutUsec;

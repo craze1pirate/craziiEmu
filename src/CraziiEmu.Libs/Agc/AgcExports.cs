@@ -3121,6 +3121,36 @@ public static partial class AgcExports
                 state.IndirectArgsAddress = indirectArgsAddress;
             }
 
+            if (op == ItGetLodStats && length >= 5)
+            {
+                if (TryReadUInt32(ctx, currentAddress + 4, out var bufferSize) &&
+                    TryReadUInt32(ctx, currentAddress + 8, out var destLow) &&
+                    TryReadUInt32(ctx, currentAddress + 12, out var destHigh))
+                {
+                    var destAddress = destLow | ((ulong)destHigh << 32);
+                    if (destAddress != 0 && bufferSize >= sizeof(uint))
+                    {
+                        SubmitOrderedGpuSideEffect(
+                            ctx,
+                            gpuState,
+                            state,
+                            () =>
+                            {
+                                if (bufferSize > 0 && bufferSize <= 0x1000)
+                                {
+                                    for (uint i = 0; i < bufferSize; i += 4)
+                                    {
+                                        _ = ctx.Memory.TryWrite(destAddress + i, BitConverter.GetBytes(0u));
+                                    }
+                                }
+                                _ = ctx.Memory.TryWrite(destAddress, BitConverter.GetBytes(1u));
+                            },
+                            "ItGetLodStats Unity workaround",
+                            currentAddress);
+                    }
+                }
+            }
+
             if (op == ItEventWrite &&
                 length >= 2 &&
                 TryReadUInt32(ctx, currentAddress + sizeof(uint), out var eventTypeRaw))
@@ -3596,6 +3626,7 @@ public static partial class AgcExports
         bool compactLayout,
         bool tracePacket)
     {
+        Console.WriteLine($"[DEBUG] ApplySubmittedDmaData at 0x{packetAddress:X16}");
         var byteCountOffset = compactLayout ? 20UL : 12UL;
         var destinationOffset = compactLayout ? 4UL : 16UL;
         var sourceOffset = compactLayout ? 12UL : 24UL;
@@ -4173,6 +4204,7 @@ public static partial class AgcExports
         SubmittedDcbState state,
         ulong packetAddress)
     {
+        Console.WriteLine($"[DEBUG] ApplySubmittedStandardDmaData at 0x{packetAddress:X16}");
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt32(ctx, packetAddress + 8, out var sourceLow) ||
             !TryReadUInt32(ctx, packetAddress + 12, out var sourceHigh) ||
@@ -4309,6 +4341,7 @@ public static partial class AgcExports
         bool standardPacket,
         bool tracePacket)
     {
+        Console.WriteLine($"[DEBUG] ApplySubmittedWriteData (standard={standardPacket}) at 0x{packetAddress:X16}");
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt64(ctx, packetAddress + 8, out var destinationAddress))
         {
@@ -4955,6 +4988,7 @@ public static partial class AgcExports
         SubmittedGpuState gpuState,
         bool tracePackets)
     {
+        Console.WriteLine("[DEBUG] GPU ThreadPool DrainResumableDcbs called.");
         if (!_gpuWaitSuspendEnabled)
         {
             return;
@@ -5166,6 +5200,11 @@ public static partial class AgcExports
                                 destinationAddress != 0 &&
                                 writeLength != 0;
 
+        if (destinationAddress >= 0x600000000)
+        {
+            Console.WriteLine($"[DEBUG] ApplySubmittedStandardReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} writes={writesGuestMemory} control={control:X8} dest={destination} sel={dataSelection}");
+        }
+
         SubmitOrderedGpuSideEffect(
             ctx,
             gpuState,
@@ -5243,6 +5282,12 @@ public static partial class AgcExports
             2 or 3 => (ulong)sizeof(ulong),
             _ => 0UL,
         };
+
+        if (destinationAddress >= 0x600000000)
+        {
+            Console.WriteLine($"[DEBUG] ApplySubmittedReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} control={control:X8} sel={dataSelection}");
+        }
+
         SubmitOrderedGpuSideEffect(
             ctx,
             gpuState,
