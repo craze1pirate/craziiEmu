@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="./assets/images/logo.png" width="28%" alt="CraziiEmu Logo"/>
-  <h1>CraziiEmu</h1>
+  <img src="./assets/images/logo.png" width="28%" alt="craziiEmu Logo"/>
+  <h1>craziiEmu</h1>
   <p><strong>An experimental PlayStation 5 compatibility layer and research platform built with C# and .NET.</strong></p>
 
   ![Platform](https://img.shields.io/badge/Platform-Windows%20x64-blue)
@@ -13,11 +13,11 @@
 
 > [!WARNING]  
 > ### Purely Educational Purpose
-> CraziiEmu is created for **purely educational purposes** as a way of actively learning low-level code, systems programming, and emulator development. Compatibility is currently limited, many kernel services remain incomplete, and crashes or missing functionality are expected.
+> craziiEmu is created for **purely educational purposes** as a way of actively learning low-level code, systems programming, and emulator development. Compatibility is currently limited, many kernel services remain incomplete, and crashes or missing functionality are expected.
 
 > [!IMPORTANT]  
 > ### ⚖️ Legal Notice
-> CraziiEmu does **not** include or distribute:
+> craziiEmu does **not** include or distribute:
 > * PlayStation 5 firmware or Sony proprietary libraries
 > * Cryptographic keys, game content, or copyrighted assets
 > 
@@ -27,9 +27,9 @@
 
 ## Overview
 
-**CraziiEmu** is a frontend and compatibility layer project written entirely in C# using modern .NET. 
+**craziiEmu** is a frontend and compatibility layer project written entirely in C# using modern .NET. 
 
-The core emulation backend is built entirely upon the excellent open-source foundation of the **[SharpEmu](https://github.com/par274/sharpemu)** project. CraziiEmu extends this powerful core architecture with a highly-polished custom desktop frontend built in Avalonia UI, as well as ongoing High-Level Emulation (HLE) and graphics integration improvements.
+The core emulation backend is built entirely upon the excellent open-source foundation of the **[SharpEmu](https://github.com/par274/sharpemu)** project. craziiEmu extends this powerful core architecture with a highly-polished custom desktop frontend built in Avalonia UI, as well as ongoing High-Level Emulation (HLE) and graphics integration improvements.
 
 Currently, development and compilation natively target **Windows x64**.
 
@@ -37,8 +37,8 @@ Currently, development and compilation natively target **Windows x64**.
 
 ## ✨ Features
 
-### CraziiEmu Frontend
-The CraziiEmu user interface is built independently to provide a console-like experience:
+### craziiEmu Frontend
+The craziiEmu user interface is built independently to provide a console-like experience:
 - **Modern, Dark-Themed Dashboard:** A highly responsive, console-inspired scrolling game library.
 - **Dynamic Theming:** Seamlessly maps native background artwork from your game library, adapting the interface on the fly.
 - **Integrated Console:** A real-time, built-in diagnostic logging terminal for trace monitoring.
@@ -46,7 +46,7 @@ The CraziiEmu user interface is built independently to provide a console-like ex
 - **Controller Configuration:** Interactive custom key mapping and conflict resolution (automatically swaps duplicate bindings to prevent input overlap).
 - **Fullscreen Experience:** The emulator natively defaults to fullscreen mode, seamlessly toggled via `F11`.
 
-### CraziiEmu Emulation Enhancements
+### craziiEmu Emulation Enhancements
 In addition to the frontend, this project actively improves upon the core emulation:
 - **Game Compatibility:** Progressing boot sequences for retail games, including successfully rendering the Vulkan splash image for titles like *New Super Lucky's Tale*.
 - **Vulkan VideoOut Integration:** Extended the graphics pipeline to properly handle splash image presentation and basic video output synchronization.
@@ -68,12 +68,12 @@ The heavy lifting of emulation is powered by **[SharpEmu](https://github.com/par
 
 <div align="center">
   <p><em>Main Dashboard (Games Library Tab)</em></p>
-  <img src="./assets/images/dashboard.png" width="85%" alt="CraziiEmu Dashboard">
+  <img src="./assets/images/dashboard.png" width="85%" alt="craziiEmu Dashboard">
 
   <br><br>
 
   <p><em>Advanced Controller Configuration</em></p>
-  <img src="./assets/images/controls.png" width="85%" alt="CraziiEmu Controls">
+  <img src="./assets/images/controls.png" width="85%" alt="craziiEmu Controls">
 </div>
 
 ---
@@ -97,11 +97,11 @@ The heavy lifting of emulation is powered by **[SharpEmu](https://github.com/par
    ```
 3. **Run directly via CLI:**
    ```bash
-   dotnet run --project src/CraziiEmu.UI
+   dotnet run --project src/craziiEmu.UI
    ```
 4. **Publish as a standalone native executable:**
    ```bash
-   dotnet publish src/CraziiEmu.UI/CraziiEmu.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+   dotnet publish src/craziiEmu.UI/craziiEmu.UI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
    ```
 
 ---
@@ -114,12 +114,12 @@ When opening an issue, please provide your **Build Version**, **OS/Hardware Spec
 
 ## Acknowledgements
 Special thanks to the following projects for making this possible:
-- **[SharpEmu](https://github.com/par274/sharpemu)** — The core architecture, rendering, and HLE foundation that CraziiEmu is built on top of.
+- **[SharpEmu](https://github.com/par274/sharpemu)** — The core architecture, rendering, and HLE foundation that craziiEmu is built on top of.
 - **[shadPS4](https://github.com/shadps4-emu/shadPS4)** — An invaluable reference for PlayStation 5 kernel and shared library behaviors.
 - **[Ryujinx](https://github.com/Ryujinx/Ryujinx)** — Inspiration for high-performance C# runtime and systems programming techniques.
 
 ---
 
 ## License
-CraziiEmu is licensed under the **GNU General Public License v2.0 (GPL-2.0)**. 
+craziiEmu is licensed under the **GNU General Public License v2.0 (GPL-2.0)**. 
 See the [LICENSE](LICENSE) file for more information.
