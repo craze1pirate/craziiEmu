@@ -83,6 +83,7 @@ internal sealed record VulkanOrderedGuestFlip(
     long Version,
     int VideoOutHandle,
     int DisplayBufferIndex,
+    long FlipArg,
     ulong Address,
     uint Width,
     uint Height,
@@ -1515,7 +1516,9 @@ internal static unsafe class VulkanVideoPresenter
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel)
+        uint pitchInPixel,
+        int videoOutHandle,
+        long flipArg)
     {
         var traceSubmission = false;
         lock (_gate)
@@ -1547,7 +1550,9 @@ internal static unsafe class VulkanVideoPresenter
                 // renderer and turns every flip into a dropped black frame.
                 RequiredGuestWorkSequence: requiredWorkSequence,
                 IsSplash: false,
-                GuestImageAddress: address);
+                GuestImageAddress: address,
+                VideoOutHandle: videoOutHandle,
+                FlipArg: flipArg);
             _latestPresentation = presentation;
             _pendingGuestImagePresentations.Enqueue(presentation);
             while (_pendingGuestImagePresentations.Count > MaxPendingGuestFlipVersions)
@@ -1576,6 +1581,7 @@ internal static unsafe class VulkanVideoPresenter
     public static bool TrySubmitOrderedGuestImageFlip(
         int videoOutHandle,
         int displayBufferIndex,
+        long flipArg,
         ulong address,
         uint width,
         uint height,
@@ -1597,6 +1603,7 @@ internal static unsafe class VulkanVideoPresenter
                     version,
                     videoOutHandle,
                     displayBufferIndex,
+                    flipArg,
                     address,
                     width,
                     height,
@@ -2664,7 +2671,9 @@ internal static unsafe class VulkanVideoPresenter
         long RequiredGuestWorkSequence,
         bool IsSplash,
         ulong GuestImageAddress = 0,
-        long GuestImageVersion = 0);
+        long GuestImageVersion = 0,
+        int VideoOutHandle = 0,
+        long FlipArg = 0);
 
     private sealed class Presenter : IDisposable
     {
@@ -5033,7 +5042,9 @@ private VkBuffer[] _overlayStagingBuffers = [];
                         RequiredGuestWorkSequence: _activeGuestWorkSequence,
                         IsSplash: false,
                         GuestImageAddress: work.Address,
-                        GuestImageVersion: work.Version);
+                        GuestImageVersion: work.Version,
+                        VideoOutHandle: work.VideoOutHandle,
+                        FlipArg: work.FlipArg);
                     _latestPresentation = presentation;
                     _pendingGuestImagePresentations.Enqueue(presentation);
                     while (_pendingGuestImagePresentations.Count > MaxPendingGuestFlipVersions)
@@ -12403,6 +12414,12 @@ private void PollPerfOverlayHotkey() { }
             CheckSwapchainResult(presentResult, "vkQueuePresentKHR");
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             VideoOutExports.ReportPresentedFrame();
+            
+            if (presentation.VideoOutHandle != 0)
+            {
+                VideoOutExports.CompleteFlip(presentation.VideoOutHandle, presentation.FlipArg);
+            }
+            
             if (_hostSurface is not null && !_firstHostFramePresented)
             {
                 _firstHostFramePresented = true;

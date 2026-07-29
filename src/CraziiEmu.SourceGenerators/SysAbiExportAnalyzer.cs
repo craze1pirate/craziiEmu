@@ -189,7 +189,7 @@ public sealed class SysAbiExportAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        var existing = exportsByNid.GetOrAdd(effectiveNid, method);
+        var existing = exportsByNid.GetOrAdd($"{arguments.LibraryName}_{effectiveNid}", method);
         if (!SymbolEqualityComparer.Default.Equals(existing, method))
         {
             context.ReportDiagnostic(Diagnostic.Create(

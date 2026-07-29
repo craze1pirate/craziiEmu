@@ -735,6 +735,8 @@ public static class KernelEventQueueCompatExports
                     fflags,
                     data,
                     registration.UserData));
+
+            Monitor.PulseAll(_eventQueueGate);
         }
 
         WakeEventQueue(handle);
@@ -746,7 +748,8 @@ public static class KernelEventQueueCompatExports
         ulong ident,
         short filter,
         ulong eventHint,
-        ulong userData)
+        ulong userData,
+        bool isGen5 = false)
     {
         var triggered = false;
         lock (_eventQueueGate)
@@ -770,7 +773,7 @@ public static class KernelEventQueueCompatExports
             }
 
             var timeBits = unchecked((ulong)Environment.TickCount64) & 0xFFFUL;
-            var eventData = timeBits | (count << 12) | (eventHint & 0xFFFF_FFFF_FFFF_0000UL);
+            var eventData = isGen5 ? eventHint : (timeBits | (count << 12) | (eventHint & 0xFFFF_FFFF_FFFF_0000UL));
             var triggeredEvent = new KernelQueuedEvent(
                 ident,
                 filter,
@@ -788,6 +791,7 @@ public static class KernelEventQueueCompatExports
                 events.AddLast(triggeredEvent);
             }
 
+            Monitor.PulseAll(_eventQueueGate);
             triggered = true;
         }
 

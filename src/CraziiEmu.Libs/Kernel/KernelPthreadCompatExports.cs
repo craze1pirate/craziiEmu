@@ -486,6 +486,13 @@ public static class KernelPthreadCompatExports
     }
 
     [SysAbiExport(
+        Nid = "Z4QosVuAsA0",
+        ExportName = "pthread_once",
+        Target = Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadOnceUnity(CpuContext ctx) => PthreadOnce(ctx);
+
+    [SysAbiExport(
         Nid = "14bOACANTBo",
         ExportName = "scePthreadOnce",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -671,20 +678,12 @@ public static class KernelPthreadCompatExports
 
                 if (state.Type is MutexTypeNormal or MutexTypeAdaptiveNp)
                 {
-                    if (tryOnly)
-                    {
-                        TracePthreadMutex(ctx, "trylock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY);
-                        return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
-                    }
-
                     // Several Gen5 runtimes layer their own owner/count bookkeeping
-                    // over a NORMAL or ADAPTIVE kernel mutex. Returning EDEADLK here
+                    // over a NORMAL or ADAPTIVE kernel mutex. Returning EBUSY or EDEADLK here
                     // leaves that guest bookkeeping out of sync with the HLE owner and
-                    // turns the wrapper into a permanent lock/unlock retry loop. Keep
-                    // the compatibility recursion used by the original implementation;
-                    // ERRORCHECK mutexes still take the strict EDEADLK path below.
+                    // turns the wrapper into a permanent lock/unlock retry loop. Allow recursive lock.
                     state.RecursionCount++;
-                    TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
+                    TracePthreadMutex(ctx, tryOnly ? "trylock" : "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
                     return (int)OrbisGen2Result.ORBIS_GEN2_OK;
                 }
                 else

@@ -3450,6 +3450,7 @@ public static partial class AgcExports
                     GuestGpu.Current.TrySubmitOrderedGuestImageFlip(
                         handle,
                         displayBufferIndex,
+                        flipArg,
                         cachedDisplayBuffer.Address,
                         cachedDisplayBuffer.Width,
                         cachedDisplayBuffer.Height,

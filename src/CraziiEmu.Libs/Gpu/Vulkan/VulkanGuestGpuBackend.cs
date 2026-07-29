@@ -287,23 +287,31 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel) =>
-        VulkanVideoPresenter.TrySubmitGuestImage(address, width, height, pitchInPixel);
+        uint pitchInPixel,
+        int videoOutHandle,
+        long flipArg)
+    {
+        return VulkanVideoPresenter.TrySubmitGuestImage(address, width, height, pitchInPixel, videoOutHandle, flipArg);
+    }
 
     public bool TrySubmitOrderedGuestImageFlip(
         int videoOutHandle,
         int displayBufferIndex,
+        long flipArg,
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel) =>
-        VulkanVideoPresenter.TrySubmitOrderedGuestImageFlip(
+        uint pitchInPixel)
+    {
+        return VulkanVideoPresenter.TrySubmitOrderedGuestImageFlip(
             videoOutHandle,
             displayBufferIndex,
+            flipArg,
             address,
             width,
             height,
             pitchInPixel);
+    }
 
     public void RegisterKnownDisplayBuffer(ulong address, uint guestFormat) =>
         VulkanVideoPresenter.RegisterKnownDisplayBuffer(address, guestFormat);

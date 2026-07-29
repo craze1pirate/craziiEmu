@@ -160,11 +160,14 @@ internal interface IGuestGpuBackend
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel);
+        uint pitchInPixel,
+        int videoOutHandle,
+        long flipArg);
 
     bool TrySubmitOrderedGuestImageFlip(
         int videoOutHandle,
         int displayBufferIndex,
+        long flipArg,
         ulong address,
         uint width,
         uint height,

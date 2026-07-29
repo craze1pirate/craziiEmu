@@ -200,6 +200,7 @@ public static class VideoOutExports
         public List<FlipEventRegistration> VblankEvents { get; } = new();
         public long OpenTimestamp;
         public long LastVblankTimestamp;
+        public bool IsGen5 { get; set; }
     }
 
     private sealed class VideoOutBufferGroup
@@ -270,6 +271,7 @@ public static class VideoOutExports
                 Handle = handle,
                 OpenTimestamp = openedAt,
                 LastVblankTimestamp = openedAt,
+                IsGen5 = ctx.TargetGeneration == Generation.Gen5,
             };
             StartVblankThreadOnce();
             return handle;
@@ -552,13 +554,13 @@ public static class VideoOutExports
             count = port.VblankCount;
         }
 
-        var elapsedMicroseconds = unchecked((ulong)(Math.Max(now - openedAt, 0) *
-            1_000_000L / Stopwatch.Frequency));
+        var virtualTicks = CraziiEmu.Libs.Kernel.KernelRuntimeCompatExports.GetVirtualElapsedTicks();
+        var processTimeMicros = unchecked((ulong)Math.Max(0, virtualTicks * 1_000_000L / Stopwatch.Frequency));
         Span<byte> status = stackalloc byte[VideoOutVblankStatusSize];
         status.Clear();
         BinaryPrimitives.WriteUInt64LittleEndian(status, count);
-        BinaryPrimitives.WriteUInt64LittleEndian(status[0x08..], elapsedMicroseconds);
-        BinaryPrimitives.WriteUInt64LittleEndian(status[0x10..], unchecked((ulong)now));
+        BinaryPrimitives.WriteUInt64LittleEndian(status[0x08..], processTimeMicros);
+        BinaryPrimitives.WriteUInt64LittleEndian(status[0x10..], processTimeMicros);
         status[0x20] = 0;
         return ctx.Memory.TryWrite(statusAddress, status)
             ? (int)OrbisGen2Result.ORBIS_GEN2_OK
@@ -598,10 +600,8 @@ public static class VideoOutExports
             }
         }
 
-        if (_traceVideoOut)
-        {
-            TraceVideoOut($"videoout.add_flip_event eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16}");
-        }
+        Console.Error.WriteLine(
+            $"[LOADER][DEBUG] sceVideoOutAddFlipEvent eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16} totalFlipEvents={port.FlipEvents.Count}");
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -638,8 +638,8 @@ public static class VideoOutExports
             }
         }
 
-        // A guest that parks its main/render loop on a vblank event needs a
-        // steady tick to advance; start the emulated vblank cadence on demand.
+        Console.Error.WriteLine(
+            $"[LOADER][DEBUG] sceVideoOutAddVblankEvent eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16} totalVblankEvents={port.VblankEvents.Count}");
         StartVblankThreadOnce();
         TraceVideoOut($"videoout.add_vblank_event eq=0x{equeue:X16} handle={handle} udata=0x{userData:X16}");
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -759,12 +759,12 @@ public static class VideoOutExports
         }
 
         // sceVideoOutGetEventId reports the event kind: 0 = flip, 1 = vblank.
-        if (ident == SceVideoOutInternalEventFlip)
+        if (ident == SceVideoOutInternalEventFlip || ident == 3UL)
         {
             return 0;
         }
 
-        if (ident == SceVideoOutInternalEventVblank)
+        if (ident == SceVideoOutInternalEventVblank || ident == 2UL)
         {
             return 1;
         }
@@ -794,12 +794,12 @@ public static class VideoOutExports
         }
 
         if (filter != OrbisKernelEventFilterVideoOut ||
-            (ident != SceVideoOutInternalEventFlip && ident != SceVideoOutInternalEventVblank))
+            (ident != SceVideoOutInternalEventFlip && ident != SceVideoOutInternalEventVblank && ident != 2UL && ident != 3UL))
         {
             return OrbisVideoOutErrorInvalidEvent;
         }
 
-        var decodedData = unchecked((ulong)(unchecked((long)data) >> 16));
+        var decodedData = (ident == 2UL || ident == 3UL) ? data : unchecked((ulong)(unchecked((long)data) >> 16));
         return ctx.TryWriteUInt64(dataAddress, decodedData)
             ? (int)OrbisGen2Result.ORBIS_GEN2_OK
             : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
@@ -1175,7 +1175,9 @@ public static class VideoOutExports
                 displayBuffer.Address,
                 displayBuffer.Width,
                 displayBuffer.Height,
-                displayBuffer.PitchInPixel);
+                displayBuffer.PitchInPixel,
+                handle,
+                flipArg);
         }
 
         if (_dumpVideoOut)
@@ -1196,10 +1198,11 @@ public static class VideoOutExports
                 {
                     _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                         flipEvents[i].Equeue,
-                        SceVideoOutInternalEventFlip,
+                        port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip,
                         OrbisKernelEventFilterVideoOut,
-                        eventHint,
-                        flipEvents[i].UserData);
+                        port.IsGen5 ? unchecked((ulong)flipArg) : eventHint,
+                        flipEvents[i].UserData,
+                        port.IsGen5);
                 }
             }
             finally
@@ -1211,7 +1214,10 @@ public static class VideoOutExports
 
         if (submitGpuImage)
         {
-            TriggerFlipEvents();
+            if (!guestImageSubmitted)
+            {
+                TriggerFlipEvents();
+            }
         }
         else if (GuestGpu.Current.SubmitOrderedGuestAction(
                      TriggerFlipEvents,
@@ -1238,6 +1244,81 @@ public static class VideoOutExports
 
     internal static void ReportPresentedFrame() =>
         ReportFrameRate(presented: true);
+
+    internal static void CompleteFlip(int handle, long flipArg)
+    {
+        Console.Error.WriteLine(
+            $"[LOADER][DEBUG] CompleteFlip called handle={handle} flipArg={flipArg}");
+        if (!TryGetPort(handle, out var port))
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][WARN] CompleteFlip: port not found for handle={handle}");
+            return;
+        }
+
+        ulong eventHint;
+        FlipEventRegistration[]? flipEvents = null;
+        int flipEventCount;
+
+        FlipEventRegistration[]? vblankEvents = null;
+        int vblankEventCount;
+
+        lock (_stateGate)
+        {
+            port.VblankCount++;
+            
+            eventHint = SceVideoOutInternalEventFlip |
+                ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            flipEventCount = port.FlipEvents.Count;
+            if (flipEventCount != 0)
+            {
+                flipEvents = ArrayPool<FlipEventRegistration>.Shared.Rent(flipEventCount);
+                port.FlipEvents.CopyTo(flipEvents);
+            }
+
+            vblankEventCount = port.VblankEvents.Count;
+            if (vblankEventCount != 0)
+            {
+                vblankEvents = ArrayPool<FlipEventRegistration>.Shared.Rent(vblankEventCount);
+                port.VblankEvents.CopyTo(vblankEvents);
+            }
+        }
+
+        Console.Error.WriteLine(
+            $"[LOADER][DEBUG] CompleteFlip: flipEvents={flipEventCount} vblankEvents={vblankEventCount} isGen5={port.IsGen5} vblankCount={port.VblankCount}");
+
+        if (flipEvents != null)
+        {
+            for (var i = 0; i < flipEventCount; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    flipEvents[i].Equeue,
+                    port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip,
+                    OrbisKernelEventFilterVideoOut,
+                    port.IsGen5 ? unchecked((ulong)flipArg) : eventHint,
+                    flipEvents[i].UserData,
+                    port.IsGen5);
+            }
+            ArrayPool<FlipEventRegistration>.Shared.Return(flipEvents);
+        }
+
+        if (vblankEvents != null)
+        {
+            var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
+            for (var i = 0; i < vblankEventCount; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    vblankEvents[i].Equeue,
+                    ident,
+                    OrbisKernelEventFilterVideoOut,
+                    dataHint,
+                    vblankEvents[i].UserData,
+                    port.IsGen5);
+            }
+            ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
+        }
+    }
 
     private static void ReportFrameRate(bool presented)
     {
@@ -1313,16 +1394,20 @@ public static class VideoOutExports
         }
     }
 
+    private static long _vblankDiagTick;
     private static void VblankTickLoop()
     {
-        var pending = new List<(ulong Equeue, ulong DataHint, ulong UserData)>();
+        Console.Error.WriteLine("[LOADER][DEBUG] VblankTickLoop started");
+        var pending = new List<(ulong Equeue, ulong Ident, ulong DataHint, ulong UserData, bool IsGen5)>();
         var next = Stopwatch.GetTimestamp();
         while (Volatile.Read(ref _vblankStopRequested) == 0)
         {
             uint refresh = 60;
             pending.Clear();
+            int portCount = 0;
             lock (_stateGate)
             {
+                portCount = _ports.Count;
                 foreach (var port in _ports.Values)
                 {
                     refresh = port.RefreshRate == 0 ? 60 : port.RefreshRate;
@@ -1332,22 +1417,64 @@ public static class VideoOutExports
                         continue;
                     }
 
-                    var dataHint = (port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+                    var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+                    var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
                     foreach (var registration in port.VblankEvents)
                     {
-                        pending.Add((registration.Equeue, dataHint, registration.UserData));
+                        pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
                     }
                 }
             }
 
-            foreach (var (equeue, dataHint, userData) in pending)
+            var tick = Interlocked.Increment(ref _vblankDiagTick);
+            if (tick <= 5 || tick % 600 == 0)
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][DEBUG] VblankTick #{tick}: ports={portCount} pendingEvents={pending.Count}");
+            }
+
+            // Dump blocked threads at tick #600 (10 seconds) to diagnose stalls
+            if (tick == 600)
+            {
+                try
+                {
+                    var scheduler = GuestThreadExecution.Scheduler;
+                    if (scheduler is not null)
+                    {
+                        var snapshots = scheduler.SnapshotThreads();
+                        Console.Error.WriteLine($"[LOADER][DEBUG] === THREAD DUMP (tick #{tick}) ===");
+                        Console.Error.WriteLine($"[LOADER][DEBUG] Total threads: {snapshots.Count}");
+                        foreach (var s in snapshots)
+                        {
+                            if (!string.IsNullOrEmpty(s.BlockReason))
+                            {
+                                Console.Error.WriteLine(
+                                    $"[LOADER][DEBUG]   BLOCKED: name={s.Name ?? "?"} state={s.State} reason={s.BlockReason} imports={s.ImportCount} lastNid={s.LastImportNid ?? "?"}");
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine(
+                                    $"[LOADER][DEBUG]   {s.State}: name={s.Name ?? "?"} imports={s.ImportCount} lastNid={s.LastImportNid ?? "?"}");
+                            }
+                        }
+                        Console.Error.WriteLine($"[LOADER][DEBUG] === END THREAD DUMP ===");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[LOADER][DEBUG] Thread dump failed: {ex.Message}");
+                }
+            }
+
+            foreach (var (equeue, ident, dataHint, userData, isGen5) in pending)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     equeue,
-                    SceVideoOutInternalEventVblank,
+                    ident,
                     OrbisKernelEventFilterVideoOut,
                     dataHint,
-                    userData);
+                    userData,
+                    isGen5);
             }
 
             var interval = Stopwatch.Frequency / Math.Max(1, (long)refresh);

@@ -386,7 +386,8 @@ public static class KernelRuntimeCompatExports
     public static int KernelGetProcessTimeCounter(CpuContext ctx)
     {
         var elapsedTicks = GetVirtualElapsedTicks();
-        ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(0, elapsedTicks));
+        var micros = elapsedTicks * 1_000_000L / Stopwatch.Frequency;
+        ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(0, micros));
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -397,7 +398,7 @@ public static class KernelRuntimeCompatExports
         LibraryName = "libKernel")]
     public static int KernelGetProcessTimeCounterFrequency(CpuContext ctx)
     {
-        ctx[CpuRegister.Rax] = unchecked((ulong)Stopwatch.Frequency);
+        ctx[CpuRegister.Rax] = 1_000_000UL;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -1077,7 +1078,15 @@ public static class KernelRuntimeCompatExports
 
         if (!KernelModuleRegistry.TryGetModuleByAddress(queriedAddress, out var module))
         {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            Span<byte> emptyInfo = stackalloc byte[0x130];
+            emptyInfo.Clear();
+            BinaryPrimitives.WriteUInt64LittleEndian(emptyInfo, 0x130); // Set st_size to 0x130
+            if (!ctx.Memory.TryWrite(outInfoAddress, emptyInfo))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         if (!TryWriteModuleInfoForUnwind(ctx, outInfoAddress, module))
@@ -1359,6 +1368,20 @@ public static class KernelRuntimeCompatExports
         ctx[CpuRegister.Rax] = unchecked((uint)handle);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
+
+    [SysAbiExport(
+        Nid = "4fU5yvOkVG4",
+        ExportName = "SysmoduleGetModuleInfoForUnwind",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSysmodule")]
+    public static int SysmoduleGetModuleInfoForUnwind(CpuContext ctx) => KernelGetModuleInfoForUnwind(ctx);
+
+    [SysAbiExport(
+        Nid = "crb5j7mkk1c",
+        ExportName = "sceKernelGetJitModuleInfoForUnwind",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSysmodule")]
+    public static int KernelGetJitModuleInfoForUnwind(CpuContext ctx) => (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
 
     [SysAbiExport(
         Nid = "g8cM39EUZ6o",
@@ -2238,6 +2261,36 @@ public static class KernelRuntimeCompatExports
         return processId;
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern uint GetTimeZoneInformation(out TIME_ZONE_INFORMATION lpTimeZoneInformation);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct TIME_ZONE_INFORMATION
+    {
+        public int Bias;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string StandardName;
+        public SYSTEMTIME StandardDate;
+        public int StandardBias;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DaylightName;
+        public SYSTEMTIME DaylightDate;
+        public int DaylightBias;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct SYSTEMTIME
+    {
+        public ushort wYear;
+        public ushort wMonth;
+        public ushort wDayOfWeek;
+        public ushort wDay;
+        public ushort wHour;
+        public ushort wMinute;
+        public ushort wSecond;
+        public ushort wMilliseconds;
+    }
+
     [SysAbiExport(
         Nid = "kOcnerypnQA",
         ExportName = "sceKernelGettimezone",
@@ -2248,11 +2301,22 @@ public static class KernelRuntimeCompatExports
         var tzAddress = ctx[CpuRegister.Rdi];
         if (tzAddress != 0)
         {
-            var tzInfo = TimeZoneInfo.Local;
-            var minutesWest = (int)(-tzInfo.BaseUtcOffset.TotalMinutes);
-            var isDst = tzInfo.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
-            _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
-            _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
+            if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+            {
+                var result = GetTimeZoneInformation(out var tzi);
+                var minutesWest = tzi.Bias;
+                var isDst = (result == 0 || result == 1) ? 0 : 1; // TIME_ZONE_ID_UNKNOWN=0, TIME_ZONE_ID_STANDARD=1, TIME_ZONE_ID_DAYLIGHT=2
+                _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
+                _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
+            }
+            else
+            {
+                var tzInfo = TimeZoneInfo.Local;
+                var minutesWest = (int)(-tzInfo.BaseUtcOffset.TotalMinutes);
+                var isDst = tzInfo.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
+                _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
+                _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
+            }
         }
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -2327,6 +2391,16 @@ public static class KernelRuntimeCompatExports
         }
         else
         {
+            if (futexOp != 0 && waitAddress == 0 && expectedValue == 0)
+            {
+                // This unsupported form is used as a yield/wait by some Unity jobs.
+                // Fall back to a standard OS-level sleep (yielding the thread) to prevent CPU starvation.
+                var timeout = (ulong)ctx[CpuRegister.R8];
+                System.Threading.Thread.Sleep(timeout == 0 ? 1 : 2);
+                ctx[CpuRegister.Rax] = 0;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
             if (_loggedWaitAddrs.TryAdd(ctx[CpuRegister.Rsi], true))
             {
                 Console.WriteLine($"[DEBUG] KernelSyncOnAddressV1 UNHANDLED OP: rdi={ctx[CpuRegister.Rdi]:X16} rsi={ctx[CpuRegister.Rsi]:X16} rdx={ctx[CpuRegister.Rdx]:X16} rcx={ctx[CpuRegister.Rcx]:X16} r8={ctx[CpuRegister.R8]:X16}");
