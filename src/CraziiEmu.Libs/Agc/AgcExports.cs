@@ -5319,6 +5319,11 @@ public static partial class AgcExports
                         ctx.Memory, destinationAddress, dataSelection == 1 ? dataLo : data);
                 }
 
+                if (wroteData)
+                {
+                    KernelSemaphoreCompatExports.SignalAllSemaphores();
+                }
+
                 if (tracePacket)
                 {
                     TraceAgc(

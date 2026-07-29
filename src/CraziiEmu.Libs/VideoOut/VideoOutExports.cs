@@ -1318,6 +1318,9 @@ public static class VideoOutExports
             }
             ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
         }
+
+        // Wake any guest threads waiting on semaphores (e.g. UnityGfxDeviceWorker, PreloadManager)
+        KernelSemaphoreCompatExports.SignalAllSemaphores();
     }
 
     private static void ReportFrameRate(bool presented)
