@@ -64,7 +64,7 @@ public static class LibcStdioExports
             !TryParseFopenMode(mode, out var fileMode, out var fileAccess))
         {
             ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         var hostPath = KernelMemoryCompatExports.ResolveGuestPath(guestPath);
@@ -77,7 +77,7 @@ public static class LibcStdioExports
             }
 
             ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         try
@@ -109,7 +109,7 @@ public static class LibcStdioExports
             {
                 stream.Dispose();
                 ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
 
             _fileHandles[handle] = stream;
@@ -132,9 +132,7 @@ public static class LibcStdioExports
             }
 
             ctx[CpuRegister.Rax] = 0;
-            return ex is UnauthorizedAccessException
-                ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED
-                : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
     }
 

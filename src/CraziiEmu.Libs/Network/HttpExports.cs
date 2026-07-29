@@ -103,6 +103,36 @@ public static class HttpExports
         return ctx.SetReturn(0);
     }
 
+    [SysAbiExport(
+        Nid = "IWalAn-guFs",
+        ExportName = "sceHttpUriParse",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp")]
+    public static int HttpUriParse(CpuContext ctx)
+    {
+        var parsedUriPtr = ctx[CpuRegister.Rsi];
+        if (parsedUriPtr != 0)
+        {
+            ctx.Memory.TryWrite(parsedUriPtr, new byte[128]);
+        }
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "5LZA+KPISVA",
+        ExportName = "sceHttpUriBuild",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp")]
+    public static int HttpUriBuild(CpuContext ctx)
+    {
+        var outLenPtr = ctx[CpuRegister.Rdx];
+        if (outLenPtr != 0)
+        {
+            _ = ctx.TryWriteUInt64(outLenPtr, 0);
+        }
+        return ctx.SetReturn(0);
+    }
+
     private static void TraceHttp(string operation, int id, ulong arg0, ulong arg1, ulong arg2, ulong arg3)
     {
         if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_HTTP"), "1", StringComparison.Ordinal))

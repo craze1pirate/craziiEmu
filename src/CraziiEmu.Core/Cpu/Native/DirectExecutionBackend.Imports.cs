@@ -2172,12 +2172,22 @@ public sealed partial class DirectExecutionBackend
 		if (!TryResolveModuleSymbolAddress(moduleHandle, symbolName, out var resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(symbolName, out resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(ComputePsNid(symbolName), out resolvedAddress) &&
-			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress))
+			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress) &&
+			!TryResolveImportStubAddress(symbolName, out resolvedAddress))
 		{
-			Console.Error.WriteLine(
-				$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
-			return OrbisGen2Result.ORBIS_GEN2_OK;
+			if (_unresolvedReturnStub != 0)
+			{
+				resolvedAddress = (ulong)_unresolvedReturnStub;
+				Console.Error.WriteLine(
+					$"[LOADER][INFO] sceKernelDlsym fallback for symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
+			}
+			else
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
+				cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+				return OrbisGen2Result.ORBIS_GEN2_OK;
+			}
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
 		{
@@ -2195,6 +2205,45 @@ public sealed partial class DirectExecutionBackend
 		}
 		cpuContext[CpuRegister.Rax] = 0uL;
 		return OrbisGen2Result.ORBIS_GEN2_OK;
+	}
+
+	private bool TryResolveImportStubAddress(string symbolName, out ulong address)
+	{
+		address = 0uL;
+		if (string.IsNullOrWhiteSpace(symbolName))
+		{
+			return false;
+		}
+
+		var nid = ComputePsNid(symbolName);
+		foreach (var entry in _importEntries)
+		{
+			if (string.Equals(entry.Nid, symbolName, StringComparison.Ordinal) ||
+				string.Equals(entry.Nid, nid, StringComparison.Ordinal) ||
+				(entry.Export != null && (string.Equals(entry.Export.Name, symbolName, StringComparison.Ordinal) ||
+										  string.Equals(entry.Export.Nid, nid, StringComparison.Ordinal))))
+			{
+				address = entry.Address;
+				return true;
+			}
+		}
+
+		if (_moduleManager.TryGetExportByName(symbolName, out var exportByName) ||
+			_moduleManager.TryGetExport(nid, out exportByName) ||
+			_moduleManager.TryGetExport(symbolName, out exportByName))
+		{
+			foreach (var entry in _importEntries)
+			{
+				if (string.Equals(entry.Nid, exportByName.Nid, StringComparison.Ordinal) ||
+					string.Equals(entry.Nid, exportByName.Name, StringComparison.Ordinal))
+				{
+					address = entry.Address;
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	private static bool TryResolveModuleSymbolAddress(int moduleHandle, string symbolName, out ulong address)
