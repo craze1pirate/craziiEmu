@@ -16,7 +16,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <!-- GUI subsystem so starting without arguments opens the frontend with no
          console window; CLI mode re-attaches to the parent terminal's console. -->
     <OutputType>WinExe</OutputType>
-    <AssemblyName>CraziiEmu</AssemblyName>
+    <AssemblyName>CraziiEmu-cli</AssemblyName>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -68,6 +68,13 @@ SPDX-License-Identifier: GPL-2.0-or-later
         <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
       </ResolvedFileToPublish>
     </ItemGroup>
+  </Target>
+
+  <Target Name="RemovePdbsFromPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <PdbsToDelete Include="$(PublishDir)\**\*.pdb" />
+    </ItemGroup>
+    <Delete Files="@(PdbsToDelete)" />
   </Target>
 
 </Project>
