@@ -12431,11 +12431,6 @@ private void PollPerfOverlayHotkey() { }
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             VideoOutExports.ReportPresentedFrame();
             
-            if (presentation.VideoOutHandle != 0)
-            {
-                VideoOutExports.CompleteFlip(presentation.VideoOutHandle, presentation.FlipArg);
-            }
-            
             if (_hostSurface is not null && !_firstHostFramePresented)
             {
                 _firstHostFramePresented = true;
