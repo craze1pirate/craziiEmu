@@ -644,6 +644,61 @@ public static class NetExports
     }
 
     [SysAbiExport(
+        Nid = "8Kcp5d-q1Uo",
+        ExportName = "sceNetInetPton",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetInetPton(CpuContext ctx)
+    {
+        var af = (int)ctx[CpuRegister.Rdi];
+        var srcAddress = ctx[CpuRegister.Rsi];
+        var dstAddress = ctx[CpuRegister.Rdx];
+
+        if (srcAddress == 0 || dstAddress == 0)
+        {
+            return ctx.SetReturn(NetErrorInvalidArgument);
+        }
+
+        const int AF_INET = 2;
+        const int AF_INET6 = 28;
+        const int NetErrorAddressFamilyNotSupported = unchecked((int)0x8041012F);
+
+        if (af != AF_INET && af != AF_INET6)
+        {
+            return ctx.SetReturn(NetErrorAddressFamilyNotSupported);
+        }
+
+        if (!TryReadUtf8Z(ctx, srcAddress, 256, out var src) || string.IsNullOrEmpty(src))
+        {
+            return ctx.SetReturn(0);
+        }
+
+        if (IPAddress.TryParse(src, out var ip))
+        {
+            if (af == AF_INET && ip.AddressFamily == AddressFamily.InterNetwork)
+            {
+                Span<byte> bytes = stackalloc byte[4];
+                if (ip.TryWriteBytes(bytes, out _))
+                {
+                    ctx.Memory.TryWrite(dstAddress, bytes);
+                    return ctx.SetReturn(1);
+                }
+            }
+            else if (af == AF_INET6 && ip.AddressFamily == AddressFamily.InterNetworkV6)
+            {
+                Span<byte> bytes = stackalloc byte[16];
+                if (ip.TryWriteBytes(bytes, out _))
+                {
+                    ctx.Memory.TryWrite(dstAddress, bytes);
+                    return ctx.SetReturn(1);
+                }
+            }
+        }
+
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
         Nid = "TDfQqO-gMbY",
         ExportName = "sceSslGetCaCerts",
         Target = Generation.Gen4 | Generation.Gen5,
