@@ -975,8 +975,7 @@ public partial class MainWindow : Window
             catch { }
         }
         
-        CmbGraphicsDevice.ItemsSource = new[] { gpuName };
-        CmbGraphicsDevice.SelectedIndex = 0;
+        TxtGraphicsDevice.Text = gpuName;
     }
 
     protected override void OnClosed(EventArgs e)

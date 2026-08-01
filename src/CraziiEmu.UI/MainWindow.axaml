@@ -575,8 +575,9 @@
                                         <TextBlock Classes="SectionHeader" Text="Graphics" />
                                         <StackPanel Spacing="4">
                                             <TextBlock Classes="SettingsLabel" Text="HOST GRAPHICS DEVICE" />
-                                            <ComboBox x:Name="CmbGraphicsDevice" SelectedIndex="0" Width="340" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
-                                            </ComboBox>
+                                            <Border Background="#111111" CornerRadius="4" Padding="10,8" HorizontalAlignment="Left" MinWidth="340">
+                                                <TextBlock x:Name="TxtGraphicsDevice" Text="Detecting..." FontSize="13" Foreground="#FFFFFF" />
+                                            </Border>
                                         </StackPanel>
                                         <StackPanel Spacing="4">
                                             <TextBlock Classes="SettingsLabel" Text="GRAPHICS API" />

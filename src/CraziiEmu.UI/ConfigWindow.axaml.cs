@@ -74,8 +74,7 @@ public partial class ConfigWindow : Window
             catch { }
         }
         
-        CmbGraphicsDevice.ItemsSource = new[] { gpuName };
-        CmbGraphicsDevice.SelectedIndex = 0;
+        TxtGraphicsDevice.Text = gpuName;
 
         CmbGraphicsApi.SelectedIndex = config.GraphicsApi == "OpenGL" ? 1 : 0;
         CmbGraphicsApi.SelectionChanged += (s, e) => 

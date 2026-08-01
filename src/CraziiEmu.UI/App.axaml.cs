@@ -23,22 +23,13 @@ public class App : Application
     /// <summary>
     /// Called when the framework initialization is completed. Sets the main window.
     /// </summary>
-    public override async void OnFrameworkInitializationCompleted()
+    public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var splash = new SplashWindow();
-            desktop.MainWindow = splash;
-            splash.Show();
-
-            // Asynchronously wait for 2.5 seconds
-            await System.Threading.Tasks.Task.Delay(2500);
-
             var main = new MainWindow();
             desktop.MainWindow = main;
             main.Show();
-            
-            splash.Close();
         }
 
         base.OnFrameworkInitializationCompleted();
