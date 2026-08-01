@@ -487,6 +487,69 @@ public static class NetExports
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
+    [SysAbiExport(
+        Nid = "Nd91WaWmG2w",
+        ExportName = "sceNetResolverStartNtoa",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetResolverStartNtoa(CpuContext ctx)
+    {
+        var rid = unchecked((int)ctx[CpuRegister.Rdi]);
+        var hostnameAddress = ctx[CpuRegister.Rsi];
+        var addrAddress = ctx[CpuRegister.Rdx];
+        var timeout = unchecked((int)ctx[CpuRegister.Rcx]);
+        var retry = unchecked((int)ctx[CpuRegister.R8]);
+        var flags = unchecked((int)ctx[CpuRegister.R9]);
+
+        const int NetErrorResolverNoHost = unchecked((int)0x80410103);
+        const int NetErrorResolverInternal = unchecked((int)0x80410104);
+
+        if (hostnameAddress == 0 || addrAddress == 0 || (flags & ~0x00010000) != 0)
+        {
+            return ctx.SetReturn(NetErrorInvalidArgument);
+        }
+
+        if (!_resolvers.ContainsKey(rid))
+        {
+            return ctx.SetReturn(NetErrorBadFileDescriptor);
+        }
+
+        if (!TryReadUtf8Z(ctx, hostnameAddress, MaxNameLength, out var hostname) || string.IsNullOrWhiteSpace(hostname))
+        {
+            return ctx.SetReturn(NetErrorInvalidArgument);
+        }
+
+        if ((flags & 0x00010000) == 0 && IPAddress.TryParse(hostname, out var ip) && ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var bytes = ip.GetAddressBytes();
+            return ctx.Memory.TryWrite(addrAddress, bytes)
+                ? ctx.SetReturn(0)
+                : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        try
+        {
+            var addresses = Dns.GetHostAddresses(hostname, AddressFamily.InterNetwork);
+            if (addresses.Length > 0)
+            {
+                var bytes = addresses[0].GetAddressBytes();
+                return ctx.Memory.TryWrite(addrAddress, bytes)
+                    ? ctx.SetReturn(0)
+                    : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+        }
+        catch (SocketException)
+        {
+            return ctx.SetReturn(NetErrorResolverNoHost);
+        }
+        catch (Exception)
+        {
+            return ctx.SetReturn(NetErrorResolverInternal);
+        }
+
+        return ctx.SetReturn(NetErrorResolverNoHost);
+    }
+
     private static int SetNetError(CpuContext ctx, int result, int errno)
     {
         if (_errnoAddress == 0)

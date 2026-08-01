@@ -241,6 +241,89 @@ internal static class KernelSocketCompatExports
     }
 
     [SysAbiExport(
+        Nid = "fZOeZIOEmLw",
+        ExportName = "send",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Send(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var bufferAddress = ctx[CpuRegister.Rsi];
+        var len = unchecked((int)ctx[CpuRegister.Rdx]);
+        var flags = unchecked((int)ctx[CpuRegister.Rcx]);
+
+        if (bufferAddress == 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (len < 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        var payload = GC.AllocateUninitializedArray<byte>(len);
+        if (len > 0 && !ctx.Memory.TryRead(bufferAddress, payload))
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryWriteSocketFd(ctx, fd, payload, out _))
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        ctx[CpuRegister.Rax] = unchecked((ulong)len);
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "fFxGkxF2bVo",
+        ExportName = "setsockopt",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Setsockopt(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var level = unchecked((int)ctx[CpuRegister.Rsi]);
+        var optname = unchecked((int)ctx[CpuRegister.Rdx]);
+        var optvalAddress = ctx[CpuRegister.Rcx];
+        var optlen = unchecked((int)ctx[CpuRegister.R8]);
+
+        if (optvalAddress == 0 || optlen < 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        if (optname == 0x1200 && optlen >= 4)
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                if (state.Client is not null)
+                {
+                    state.Client.Client.Blocking = valInt == 0;
+                }
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "RenI1lL1WFk",
         ExportName = "getsockname",
         Target = Generation.Gen4 | Generation.Gen5,

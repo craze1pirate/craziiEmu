@@ -11,6 +11,7 @@ public static class NpWebApi2Exports
     private const int NpWebApi2ErrorInvalidArgument = unchecked((int)0x80553402);
 
     private static int _initialized;
+    private static int _nextFilterId;
 
     [SysAbiExport(
         Nid = "+o9816YQhqQ",
@@ -55,6 +56,38 @@ public static class NpWebApi2Exports
         // layer backs off instead of driving a half-created context handle.
         TraceNpWebApi2("create-user-context", unchecked((int)ctx[CpuRegister.Rdi]), ctx[CpuRegister.Rsi]);
         return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
+    }
+
+    [SysAbiExport(
+        Nid = "fIATVMo4Y1w",
+        ExportName = "sceNpWebApi2PushEventDeleteHandle",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2PushEventDeleteHandle(CpuContext ctx)
+    {
+        var libCtxId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var handleId = unchecked((int)ctx[CpuRegister.Rsi]);
+        TraceNpWebApi2("push-event-delete-handle", libCtxId, unchecked((ulong)handleId));
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "MsaFhR+lPE4",
+        ExportName = "sceNpWebApi2PushEventCreateFilter",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2PushEventCreateFilter(CpuContext ctx)
+    {
+        var libCtxId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var handleId = unchecked((int)ctx[CpuRegister.Rsi]);
+        var nameAddress = ctx[CpuRegister.Rdx];
+        var serviceLabel = unchecked((uint)ctx[CpuRegister.Rcx]);
+        var filterParam = ctx[CpuRegister.R8];
+        var filterParamNum = ctx[CpuRegister.R9];
+
+        var filterId = Interlocked.Increment(ref _nextFilterId);
+        TraceNpWebApi2("push-event-create-filter", libCtxId, unchecked((ulong)filterId));
+        return ctx.SetReturn(filterId);
     }
 
     [SysAbiExport(

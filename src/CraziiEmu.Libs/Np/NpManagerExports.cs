@@ -12,6 +12,20 @@ public static class NpManagerExports
     private const int NpTitleIdSize = 16;
     private const int NpTitleSecretSize = 128;
     private const int NpErrorInvalidArgument = unchecked((int)0x80550003);
+    private static int _nextRequestId;
+
+    [SysAbiExport(
+        Nid = "hw5KNqAAels",
+        ExportName = "sceNpRegisterNpReachabilityStateCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpManager")]
+    public static int NpRegisterNpReachabilityStateCallback(CpuContext ctx)
+    {
+        var callback = ctx[CpuRegister.Rdi];
+        var userdata = ctx[CpuRegister.Rsi];
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
 
     [SysAbiExport(
         Nid = "3Zl8BePTh9Y",
@@ -32,6 +46,18 @@ public static class NpManagerExports
     public static int NpDeleteRequest(CpuContext ctx)
     {
         ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "GpLQDNKICac",
+        ExportName = "sceNpCreateRequest",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpManager")]
+    public static int NpCreateRequest(CpuContext ctx)
+    {
+        var reqId = Interlocked.Increment(ref _nextRequestId);
+        ctx[CpuRegister.Rax] = unchecked((ulong)reqId);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
