@@ -12431,7 +12431,7 @@ private void PollPerfOverlayHotkey() { }
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             VideoOutExports.ReportPresentedFrame();
             
-            if (presentation.GuestImageVersion != 0)
+            if (presentation.FlipArg != 0)
             {
                 CraziiEmu.Libs.Kernel.KernelSemaphoreCompatExports.SignalAllSemaphores();
             }
