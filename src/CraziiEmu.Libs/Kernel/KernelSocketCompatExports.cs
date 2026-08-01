@@ -546,6 +546,39 @@ internal static class KernelSocketCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    [SysAbiExport(
+        Nid = "3e+4Iv7IJ8U",
+        ExportName = "accept",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Accept(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var sockaddrAddress = ctx[CpuRegister.Rsi];
+        var addrlenAddress = ctx[CpuRegister.Rdx];
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        if (sockaddrAddress != 0 && addrlenAddress != 0)
+        {
+            Span<byte> sockaddr = stackalloc byte[16];
+            sockaddr[0] = 16;
+            sockaddr[1] = 2; // AF_INET
+            ctx.Memory.TryWrite(sockaddrAddress, sockaddr);
+
+            Span<byte> addrlenBytes = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(addrlenBytes, 16);
+            ctx.Memory.TryWrite(addrlenAddress, addrlenBytes);
+        }
+
+        ctx[CpuRegister.Rax] = unchecked((ulong)fd);
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     private static bool TryGetEmulatedSocketState(int fd, out EmulatedSocketState? state)
     {
         lock (Gate)
