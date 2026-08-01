@@ -1415,16 +1415,21 @@ public static class VideoOutExports
                 {
                     refresh = port.RefreshRate == 0 ? 60 : port.RefreshRate;
                     port.VblankCount++;
-                    if (port.VblankEvents.Count == 0)
-                    {
-                        continue;
-                    }
 
                     var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
                     var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
                     foreach (var registration in port.VblankEvents)
                     {
                         pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
+                    }
+
+                    if (port.VblankEvents.Count == 0 && port.FlipEvents.Count > 0)
+                    {
+                        var flipIdent = port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
+                        foreach (var registration in port.FlipEvents)
+                        {
+                            pending.Add((registration.Equeue, flipIdent, dataHint, registration.UserData, port.IsGen5));
+                        }
                     }
                 }
             }
