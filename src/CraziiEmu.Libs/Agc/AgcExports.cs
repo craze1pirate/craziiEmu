@@ -774,29 +774,43 @@ public static partial class AgcExports
         var geometryShaderAddress = ctx[CpuRegister.Rcx];
         var primitiveType = (uint)ctx[CpuRegister.R8];
 
-        if (cxRegistersAddress == 0 || ucRegistersAddress == 0 || hullShaderAddress != 0 || geometryShaderAddress == 0)
+        if (cxRegistersAddress == 0 || ucRegistersAddress == 0)
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadByte(ctx, geometryShaderAddress + ShaderTypeOffset, out var shaderType) || !IsEsGeometryShaderType(shaderType) ||
-            !TryReadUInt64(ctx, geometryShaderAddress + ShaderSpecialsOffset, out var specialsAddress) ||
-            specialsAddress == 0)
+        if (geometryShaderAddress != 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            if (!TryReadByte(ctx, geometryShaderAddress + ShaderTypeOffset, out var shaderType) || !IsEsGeometryShaderType(shaderType) ||
+                !TryReadUInt64(ctx, geometryShaderAddress + ShaderSpecialsOffset, out var specialsAddress) ||
+                specialsAddress == 0)
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            }
+
+            if (!CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtShaderStagesEnOffset, cxRegistersAddress) ||
+                !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtGsOutPrimTypeOffset, cxRegistersAddress + 8) ||
+                !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeCntlOffset, ucRegistersAddress) ||
+                !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeUserVgprEnOffset, ucRegistersAddress + 8) ||
+                !TryWriteUInt32(ctx, ucRegistersAddress + 16, VgtPrimitiveType) ||
+                !TryWriteUInt32(ctx, ucRegistersAddress + 20, primitiveType))
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            TraceAgc($"agc.create_prim_state cx=0x{cxRegistersAddress:X16} uc=0x{ucRegistersAddress:X16} gs=0x{geometryShaderAddress:X16} type={shaderType} prim=0x{primitiveType:X8}");
+        }
+        else
+        {
+            if (!TryWriteUInt32(ctx, ucRegistersAddress + 16, VgtPrimitiveType) ||
+                !TryWriteUInt32(ctx, ucRegistersAddress + 20, primitiveType))
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            TraceAgc($"agc.create_prim_state cx=0x{cxRegistersAddress:X16} uc=0x{ucRegistersAddress:X16} gs=0 prim=0x{primitiveType:X8}");
         }
 
-        if (!CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtShaderStagesEnOffset, cxRegistersAddress) ||
-            !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialVgtGsOutPrimTypeOffset, cxRegistersAddress + 8) ||
-            !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeCntlOffset, ucRegistersAddress) ||
-            !CopyShaderRegister(ctx, specialsAddress + ShaderSpecialGeUserVgprEnOffset, ucRegistersAddress + 8) ||
-            !TryWriteUInt32(ctx, ucRegistersAddress + 16, VgtPrimitiveType) ||
-            !TryWriteUInt32(ctx, ucRegistersAddress + 20, primitiveType))
-        {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
-        }
-
-        TraceAgc($"agc.create_prim_state cx=0x{cxRegistersAddress:X16} uc=0x{ucRegistersAddress:X16} gs=0x{geometryShaderAddress:X16} type={shaderType} prim=0x{primitiveType:X8}");
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -3627,9 +3641,7 @@ public static partial class AgcExports
         bool compactLayout,
         bool tracePacket)
     {
-#if DEBUG
-        Console.WriteLine($"[DEBUG] ApplySubmittedDmaData at 0x{packetAddress:X16}");
-#endif
+
         var byteCountOffset = compactLayout ? 20UL : 12UL;
         var destinationOffset = compactLayout ? 4UL : 16UL;
         var sourceOffset = compactLayout ? 12UL : 24UL;
@@ -4207,9 +4219,7 @@ public static partial class AgcExports
         SubmittedDcbState state,
         ulong packetAddress)
     {
-#if DEBUG
-        Console.WriteLine($"[DEBUG] ApplySubmittedStandardDmaData at 0x{packetAddress:X16}");
-#endif
+
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt32(ctx, packetAddress + 8, out var sourceLow) ||
             !TryReadUInt32(ctx, packetAddress + 12, out var sourceHigh) ||
@@ -4346,9 +4356,7 @@ public static partial class AgcExports
         bool standardPacket,
         bool tracePacket)
     {
-#if DEBUG
-        Console.WriteLine($"[DEBUG] ApplySubmittedWriteData (standard={standardPacket}) at 0x{packetAddress:X16}");
-#endif
+
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt64(ctx, packetAddress + 8, out var destinationAddress))
         {
@@ -4574,19 +4582,22 @@ public static partial class AgcExports
     // label is genuinely written by a later submit — preserving cross-submit
     // ordering so the work after a wait (e.g. the final composite) does not run
     // ahead of the compute it samples.
-    private static readonly bool _gpuWaitSuspendEnabled = string.Equals(
+    private static readonly bool _gpuWaitSuspendEnabled = !string.Equals(
         Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_MODE"),
-        "suspend",
+        "force",
         StringComparison.OrdinalIgnoreCase);
 
-    // Optional age for one-shot missing-producer diagnostics. Default to 100ms
-    // fallback timeout to prevent frozen command buffers when producers stall.
+    // Optional age for one-shot missing-producer diagnostics. Stale waits are
+    // never removed or force-satisfied in the default suspend mode: doing so
+    // advances a queue without its real cross-queue producer and can publish
+    // incomplete CPU/GPU state. Only CRAZIIEMU_GPU_WAIT_MODE=force retains the
+    // explicit legacy mutation path above. Default 0 disables age diagnostics.
     private static readonly long _gpuWaitStaleTicks =
         (long.TryParse(
              Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_FALLBACK_MS"),
              out var fallbackMs) && fallbackMs >= 0
             ? fallbackMs
-            : 100L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
+            : 0L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
 
     // How long a suspended GPU wait may sit before the deadlock breaker may
     // release it using the last value a real producer wrote to its label. Long
@@ -4995,9 +5006,7 @@ public static partial class AgcExports
         SubmittedGpuState gpuState,
         bool tracePackets)
     {
-#if DEBUG
-        Console.WriteLine("[DEBUG] GPU ThreadPool DrainResumableDcbs called.");
-#endif
+
         if (!_gpuWaitSuspendEnabled)
         {
             return;
@@ -5209,12 +5218,7 @@ public static partial class AgcExports
                                 destinationAddress != 0 &&
                                 writeLength != 0;
 
-#if DEBUG
-        if (destinationAddress >= 0x600000000)
-        {
-            Console.WriteLine($"[DEBUG] ApplySubmittedStandardReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} writes={writesGuestMemory} control={control:X8} dest={destination} sel={dataSelection}");
-        }
-#endif
+
 
         SubmitOrderedGpuSideEffect(
             ctx,
@@ -5294,12 +5298,7 @@ public static partial class AgcExports
             _ => 0UL,
         };
 
-#if DEBUG
-        if (destinationAddress >= 0x600000000)
-        {
-            Console.WriteLine($"[DEBUG] ApplySubmittedReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} control={control:X8} sel={dataSelection}");
-        }
-#endif
+
 
         SubmitOrderedGpuSideEffect(
             ctx,
@@ -5331,10 +5330,7 @@ public static partial class AgcExports
                         ctx.Memory, destinationAddress, dataSelection == 1 ? dataLo : data);
                 }
 
-                if (wroteData)
-                {
-                    KernelSemaphoreCompatExports.SignalAllSemaphores();
-                }
+
 
                 if (tracePacket)
                 {
