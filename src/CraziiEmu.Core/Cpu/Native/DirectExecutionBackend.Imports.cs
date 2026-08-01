@@ -2576,4 +2576,144 @@ public sealed partial class DirectExecutionBackend
 			}
 		}
 	}
+
+	private readonly Dictionary<ulong, byte[]> _inlineDetourBackup = new();
+
+	private static bool IsInlineDetourTarget(string nid, string exportName)
+	{
+		if (string.IsNullOrWhiteSpace(exportName) && string.IsNullOrWhiteSpace(nid))
+		{
+			return false;
+		}
+
+		return exportName switch
+		{
+			"__cxa_guard_acquire" or
+			"__cxa_guard_release" or
+			"__cxa_guard_abort" or
+			"_umtx_op" => true,
+			_ => nid is "3GPpjQdAMTw" or "S+B1-L6d+Wk" or "bZzZ2S54a10" or "3D1uQc1oEFE"
+		};
+	}
+
+	public unsafe void ApplyInlineHleDetours()
+	{
+		CpuContext? context = ActiveCpuContext;
+		if (context == null || !TryGetVirtualMemory(context, out var virtualMemory) || virtualMemory == null)
+		{
+			return;
+		}
+
+		KeyValuePair<string, ulong>[] runtimeSymbols = _runtimeSymbolsByAddress;
+		if (runtimeSymbols == null || runtimeSymbols.Length == 0)
+		{
+			return;
+		}
+
+		int patchedCount = 0;
+		foreach (KeyValuePair<string, ulong> kvp in runtimeSymbols)
+		{
+			ulong guestAddr = kvp.Value;
+			string symName = kvp.Key;
+			if (guestAddr == 0 || string.IsNullOrWhiteSpace(symName))
+			{
+				continue;
+			}
+
+			string cleanName = symName;
+			int hashIndex = cleanName.IndexOf('#');
+			if (hashIndex > 0)
+			{
+				cleanName = cleanName[..hashIndex];
+			}
+
+			if (!_moduleManager.TryGetExport(cleanName, out ExportedFunction? export) &&
+				!_moduleManager.TryGetExportByName(cleanName, out export))
+			{
+				continue;
+			}
+
+			if (export == null || PreferLleForLibcExport(export.Name) || !IsInlineDetourTarget(export.Nid, export.Name))
+			{
+				continue;
+			}
+
+			if (_inlineDetourBackup.ContainsKey(guestAddr))
+			{
+				continue;
+			}
+
+			int importIndex = -1;
+			for (int i = 0; i < _importEntries.Length; i++)
+			{
+				if (_importEntries[i].Address == guestAddr ||
+					string.Equals(_importEntries[i].Nid, export.Nid, StringComparison.Ordinal) ||
+					string.Equals(_importEntries[i].Nid, cleanName, StringComparison.Ordinal))
+				{
+					importIndex = i;
+					break;
+				}
+			}
+
+			if (importIndex < 0)
+			{
+				importIndex = _importEntries.Length;
+				Array.Resize(ref _importEntries, importIndex + 1);
+				_importEntries[importIndex] = new ImportStubEntry(
+					guestAddr,
+					export.Nid,
+					export,
+					IsLeafImport(export.Nid),
+					IsNoBlockLeafImport(export.Nid),
+					ShouldSuppressStrlenTrace(export.Nid),
+					IsImportLoopGuardBoundary(export.Nid),
+					StableHash64(export.Nid));
+			}
+
+			nint trampolineAddr = CreateImportHandlerTrampoline(importIndex);
+			if (trampolineAddr == 0)
+			{
+				Console.Error.WriteLine($"[LOADER][WARN] Failed to allocate HLE trampoline for inline detour: {export.Name} ({export.Nid}) at 0x{guestAddr:X16}");
+				continue;
+			}
+
+			long disp64 = (long)trampolineAddr - (long)(guestAddr + 5);
+			if (disp64 < int.MinValue || disp64 > int.MaxValue)
+			{
+				Console.Error.WriteLine($"[LOADER][WARN] Cannot apply inline detour for {export.Name}: trampoline at 0x{trampolineAddr:X16} out of ±2GB rel32 range from 0x{guestAddr:X16}");
+				continue;
+			}
+
+			byte[] originalBytes = new byte[5];
+			if (!virtualMemory.TryRead(guestAddr, originalBytes))
+			{
+				Console.Error.WriteLine($"[LOADER][WARN] Failed to read original instructions for inline detour: {export.Name} at 0x{guestAddr:X16}");
+				continue;
+			}
+
+			byte[] detourBytes = new byte[5];
+			detourBytes[0] = 0xE9;
+			int disp32 = (int)disp64;
+			detourBytes[1] = (byte)(disp32 & 0xFF);
+			detourBytes[2] = (byte)((disp32 >> 8) & 0xFF);
+			detourBytes[3] = (byte)((disp32 >> 16) & 0xFF);
+			detourBytes[4] = (byte)((disp32 >> 24) & 0xFF);
+
+			if (virtualMemory.TryWrite(guestAddr, detourBytes))
+			{
+				_inlineDetourBackup[guestAddr] = originalBytes;
+				patchedCount++;
+				Console.Error.WriteLine($"[LOADER][INFO] Applied inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
+			}
+			else
+			{
+				Console.Error.WriteLine($"[LOADER][ERROR] Failed to write inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
+			}
+		}
+
+		if (patchedCount > 0)
+		{
+			Console.Error.WriteLine($"[LOADER][INFO] Successfully applied {patchedCount} inline HLE export detours.");
+		}
+	}
 }

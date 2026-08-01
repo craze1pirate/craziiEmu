@@ -2381,6 +2381,18 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 		byte* code = (byte*)ptr;
 		int offset = 0;
+		EmitByte(code, ref offset, 0x48); EmitByte(code, ref offset, 0x8B); EmitByte(code, ref offset, 0x01); // mov rax, [rcx]
+		EmitByte(code, ref offset, 0x8B); EmitByte(code, ref offset, 0x00); // mov eax, [rax]
+		EmitByte(code, ref offset, 0x3D); EmitUInt32(code, ref offset, 0xE0434352u); // cmp eax, 0xE0434352
+		EmitByte(code, ref offset, 0x74); EmitByte(code, ref offset, 0x07); // je ignore (7 bytes ahead)
+		EmitByte(code, ref offset, 0x3D); EmitUInt32(code, ref offset, 0xC0000409u); // cmp eax, 0xC0000409
+		EmitByte(code, ref offset, 0x75); EmitByte(code, ref offset, 0x03); // jne continue (3 bytes ahead)
+		
+		// ignore:
+		EmitByte(code, ref offset, 0x31); EmitByte(code, ref offset, 0xC0); // xor eax, eax
+		EmitByte(code, ref offset, 0xC3); // ret
+		
+		// continue:
 		EmitByte(code, ref offset, 0x41); EmitByte(code, ref offset, 0x54); // push r12
 		EmitByte(code, ref offset, 0x41); EmitByte(code, ref offset, 0x55); // push r13
 		EmitByte(code, ref offset, 0x49); EmitByte(code, ref offset, 0x89); EmitByte(code, ref offset, 0xE4); // mov r12, rsp
@@ -5602,6 +5614,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				CallNativeEntry((void*)65534);
 				Console.Error.WriteLine("[LOADER][INFO] Sentinel probe returned.");
 			}
+			ApplyInlineHleDetours();
 			Console.Error.WriteLine("[LOADER][INFO] Calling guest entry...");
 			StartStallWatchdog();
 			StartReadyThreadDispatcher();
