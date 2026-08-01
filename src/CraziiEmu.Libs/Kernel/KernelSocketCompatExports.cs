@@ -324,6 +324,81 @@ internal static class KernelSocketCompatExports
     }
 
     [SysAbiExport(
+        Nid = "6O8EwYOgH9Y",
+        ExportName = "getsockopt",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Getsockopt(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var level = unchecked((int)ctx[CpuRegister.Rsi]);
+        var optname = unchecked((int)ctx[CpuRegister.Rdx]);
+        var optvalAddress = ctx[CpuRegister.Rcx];
+        var optlenAddress = ctx[CpuRegister.R8];
+
+        if (optvalAddress == 0 || optlenAddress == 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        Span<byte> optlenBuf = stackalloc byte[4];
+        if (!ctx.Memory.TryRead(optlenAddress, optlenBuf))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var optlen = BinaryPrimitives.ReadInt32LittleEndian(optlenBuf);
+        if (optlen <= 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        if (optname == 0x1200 && optlen >= 4)
+        {
+            Span<byte> val = stackalloc byte[4];
+            var isNonBlocking = state.Client is not null && !state.Client.Client.Blocking;
+            BinaryPrimitives.WriteInt32LittleEndian(val, isNonBlocking ? 1 : 0);
+            if (!ctx.Memory.TryWrite(optvalAddress, val))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
+            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+        }
+        else
+        {
+            var writeLen = Math.Min(optlen, 4);
+            Span<byte> zeroVal = stackalloc byte[writeLen];
+            zeroVal.Clear();
+            if (!ctx.Memory.TryWrite(optvalAddress, zeroVal))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, writeLen);
+            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "RenI1lL1WFk",
         ExportName = "getsockname",
         Target = Generation.Gen4 | Generation.Gen5,
