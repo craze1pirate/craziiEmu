@@ -1214,7 +1214,10 @@ public static class VideoOutExports
 
         if (submitGpuImage)
         {
-            TriggerFlipEvents();
+            if (!guestImageSubmitted)
+            {
+                TriggerFlipEvents();
+            }
         }
         else if (GuestGpu.Current.SubmitOrderedGuestAction(
                      TriggerFlipEvents,
