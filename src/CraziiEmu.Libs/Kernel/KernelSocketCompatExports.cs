@@ -526,6 +526,26 @@ internal static class KernelSocketCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    [SysAbiExport(
+        Nid = "pxnCmagrtao",
+        ExportName = "listen",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Listen(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var backlog = unchecked((int)ctx[CpuRegister.Rsi]);
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     private static bool TryGetEmulatedSocketState(int fd, out EmulatedSocketState? state)
     {
         lock (Gate)
