@@ -676,6 +676,12 @@ public static class KernelPthreadCompatExports
                     return (int)OrbisGen2Result.ORBIS_GEN2_OK;
                 }
 
+                if (tryOnly)
+                {
+                    TracePthreadMutex(ctx, "trylock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
+                }
+
                 if (state.Type is MutexTypeNormal or MutexTypeAdaptiveNp)
                 {
                     // Several Gen5 runtimes layer their own owner/count bookkeeping
@@ -683,16 +689,13 @@ public static class KernelPthreadCompatExports
                     // leaves that guest bookkeeping out of sync with the HLE owner and
                     // turns the wrapper into a permanent lock/unlock retry loop. Allow recursive lock.
                     state.RecursionCount++;
-                    TracePthreadMutex(ctx, tryOnly ? "trylock" : "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
+                    TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
                     return (int)OrbisGen2Result.ORBIS_GEN2_OK;
                 }
                 else
                 {
-                    var ownedResult = tryOnly
-                        ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY
-                        : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK;
-                    TracePthreadMutex(ctx, tryOnly ? "trylock" : "lock", mutexAddress, resolvedAddress, state, currentThreadId, ownedResult);
-                    return ownedResult;
+                    TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK;
                 }
             }
 

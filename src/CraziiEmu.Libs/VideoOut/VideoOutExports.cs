@@ -1422,15 +1422,6 @@ public static class VideoOutExports
                     {
                         pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
                     }
-
-                    if (port.VblankEvents.Count == 0 && port.FlipEvents.Count > 0)
-                    {
-                        var flipIdent = port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
-                        foreach (var registration in port.FlipEvents)
-                        {
-                            pending.Add((registration.Equeue, flipIdent, dataHint, registration.UserData, port.IsGen5));
-                        }
-                    }
                 }
             }
 
