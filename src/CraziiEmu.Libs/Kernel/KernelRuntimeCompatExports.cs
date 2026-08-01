@@ -2340,71 +2340,34 @@ public static class KernelRuntimeCompatExports
         // FUTEX_WAIT is 0
         if (futexOp == 0 && waitAddress != 0)
         {
-            var waitStart = Stopwatch.GetTimestamp();
-            
-            // Read initial value
             if (ctx.TryReadUInt32(waitAddress, out var initialVal))
             {
                 if (initialVal != expectedValue)
                 {
-                    // MISMATCH (e.g. guest polling).
-                    // Delay for 1 second before returning EAGAIN to force the virtual clock clamp
-                    // to trigger and mask the GPU ThreadPool compilation stalls.
-                    while (Stopwatch.GetTimestamp() - waitStart < Stopwatch.Frequency)
-                    {
-                        GuestThreadExecution.Scheduler?.Pump(ctx, "_sync_on_address_v1");
-                        System.Threading.Thread.Sleep(1);
-                        
-                        // If it magically becomes what the guest wanted to wait ON, we should switch to waiting.
-                        if (ctx.TryReadUInt32(waitAddress, out var newVal) && newVal == expectedValue)
-                        {
-                            break;
-                        }
-                    }
-
-                    // If it's still mismatched after the delay, return EAGAIN.
-                    if (ctx.TryReadUInt32(waitAddress, out var finalVal) && finalVal != expectedValue)
-                    {
-                        ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN);
-                        return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
-                    }
+                    ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
                 }
 
-                // If we reach here, memory MATCHES expectedValue. We should block until it CHANGES.
-                while (Stopwatch.GetTimestamp() - waitStart < Stopwatch.Frequency)
+                for (int spin = 0; spin < 10; spin++)
                 {
-                    GuestThreadExecution.Scheduler?.Pump(ctx, "_sync_on_address_v1");
-                    System.Threading.Thread.Sleep(1);
-
                     if (ctx.TryReadUInt32(waitAddress, out var currentVal) && currentVal != expectedValue)
                     {
-                        // It changed! The wait is successfully over.
                         ctx[CpuRegister.Rax] = 0;
                         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
                     }
+                    System.Threading.Thread.Sleep(1);
                 }
-                
-                // Timed out (1 second elapsed). Return OK so the guest loops and virtual clock clamps.
+
                 ctx[CpuRegister.Rax] = 0;
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
         }
-        else
+        else if (futexOp != 0 && waitAddress == 0 && expectedValue == 0)
         {
-            if (futexOp != 0 && waitAddress == 0 && expectedValue == 0)
-            {
-                // This unsupported form is used as a yield/wait by some Unity jobs.
-                // Fall back to a standard OS-level sleep (yielding the thread) to prevent CPU starvation.
-                var timeout = (ulong)ctx[CpuRegister.R8];
-                System.Threading.Thread.Sleep(timeout == 0 ? 1 : 2);
-                ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            if (_loggedWaitAddrs.TryAdd(ctx[CpuRegister.Rsi], true))
-            {
-                Console.WriteLine($"[DEBUG] KernelSyncOnAddressV1 UNHANDLED OP: rdi={ctx[CpuRegister.Rdi]:X16} rsi={ctx[CpuRegister.Rsi]:X16} rdx={ctx[CpuRegister.Rdx]:X16} rcx={ctx[CpuRegister.Rcx]:X16} r8={ctx[CpuRegister.R8]:X16}");
-            }
+            var timeout = (ulong)ctx[CpuRegister.R8];
+            System.Threading.Thread.Sleep(timeout == 0 ? 1 : 2);
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         ctx[CpuRegister.Rax] = 0;
