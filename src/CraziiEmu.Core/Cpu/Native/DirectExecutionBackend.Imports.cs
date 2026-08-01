@@ -73,7 +73,31 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe static int RawVectoredHandlerManaged(void* exceptionInfo)
 	{
+		if (TryHandleGuestImageWriteFault(exceptionInfo))
+		{
+			return -1;
+		}
+
 		return TryRecoverUnresolvedSentinel(exceptionInfo);
+	}
+
+	private unsafe static bool TryHandleGuestImageWriteFault(void* exceptionInfo)
+	{
+		if (!CraziiEmu.HLE.GuestImageWriteTracker.Enabled)
+		{
+			return false;
+		}
+
+		var exceptionRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ExceptionRecord;
+		if (exceptionRecord->ExceptionCode != 3221225477u ||
+			exceptionRecord->NumberParameters < 2 ||
+			exceptionRecord->ExceptionInformation[0] != 1uL)
+		{
+			return false;
+		}
+
+		return CraziiEmu.HLE.GuestImageWriteTracker.TryHandleWriteFault(
+			exceptionRecord->ExceptionInformation[1]);
 	}
 
 	private unsafe static int RawUnhandledFilterManaged(void* exceptionInfo)
@@ -616,6 +640,12 @@ public sealed partial class DirectExecutionBackend
 				{
 					DumpIl2CppExceptionDiagnostic(cpuContext, value, num7);
 				}
+				if (importStubEntry.Nid == "wJbW570R9C8")
+				{
+					// scePthreadMutexUnlock
+					return 0ul;
+				}
+
 				if (importStubEntry.Nid == "Hc4CaR6JBL0")
 				{
 					// Hc4CaR6JBL0 is sceKernelSyncOnAddressWait.
@@ -629,7 +659,7 @@ public sealed partial class DirectExecutionBackend
 
 					ulong expectedValue = (uint)value2;
 					uint lockValue = 0;
-					bool canRead = TryReadUInt32Compat(value, out lockValue);
+					bool canRead = cpuContext != null && cpuContext.TryReadUInt32(value, out lockValue);
 
 					if (canRead && lockValue != expectedValue)
 					{
@@ -639,7 +669,7 @@ public sealed partial class DirectExecutionBackend
 					object syncObj = _syncWaitObjects.GetOrAdd(value, _ => new object());
 					lock (syncObj)
 					{
-						if (TryReadUInt32Compat(value, out lockValue) && lockValue != expectedValue)
+						if (cpuContext != null && cpuContext.TryReadUInt32(value, out lockValue) && lockValue != expectedValue)
 						{
 							return 0x80020023ul; // SCE_KERNEL_ERROR_EAGAIN
 						}
@@ -2172,22 +2202,12 @@ public sealed partial class DirectExecutionBackend
 		if (!TryResolveModuleSymbolAddress(moduleHandle, symbolName, out var resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(symbolName, out resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(ComputePsNid(symbolName), out resolvedAddress) &&
-			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress) &&
-			!TryResolveImportStubAddress(symbolName, out resolvedAddress))
+			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress))
 		{
-			if (_unresolvedReturnStub != 0)
-			{
-				resolvedAddress = (ulong)_unresolvedReturnStub;
-				Console.Error.WriteLine(
-					$"[LOADER][INFO] sceKernelDlsym fallback for symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
-			}
-			else
-			{
-				Console.Error.WriteLine(
-					$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-				cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
-				return OrbisGen2Result.ORBIS_GEN2_OK;
-			}
+			Console.Error.WriteLine(
+				$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
+			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
 		{
@@ -2464,29 +2484,7 @@ public sealed partial class DirectExecutionBackend
 		}
 	}
 
-	private bool TryReadUInt32Compat(ulong address, out uint value)
-	{
-		value = 0;
-		var cpuContext = ActiveCpuContext;
-		if (cpuContext == null || address == 0L)
-		{
-			return false;
-		}
-		if (cpuContext.TryReadUInt32(address, out value))
-		{
-			return true;
-		}
-		try
-		{
-			value = unchecked((uint)Marshal.ReadInt32((nint)address));
-			return true;
-		}
-		catch
-		{
-			value = 0;
-			return false;
-		}
-	}
+
 
 	private bool TryReadUInt64Compat(ulong address, out ulong value)
 	{

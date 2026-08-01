@@ -1214,10 +1214,7 @@ public static class VideoOutExports
 
         if (submitGpuImage)
         {
-            if (!guestImageSubmitted)
-            {
-                TriggerFlipEvents();
-            }
+            TriggerFlipEvents();
         }
         else if (GuestGpu.Current.SubmitOrderedGuestAction(
                      TriggerFlipEvents,
@@ -1247,8 +1244,6 @@ public static class VideoOutExports
 
     internal static void CompleteFlip(int handle, long flipArg)
     {
-        Console.Error.WriteLine(
-            $"[LOADER][DEBUG] CompleteFlip called handle={handle} flipArg={flipArg}");
         if (!TryGetPort(handle, out var port))
         {
             Console.Error.WriteLine(
@@ -1283,9 +1278,6 @@ public static class VideoOutExports
                 port.VblankEvents.CopyTo(vblankEvents);
             }
         }
-
-        Console.Error.WriteLine(
-            $"[LOADER][DEBUG] CompleteFlip: flipEvents={flipEventCount} vblankEvents={vblankEventCount} isGen5={port.IsGen5} vblankCount={port.VblankCount}");
 
         if (flipEvents != null)
         {
@@ -1426,11 +1418,6 @@ public static class VideoOutExports
             }
 
             var tick = Interlocked.Increment(ref _vblankDiagTick);
-            if (tick <= 5 || tick % 600 == 0)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][DEBUG] VblankTick #{tick}: ports={portCount} pendingEvents={pending.Count}");
-            }
 
             // Dump blocked threads at tick #600 (10 seconds) to diagnose stalls
             if (tick == 600)

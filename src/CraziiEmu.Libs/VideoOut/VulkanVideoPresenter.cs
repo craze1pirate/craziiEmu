@@ -1997,6 +1997,22 @@ internal static unsafe class VulkanVideoPresenter
         Volatile.Write(ref _presenterCloseRequested, true);
     }
 
+    public static void WaitForClose(int timeoutMilliseconds = -1)
+    {
+        var thread = Volatile.Read(ref _thread);
+        if (thread != null && thread != Thread.CurrentThread)
+        {
+            if (timeoutMilliseconds < 0)
+            {
+                thread.Join();
+            }
+            else
+            {
+                thread.Join(timeoutMilliseconds);
+            }
+        }
+    }
+
     /// <summary>
     /// GLFW resolves Vulkan with dlopen("libvulkan.1.dylib"), which cannot
     /// find the app-local MoltenVK on macOS (Homebrew's Vulkan libraries are
@@ -3060,7 +3076,6 @@ private VkBuffer[] _overlayStagingBuffers = [];
             public bool IsCpuBacked;
             public ulong CpuContentFingerprint;
             public bool SupportsStorageUsage;
-            public ImageLayout CurrentLayout = ImageLayout.Undefined;
         }
 
         private sealed record PendingGuestSubmission(
@@ -14232,16 +14247,13 @@ private void PollPerfOverlayHotkey() { }
                 // the image into the swapchain.
                 SrcAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.ShaderReadBit,
                 DstAccessMask = AccessFlags.TransferReadBit,
-                OldLayout = source.CurrentLayout != ImageLayout.Undefined
-                    ? source.CurrentLayout
-                    : (source.InitialUploadPending ? ImageLayout.Undefined : ImageLayout.ShaderReadOnlyOptimal),
+                OldLayout = ImageLayout.ShaderReadOnlyOptimal,
                 NewLayout = ImageLayout.TransferSrcOptimal,
                 SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
                 Image = source.Image,
                 SubresourceRange = ColorSubresourceRange(),
             };
-            source.CurrentLayout = ImageLayout.TransferSrcOptimal;
             var destinationToTransfer = new ImageMemoryBarrier
             {
                 SType = StructureType.ImageMemoryBarrier,
