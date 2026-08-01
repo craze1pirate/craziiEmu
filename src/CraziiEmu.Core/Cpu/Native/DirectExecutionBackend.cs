@@ -2025,9 +2025,29 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 	}
 
-	private unsafe nint CreateImportHandlerTrampoline(int importIndex)
+	private unsafe nint CreateImportHandlerTrampoline(int importIndex, ulong preferredNearAddress = 0)
 	{
-		void* ptr = VirtualAlloc(null, 512u, 12288u, 64u);
+		void* ptr = null;
+		if (preferredNearAddress != 0)
+		{
+			for (long delta = 0x10000; delta < 0x7FFF0000L; delta += 0x10000)
+			{
+				ulong tryAddr = preferredNearAddress + (ulong)delta;
+				ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
+				if (ptr != null) break;
+
+				if ((ulong)delta < preferredNearAddress)
+				{
+					tryAddr = preferredNearAddress - (ulong)delta;
+					ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
+					if (ptr != null) break;
+				}
+			}
+		}
+		if (ptr == null)
+		{
+			ptr = VirtualAlloc(null, 512u, 12288u, 64u);
+		}
 		if (ptr == null)
 		{
 			return 0;

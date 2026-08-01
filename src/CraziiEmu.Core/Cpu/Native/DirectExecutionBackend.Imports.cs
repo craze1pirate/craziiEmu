@@ -2670,7 +2670,7 @@ public sealed partial class DirectExecutionBackend
 					StableHash64(export.Nid));
 			}
 
-			nint trampolineAddr = CreateImportHandlerTrampoline(importIndex);
+			nint trampolineAddr = CreateImportHandlerTrampoline(importIndex, guestAddr);
 			if (trampolineAddr == 0)
 			{
 				Console.Error.WriteLine($"[LOADER][WARN] Failed to allocate HLE trampoline for inline detour: {export.Name} ({export.Nid}) at 0x{guestAddr:X16}");
