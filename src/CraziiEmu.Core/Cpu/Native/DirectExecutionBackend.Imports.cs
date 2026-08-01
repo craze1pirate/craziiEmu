@@ -2202,12 +2202,22 @@ public sealed partial class DirectExecutionBackend
 		if (!TryResolveModuleSymbolAddress(moduleHandle, symbolName, out var resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(symbolName, out resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(ComputePsNid(symbolName), out resolvedAddress) &&
-			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress))
+			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress) &&
+			!TryResolveImportStubAddress(symbolName, out resolvedAddress))
 		{
-			Console.Error.WriteLine(
-				$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
-			return OrbisGen2Result.ORBIS_GEN2_OK;
+			if (_unresolvedReturnStub != 0)
+			{
+				resolvedAddress = (ulong)_unresolvedReturnStub;
+				Console.Error.WriteLine(
+					$"[LOADER][INFO] sceKernelDlsym fallback for symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
+			}
+			else
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
+				cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+				return OrbisGen2Result.ORBIS_GEN2_OK;
+			}
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
 		{
