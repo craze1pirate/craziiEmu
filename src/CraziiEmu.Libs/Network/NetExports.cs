@@ -306,6 +306,54 @@ public static class NetExports
     }
 
     [SysAbiExport(
+        Nid = "xphrZusl78E",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetGetsockname(CpuContext ctx)
+    {
+        var id = unchecked((int)ctx[CpuRegister.Rdi]);
+        var sockaddrAddress = ctx[CpuRegister.Rsi];
+        var addrlenAddress = ctx[CpuRegister.Rdx];
+
+        if (!_sockets.TryGetValue(id, out var socket))
+        {
+            return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
+        }
+
+        if (sockaddrAddress == 0 || addrlenAddress == 0)
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+
+        try
+        {
+            if (socket.LocalEndPoint is IPEndPoint ep)
+            {
+                Span<byte> sockaddr = stackalloc byte[16];
+                sockaddr[0] = 16;
+                sockaddr[1] = (byte)(ep.AddressFamily == AddressFamily.InterNetwork ? 2 : 28);
+                BinaryPrimitives.WriteUInt16BigEndian(sockaddr.Slice(2, 2), (ushort)ep.Port);
+                var addressBytes = ep.Address.GetAddressBytes();
+                if (addressBytes.Length == 4)
+                {
+                    addressBytes.CopyTo(sockaddr.Slice(4, 4));
+                }
+                ctx.Memory.TryWrite(sockaddrAddress, sockaddr);
+
+                Span<byte> addrlenBytes = stackalloc byte[4];
+                BinaryPrimitives.WriteUInt32LittleEndian(addrlenBytes, 16);
+                ctx.Memory.TryWrite(addrlenAddress, addrlenBytes);
+            }
+
+            return ctx.SetReturn(0);
+        }
+        catch (SocketException)
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+    }
+
+    [SysAbiExport(
         Nid = "HQOwnfMGipQ",
         ExportName = "sceNetErrnoLoc",
         Target = Generation.Gen4 | Generation.Gen5,
