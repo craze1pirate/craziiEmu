@@ -62,6 +62,31 @@ public static class NpManagerExports
     }
 
     [SysAbiExport(
+        Nid = "Oad3rvY-NJQ",
+        ExportName = "sceNpHasSignedUp",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpManager")]
+    public static int NpHasSignedUp(CpuContext ctx)
+    {
+        var userId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var hasSignedUpAddress = ctx[CpuRegister.Rsi];
+
+        if (hasSignedUpAddress == 0)
+        {
+            return ctx.SetReturn(NpErrorInvalidArgument);
+        }
+
+        Span<byte> boolValue = stackalloc byte[1];
+        boolValue[0] = 0; // false
+        if (!ctx.Memory.TryWrite(hasSignedUpAddress, boolValue))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
         Nid = "JELHf4xPufo",
         ExportName = "sceNpCheckCallbackForLib",
         Target = Generation.Gen4 | Generation.Gen5,
