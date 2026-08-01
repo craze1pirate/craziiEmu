@@ -3627,7 +3627,9 @@ public static partial class AgcExports
         bool compactLayout,
         bool tracePacket)
     {
+#if DEBUG
         Console.WriteLine($"[DEBUG] ApplySubmittedDmaData at 0x{packetAddress:X16}");
+#endif
         var byteCountOffset = compactLayout ? 20UL : 12UL;
         var destinationOffset = compactLayout ? 4UL : 16UL;
         var sourceOffset = compactLayout ? 12UL : 24UL;
@@ -4205,7 +4207,9 @@ public static partial class AgcExports
         SubmittedDcbState state,
         ulong packetAddress)
     {
+#if DEBUG
         Console.WriteLine($"[DEBUG] ApplySubmittedStandardDmaData at 0x{packetAddress:X16}");
+#endif
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt32(ctx, packetAddress + 8, out var sourceLow) ||
             !TryReadUInt32(ctx, packetAddress + 12, out var sourceHigh) ||
@@ -4342,7 +4346,9 @@ public static partial class AgcExports
         bool standardPacket,
         bool tracePacket)
     {
+#if DEBUG
         Console.WriteLine($"[DEBUG] ApplySubmittedWriteData (standard={standardPacket}) at 0x{packetAddress:X16}");
+#endif
         if (!TryReadUInt32(ctx, packetAddress + 4, out var control) ||
             !TryReadUInt64(ctx, packetAddress + 8, out var destinationAddress))
         {
@@ -4989,7 +4995,9 @@ public static partial class AgcExports
         SubmittedGpuState gpuState,
         bool tracePackets)
     {
+#if DEBUG
         Console.WriteLine("[DEBUG] GPU ThreadPool DrainResumableDcbs called.");
+#endif
         if (!_gpuWaitSuspendEnabled)
         {
             return;
@@ -5201,10 +5209,12 @@ public static partial class AgcExports
                                 destinationAddress != 0 &&
                                 writeLength != 0;
 
+#if DEBUG
         if (destinationAddress >= 0x600000000)
         {
             Console.WriteLine($"[DEBUG] ApplySubmittedStandardReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} writes={writesGuestMemory} control={control:X8} dest={destination} sel={dataSelection}");
         }
+#endif
 
         SubmitOrderedGpuSideEffect(
             ctx,
@@ -5284,10 +5294,12 @@ public static partial class AgcExports
             _ => 0UL,
         };
 
+#if DEBUG
         if (destinationAddress >= 0x600000000)
         {
             Console.WriteLine($"[DEBUG] ApplySubmittedReleaseMem: destAddress=0x{destinationAddress:X16} data={data:X16} length={writeLength} control={control:X8} sel={dataSelection}");
         }
+#endif
 
         SubmitOrderedGpuSideEffect(
             ctx,
