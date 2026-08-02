@@ -734,7 +734,7 @@ public static class VideoOutExports
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, processTimeMicros);
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, 0UL);
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, unchecked((ulong)lastFlipArg));
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x20, 0UL);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x20, currentBuffer);
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x28, processTimeTicks);
         _ = ctx.TryWriteUInt32(statusAddress + 0x30, 0u);
         _ = ctx.TryWriteUInt32(statusAddress + 0x34, unchecked((uint)pendingFlips));
@@ -1288,7 +1288,10 @@ public static class VideoOutExports
                 Console.Error.WriteLine(
                     $"[LOADER][WARN] CompleteFlip: port not found for handle={handle}");
             }
-            KernelSemaphoreCompatExports.SignalAllSemaphores();
+            if (flipArg != 0)
+            {
+                KernelSemaphoreCompatExports.SignalAllSemaphores();
+            }
             return;
         }
 
@@ -1352,8 +1355,11 @@ public static class VideoOutExports
             ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
         }
 
-        // Wake any guest threads waiting on semaphores (e.g. UnityGfxDeviceWorker, PreloadManager)
-        KernelSemaphoreCompatExports.SignalAllSemaphores();
+        // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
+        if (flipArg != 0)
+        {
+            KernelSemaphoreCompatExports.SignalAllSemaphores();
+        }
     }
 
     private static void ReportFrameRate(bool presented)
