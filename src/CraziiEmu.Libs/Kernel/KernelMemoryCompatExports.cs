@@ -2762,10 +2762,10 @@ public static partial class KernelMemoryCompatExports
     }
 
     [SysAbiExport(
-    Nid = "hwVSPCmp5tM",
-    ExportName = "sceKernelCheckedReleaseDirectMemory",
-    Target = Generation.Gen4 | Generation.Gen5,
-    LibraryName = "libKernel")]
+        Nid = "hwVSPCmp5tM",
+        ExportName = "sceKernelCheckedReleaseDirectMemory",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
     public static int KernelCheckedReleaseDirectMemory(CpuContext ctx)
     {
         var start = ctx[CpuRegister.Rdi];
@@ -2773,22 +2773,22 @@ public static partial class KernelMemoryCompatExports
 
         if (!IsAligned(start, OrbisPageSize) || !IsAligned(length, OrbisPageSize))
         {
+            ctx[CpuRegister.Rax] = unchecked((ulong)(int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
         if (length == 0)
         {
+            ctx[CpuRegister.Rax] = 0;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         lock (_memoryGate)
         {
-            if (!TryReleaseDirectMemoryRangeLocked(start, length))
-            {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            }
+            _ = TryReleaseDirectMemoryRangeLocked(start, length);
         }
 
+        ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
