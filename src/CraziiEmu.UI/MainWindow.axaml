@@ -382,6 +382,7 @@
                                    Margin="14,6,0,2"
                                    VerticalAlignment="Center"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,4,14,0" Spacing="8">
+                            <Button x:Name="BtnClearConsole" Content="🗑 Clear" FontSize="10" Padding="4,2" Cursor="Hand" Background="Transparent" Foreground="#888888" BorderThickness="0" ToolTip.Tip="Clear logs"/>
                             <Button x:Name="BtnCopyConsole" Content="📋 Copy" FontSize="10" Padding="4,2" Cursor="Hand" Background="Transparent" Foreground="#888888" BorderThickness="0" ToolTip.Tip="Copy all logs"/>
                             <Button x:Name="BtnExportConsole" Content="Export" FontSize="10" Padding="4,2" Cursor="Hand" Background="Transparent" Foreground="#888888" BorderThickness="0" ToolTip.Tip="Export last 100 lines"/>
                         </StackPanel>
@@ -533,6 +534,18 @@
                                       Stretch="Uniform"
                                       VerticalAlignment="Center"/>
                                 <TextBlock Text="Play" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <!-- Stop (shown when running) -->
+                        <Button x:Name="BtnStop" Classes="PlayBtn" IsVisible="False" ToolTip.Tip="Force terminate game">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Data="M6,6H18V18H6Z"
+                                      Fill="Black"
+                                      Width="14" Height="14"
+                                      Stretch="Uniform"
+                                      VerticalAlignment="Center"/>
+                                <TextBlock Text="Stop" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
 

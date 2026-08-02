@@ -28,6 +28,21 @@ public static class NpManagerExports
     }
 
     [SysAbiExport(
+        Nid = "KfGZg2y73oM",
+        ExportName = "sceNpCheckNpReachability",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpManager")]
+    public static int NpCheckNpReachability(CpuContext ctx)
+    {
+        var reqId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var userId = unchecked((int)ctx[CpuRegister.Rsi]);
+        _ = reqId;
+        _ = userId;
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "3Zl8BePTh9Y",
         ExportName = "sceNpCheckCallback",
         Target = Generation.Gen4 | Generation.Gen5,

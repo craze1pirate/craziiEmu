@@ -527,6 +527,51 @@ internal static class KernelSocketCompatExports
     }
 
     [SysAbiExport(
+        Nid = "TUuiYS2kE8s",
+        ExportName = "shutdown",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int Shutdown(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var how = unchecked((int)ctx[CpuRegister.Rsi]);
+
+        if (how is < 0 or > 2)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        try
+        {
+            if (state.Client?.Client is { } socket && socket.Connected)
+            {
+                var socketShutdown = how switch
+                {
+                    0 => SocketShutdown.Receive,
+                    1 => SocketShutdown.Send,
+                    2 => SocketShutdown.Both,
+                    _ => SocketShutdown.Both
+                };
+                socket.Shutdown(socketShutdown);
+            }
+        }
+        catch (Exception)
+        {
+            // Socket operation error or already closed
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "pxnCmagrtao",
         ExportName = "listen",
         Target = Generation.Gen4 | Generation.Gen5,

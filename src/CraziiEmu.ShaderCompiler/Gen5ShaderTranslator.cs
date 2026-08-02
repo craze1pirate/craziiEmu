@@ -582,13 +582,8 @@ public static class Gen5ShaderTranslator
         switch (word >> 26)
         {
             case 0x33:
-                encoding = Gen5ShaderEncoding.Vop3p;
-                if (!TryReadUInt32(ctx, baseAddress + pc + sizeof(uint), out var vop3pExtra2))
-                {
-                    error = $"vop3p-extra-read-failed pc=0x{pc:X}";
-                    return false;
-                }
-                return DecodeVop3p(word, vop3pExtra2, out name, out sizeDwords, out error);
+                encoding = Gen5ShaderEncoding.Smem;
+                return DecodeSmem(word, out name, out sizeDwords, out error);
             case 0x32:
                 encoding = Gen5ShaderEncoding.Vintrp;
                 return DecodeVintrp(word, out name, out sizeDwords, out error);

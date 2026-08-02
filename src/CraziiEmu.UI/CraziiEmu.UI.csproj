@@ -30,6 +30,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <ItemGroup>
     <ProjectReference Include="..\CraziiEmu.Core\CraziiEmu.Core.csproj" />
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
+    <ProjectReference Include="..\CraziiEmu.Libs\CraziiEmu.Libs.csproj" />
     <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
   </ItemGroup>
 

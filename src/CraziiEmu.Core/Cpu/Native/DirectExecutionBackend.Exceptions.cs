@@ -1311,24 +1311,7 @@ public sealed partial class DirectExecutionBackend
 
 	private static bool TryReadHostQword(ulong address, out ulong value)
 	{
-		if (!OperatingSystem.IsWindows())
-		{
-			// A stray read inside the signal handler would raise a nested
-			// SIGSEGV and kill the process before diagnostics finish, so
-			// probe the region table instead of relying on try/catch.
-			return TryReadStackU64(address, out value);
-		}
-
-		value = 0;
-		try
-		{
-			value = (ulong)Marshal.ReadInt64((nint)address);
-			return true;
-		}
-		catch
-		{
-			return false;
-		}
+		return TryReadStackU64(address, out value);
 	}
 
 	private unsafe static bool TryReadHostBytes(ulong address, byte[] buffer)
@@ -1338,18 +1321,18 @@ public sealed partial class DirectExecutionBackend
 			return false;
 		}
 
-		if (!OperatingSystem.IsWindows())
+		// Probe every touched page before reading.
+		// A stray read inside the VEH would raise a nested exception
+		// and kill the process with 'Invalid Program' before diagnostics finish,
+		// so probe the region table instead of relying on try/catch.
+		ulong end = address + (ulong)buffer.Length;
+		for (ulong page = address & 0xFFFFFFFFFFFFF000uL; page < end; page += 4096)
 		{
-			// See TryReadHostQword: probe every touched page before reading.
-			ulong end = address + (ulong)buffer.Length;
-			for (ulong page = address & 0xFFFFFFFFFFFFF000uL; page < end; page += 4096)
+			if (VirtualQuery((void*)page, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) == 0 ||
+				mbi.State != MEM_COMMIT ||
+				!IsReadableProtection(mbi.Protect))
 			{
-				if (VirtualQuery((void*)page, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) == 0 ||
-					mbi.State != MEM_COMMIT ||
-					!IsReadableProtection(mbi.Protect))
-				{
-					return false;
-				}
+				return false;
 			}
 		}
 

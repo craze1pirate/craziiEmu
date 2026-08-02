@@ -267,5 +267,7 @@ public static class VulkanVideoHost
 
     public static void RequestClose() => VulkanVideoPresenter.RequestClose();
 
+    public static void WaitForClose(int timeoutMilliseconds = -1) => VulkanVideoPresenter.WaitForClose(timeoutMilliseconds);
+
     public static bool IsEmbedded => VulkanVideoPresenter.UsesHostSurface;
 }

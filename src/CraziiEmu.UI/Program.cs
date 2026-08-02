@@ -17,9 +17,28 @@ internal static class Program
     public static int Main(string[] args)
     {
         args = CraziiEmu.Core.Runtime.WindowsMitigationHelper.NormalizeInternalArguments(args, out var isMitigatedChild);
+
         if (!isMitigatedChild && CraziiEmu.Core.Runtime.WindowsMitigationHelper.TryRunMitigatedChild(args, out var childExitCode))
         {
             return childExitCode;
+        }
+
+        if (args.Length >= 2 && args[0] == "--play-game")
+        {
+            try
+            {
+                var options = new CraziiEmu.Core.Runtime.CraziiEmuRuntimeOptions();
+                using var runtime = CraziiEmu.Core.Runtime.CraziiEmuRuntime.CreateDefault(options);
+                var result = runtime.Run(args[1]);
+                Console.WriteLine($"[Emulation] Finished with result: {result}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[CraziiEmu] Emulation Halted: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace ?? string.Empty);
+                return 1;
+            }
         }
 
         return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
