@@ -685,15 +685,9 @@ internal static class KernelSocketCompatExports
 
             return true;
         }
-        catch (SocketException)
+        catch (Exception)
         {
-            client.Dispose();
-            client = null!;
-            return false;
-        }
-        catch (IOException)
-        {
-            client.Dispose();
+            try { client.Dispose(); } catch { }
             client = null!;
             return false;
         }
