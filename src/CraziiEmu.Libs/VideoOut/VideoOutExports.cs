@@ -709,10 +709,13 @@ public static class VideoOutExports
             currentBuffer = unchecked((uint)port.CurrentBuffer);
         }
 
+        var processTimeTicks = (ulong)Stopwatch.GetTimestamp();
+        var processTimeMicros = processTimeTicks * 1_000_000UL / (ulong)Stopwatch.Frequency;
+
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x00, count);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, 0);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, 0);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, 0);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, processTimeMicros);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, processTimeTicks);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, processTimeTicks);
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x20, currentBuffer);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
