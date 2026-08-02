@@ -669,12 +669,8 @@ public static class KernelPthreadCompatExports
         {
             if (state.OwnerThreadId == currentThreadId)
             {
-                if (state.Type is MutexTypeRecursive or MutexTypeNormal or MutexTypeAdaptiveNp)
+                if (state.Type == MutexTypeRecursive)
                 {
-                    // Several Gen5 runtimes layer their own owner/count bookkeeping
-                    // over a NORMAL or ADAPTIVE kernel mutex. Returning EBUSY or EDEADLK here
-                    // leaves that guest bookkeeping out of sync with the HLE owner and
-                    // turns the wrapper into a permanent lock/unlock retry loop. Allow recursive lock.
                     state.RecursionCount++;
                     TracePthreadMutex(ctx, tryOnly ? "trylock" : "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
                     return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -686,8 +682,21 @@ public static class KernelPthreadCompatExports
                     return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
                 }
 
-                TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK);
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK;
+                if (state.Type is MutexTypeNormal or MutexTypeAdaptiveNp)
+                {
+                    // Several Gen5 runtimes layer their own owner/count bookkeeping
+                    // over a NORMAL or ADAPTIVE kernel mutex. Returning EBUSY or EDEADLK here
+                    // leaves that guest bookkeeping out of sync with the HLE owner and
+                    // turns the wrapper into a permanent lock/unlock retry loop. Allow recursive lock.
+                    state.RecursionCount++;
+                    TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_OK);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                }
+                else
+                {
+                    TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK;
+                }
             }
 
             // pthread_mutex_trylock succeeds whenever the mutex is not currently
