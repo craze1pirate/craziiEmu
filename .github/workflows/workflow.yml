@@ -163,11 +163,11 @@ jobs:
           notes="Automated CraziiEmu v${VERSION} build for commit ${GITHUB_SHA}."
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists and will not be modified." >&2
-            exit 1
+            echo "Release ${RELEASE_TAG} already exists; updating release assets..."
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" \
+              --verify-tag \
+              --title "${RELEASE_NAME}" \
+              --notes "${notes}"
           fi
-
-          gh release create "${RELEASE_TAG}" "${assets[@]}" \
-            --verify-tag \
-            --title "${RELEASE_NAME}" \
-            --notes "${notes}"
