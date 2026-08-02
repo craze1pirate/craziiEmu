@@ -144,23 +144,16 @@ public static class KernelSemaphoreCompatExports
 
         if (timeoutAddress != 0 && timeoutUsec == 0)
         {
-            var waitStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            while (System.Diagnostics.Stopwatch.GetTimestamp() - waitStart < System.Diagnostics.Stopwatch.Frequency)
+            lock (semaphore.Gate)
             {
-                GuestThreadExecution.Scheduler?.Pump(ctx, "sceKernelWaitSema_poll");
-                System.Threading.Thread.Sleep(1);
-
-                lock (semaphore.Gate)
+                if (semaphore.Count >= needCount)
                 {
-                    if (semaphore.Count >= needCount)
-                    {
-                        semaphore.Count -= needCount;
-                        _ = TryWriteUInt32(ctx, timeoutAddress, timeoutUsec);
-                        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
-                    }
+                    semaphore.Count -= needCount;
+                    _ = TryWriteUInt32(ctx, timeoutAddress, 0);
+                    return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
                 }
             }
-            
+
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
         }
 
