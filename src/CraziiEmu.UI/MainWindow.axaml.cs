@@ -1063,8 +1063,9 @@ public class ConsoleTextWriter : System.IO.TextWriter
         if (value != null)
         {
             var color = "White";
-            if (value.Contains("[ERROR]")) color = "Red";
-            else if (value.Contains("[WARNING]")) color = "Yellow";
+            if (value.Contains("[ERROR]") || value.Contains("[CRASH]") || value.Contains("[FATAL]")) color = "Red";
+            else if (value.Contains("[WARN]")) color = "Yellow";
+            else if (value.Contains("[TRACE]") || value.Contains("[DEBUG]")) color = "Gray";
 
             var line = new ConsoleLine { Text = value, Color = color };
             

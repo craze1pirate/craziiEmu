@@ -42,8 +42,9 @@ public class UiLogSink : ICraziiEmuLogSink
     {
         var color = entry.Level switch
         {
+            LogLevel.Error or LogLevel.Critical => "Red",
             LogLevel.Warning => "Yellow",
-            LogLevel.Error => "Red",
+            LogLevel.Trace or LogLevel.Debug => "Gray",
             _ => "White"
         };
 
