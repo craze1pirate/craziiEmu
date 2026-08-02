@@ -134,25 +134,4 @@ public static class KernelExceptionCompatExports
         ctx[CpuRegister.Rax] = unchecked((ulong)value);
         return value;
     }
-
-    [SysAbiExport(
-        Nid = "WkwEd3N7w0Y",
-        ExportName = "sceKernelInstallExceptionHandler",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int InstallExceptionHandlerUnity(CpuContext ctx) => InstallExceptionHandler(ctx);
-
-    [SysAbiExport(
-        Nid = "Qhv5ARAoOEc",
-        ExportName = "sceKernelRemoveExceptionHandler",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int RemoveExceptionHandlerUnity(CpuContext ctx) => RemoveExceptionHandler(ctx);
-
-    [SysAbiExport(
-        Nid = "il03nluKfMk",
-        ExportName = "sceKernelRaiseException",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int RaiseExceptionUnity(CpuContext ctx) => RaiseException(ctx);
 }
