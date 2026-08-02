@@ -44,7 +44,6 @@ public class UiLogSink : ICraziiEmuLogSink
         {
             LogLevel.Warning => "Yellow",
             LogLevel.Error => "Red",
-            LogLevel.Trace => "Gray",
             _ => "White"
         };
 

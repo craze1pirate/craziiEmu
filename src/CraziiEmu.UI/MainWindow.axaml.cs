@@ -40,8 +40,7 @@ public partial class MainWindow : Window
 
     private string? _selectedExecutablePath;
 
-    private Thread? _cpuThread;
-    private ICraziiEmuRuntime? _runtime;
+
     private readonly UiLogSink _logSink;
     private readonly ConcurrentQueue<ConsoleLine> _logQueue = new();
     private ushort _lastGamepadButtons;
@@ -82,6 +81,7 @@ public partial class MainWindow : Window
         Console.SetOut(consoleWriter);
         Console.SetError(consoleWriter);
 
+        BtnClearConsole.Click += OnBtnClearConsole;
         BtnCopyConsole.Click += OnBtnCopyConsole;
         BtnExportConsole.Click += OnBtnExportConsole;
 
@@ -105,6 +105,7 @@ public partial class MainWindow : Window
 
         // ── Action buttons ─────────────────────────────────────────────
         BtnPlay.Click += OnBtnPlay;
+        BtnStop.Click += OnBtnStop;
         BtnAddGameTop.Click += OnBtnAddGame;
         BtnAddGameEmpty.Click += OnBtnAddGame;
 
@@ -748,6 +749,8 @@ public partial class MainWindow : Window
     /// Handles the Play button: boots the emulation engine on background threads
     /// using CraziiEmuRuntime.
     /// </summary>
+    private System.Diagnostics.Process? _gameProcess;
+
     private void OnBtnPlay(object? sender, RoutedEventArgs e)
     {
         if (string.IsNullOrEmpty(_selectedExecutablePath))
@@ -756,52 +759,100 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_gameProcess is not null && !_gameProcess.HasExited)
+        {
+            AppendConsole("[Emulation] Game is already running.");
+            return;
+        }
+
         AppendConsole("[Emulation] Starting boot sequence…");
 
         try
         {
-            var options = new CraziiEmuRuntimeOptions
+            var processPath = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(processPath))
             {
-                // Can configure more options based on UI later if needed
+                AppendConsole("[Emulation] Boot failed: Could not determine executable path.");
+                return;
+            }
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = processPath,
+                Arguments = $"--play-game \"{_selectedExecutablePath}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
             };
 
-            _runtime?.Dispose();
-            _runtime = CraziiEmuRuntime.CreateDefault(options);
+            _gameProcess = new System.Diagnostics.Process { StartInfo = startInfo, EnableRaisingEvents = true };
 
-            _cpuThread = new Thread(() =>
+            _gameProcess.OutputDataReceived += (s, ev) => 
             {
-                try 
+                if (!string.IsNullOrEmpty(ev.Data))
                 {
+                    Dispatcher.UIThread.Post(() => AppendConsole(ev.Data, "#AAAAAA"));
+                }
+            };
 
-                    
-                    var result = _runtime.Run(_selectedExecutablePath);
-                    AppendConsole($"[Emulation] Finished with result: {result}");
-                }
-                catch (Exception ex) 
+            _gameProcess.ErrorDataReceived += (s, ev) => 
+            {
+                if (!string.IsNullOrEmpty(ev.Data))
                 {
-                    // Redirect the exception safely to our UI log sink instead of crashing the app
-                    CraziiEmuLog.For("CPU").Error($"[CraziiEmu] Emulation Halted: {ex.Message}");
-                    CraziiEmuLog.For("CPU").Error(ex.StackTrace ?? string.Empty);
+                    Dispatcher.UIThread.Post(() => AppendConsole(ev.Data, "#FFAAAA"));
                 }
-                finally
+            };
+
+            _gameProcess.Exited += (s, ev) =>
+            {
+                var exitCode = _gameProcess.ExitCode;
+                Dispatcher.UIThread.Post(() => 
                 {
-                    Dispatcher.UIThread.Post(() => 
+                    if (exitCode != 0)
                     {
-                        BtnPlay.IsEnabled = true;
-                    });
-                }
-            }) { IsBackground = true, Name = "CraziiEmu-CPU" };
-            _cpuThread.Start();
+                        AppendConsole($"[Emulation] Halted unexpectedly (Exit Code: {exitCode}).", "#FF5555");
+                    }
+                    else
+                    {
+                        AppendConsole("[Emulation] Finished successfully.");
+                    }
 
-            // Note: The UI display thread is no longer explicitly created here because 
-            // CraziiEmuRuntime natively spins up VulkanVideoPresenter automatically when AGC is invoked.
-            
-            BtnPlay.IsEnabled = false;
-            AppendConsole("[Emulation] Running.");
+                    BtnPlay.IsVisible = true;
+                    BtnStop.IsVisible = false;
+                    _gameProcess?.Dispose();
+                    _gameProcess = null;
+                });
+            };
+
+            _gameProcess.Start();
+            _gameProcess.BeginOutputReadLine();
+            _gameProcess.BeginErrorReadLine();
+
+            BtnPlay.IsVisible = false;
+            BtnStop.IsVisible = true;
+            ConsoleMessages.Clear();
+            AppendConsole("[Emulation] Running in sub-process.");
         }
         catch (Exception ex)
         {
             AppendConsole($"[Emulation] Boot failed: {ex.Message}");
+        }
+    }
+
+    private void OnBtnStop(object? sender, RoutedEventArgs e)
+    {
+        if (_gameProcess is not null && !_gameProcess.HasExited)
+        {
+            AppendConsole("[Emulation] Force terminating game...");
+            try
+            {
+                _gameProcess.Kill();
+            }
+            catch (Exception ex)
+            {
+                AppendConsole($"[Emulation] Failed to terminate game: {ex.Message}");
+            }
         }
     }
 
@@ -871,6 +922,11 @@ public partial class MainWindow : Window
             await topLevel.Clipboard.SetTextAsync(text);
             AppendConsole("[UI] Console logs copied to clipboard.", "#00FF00");
         }
+    }
+
+    private void OnBtnClearConsole(object? sender, RoutedEventArgs e)
+    {
+        ConsoleMessages.Clear();
     }
 
     private async void OnBtnExportConsole(object? sender, RoutedEventArgs e)
@@ -981,7 +1037,14 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         base.OnClosed(e);
-        _runtime?.Dispose();
+        try
+        {
+            if (_gameProcess is not null && !_gameProcess.HasExited)
+            {
+                _gameProcess.Kill();
+            }
+        }
+        catch { }
     }
 }
 
@@ -999,10 +1062,9 @@ public class ConsoleTextWriter : System.IO.TextWriter
     {
         if (value != null)
         {
-            var color = "Gray";
+            var color = "White";
             if (value.Contains("[ERROR]")) color = "Red";
             else if (value.Contains("[WARNING]")) color = "Yellow";
-            else if (value.Contains("[INFO]")) color = "White";
 
             var line = new ConsoleLine { Text = value, Color = color };
             
