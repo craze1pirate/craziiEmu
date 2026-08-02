@@ -115,7 +115,7 @@ When opening an issue, please provide your **Build Version**, **OS/Hardware Spec
 ## Acknowledgements
 Special thanks to the following projects for making this possible:
 - **[SharpEmu](https://github.com/par274/sharpemu)** — The core architecture, rendering, and HLE foundation that craziiEmu is built on top of.
-- **[KyTyPS5](https://github.com/KytyPS5/KytyPS5)** — Invaluable reference that helped us understand how certain game engines work and provided guidance for NID implementations.
+- **[KyTyPS5](https://github.com/KytyPS5/KytyPS5)** —  Helped me to understand how certain game engines work and provided guidance for NID implementations.
 - **[shadPS4](https://github.com/shadps4-emu/shadPS4)** — An invaluable reference for PlayStation 5 kernel and shared library behaviors.
 - **[Ryujinx](https://github.com/Ryujinx/Ryujinx)** — Inspiration for high-performance C# runtime and systems programming techniques.
 
