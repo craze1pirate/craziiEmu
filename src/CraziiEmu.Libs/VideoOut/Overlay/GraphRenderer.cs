@@ -8,7 +8,24 @@ namespace CraziiEmu.Libs.VideoOut.Overlay;
 
 public static class GraphRenderer
 {
-    public static void EmitGraph(
+    public static void EmitOutlineBox(
+        float x, float y, float w, float h,
+        uint color,
+        List<OverlayVertex> vertices,
+        List<uint> indices)
+    {
+        float border = 1.0f;
+        // Top
+        EmitSolidRect(x, y, w, border, color, vertices, indices);
+        // Bottom
+        EmitSolidRect(x, y + h - border, w, border, color, vertices, indices);
+        // Left
+        EmitSolidRect(x, y, border, h, color, vertices, indices);
+        // Right
+        EmitSolidRect(x + w - border, y, border, h, color, vertices, indices);
+    }
+
+    public static void EmitLineGraph(
         ReadOnlySpan<float> history,
         float startX,
         float startY,
@@ -25,52 +42,76 @@ public static class GraphRenderer
             return;
         }
 
-        // Adjust max to prevent div by zero
         if (maxVal <= minVal)
         {
             maxVal = minVal + 1.0f;
         }
-        
-        float range = maxVal - minVal;
-        float stepX = width / history.Length;
 
-        // Draw as a solid bar chart for simplicity
-        for (int i = 0; i < history.Length; i++)
+        float range = maxVal - minVal;
+        int stride = Math.Max(1, history.Length / 75);
+        float stepX = width / (history.Length / (float)stride);
+        float prevX = startX;
+        float prevY = startY + height - Math.Clamp((history[0] - minVal) / range, 0f, 1f) * height;
+
+        int stepIdx = 1;
+        for (int i = stride; i < history.Length; i += stride, stepIdx++)
         {
             float val = history[i];
             float normalized = Math.Clamp((val - minVal) / range, 0.0f, 1.0f);
-            
-            float barHeight = normalized * height;
-            float px0 = startX + i * stepX;
-            float px1 = px0 + stepX * 0.9f; // Small gap between bars
-            float py0 = startY + height - barHeight;
-            float py1 = startY + height;
+            float currX = startX + stepIdx * stepX;
+            float currY = startY + height - (normalized * height);
 
-            uint baseIndex = (uint)vertices.Count;
+            EmitLineSegment(prevX, prevY, currX, prevY, 1.5f, color, vertices, indices);
+            EmitLineSegment(currX, prevY, currX, currY, 1.5f, color, vertices, indices);
 
-            // UV mapped to a solid white pixel on the font atlas (assuming white borders exist or we can pass a untextured quad pipeline).
-            // For now, map UV to 0,0 where we assume there's a solid pixel or the shader handles untextured quads (e.g. UV = -1, -1).
-            // A common trick is to map to the top-left pixel of a solid block. 
-            // In our dummy atlas, border pixels are 255 (white). We can just use U=0, V=0.
-            float u = 0.0f;
-            float v = 0.0f;
-
-            // Top-Left
-            vertices.Add(new OverlayVertex { X = px0, Y = py0, U = u, V = v, ColorRgba = color });
-            // Top-Right
-            vertices.Add(new OverlayVertex { X = px1, Y = py0, U = u, V = v, ColorRgba = color });
-            // Bottom-Right
-            vertices.Add(new OverlayVertex { X = px1, Y = py1, U = u, V = v, ColorRgba = color });
-            // Bottom-Left
-            vertices.Add(new OverlayVertex { X = px0, Y = py1, U = u, V = v, ColorRgba = color });
-
-            // Triangles
-            indices.Add(baseIndex + 0);
-            indices.Add(baseIndex + 1);
-            indices.Add(baseIndex + 2);
-            indices.Add(baseIndex + 0);
-            indices.Add(baseIndex + 2);
-            indices.Add(baseIndex + 3);
+            prevX = currX;
+            prevY = currY;
         }
     }
+
+    private static void EmitLineSegment(
+        float x0, float y0, float x1, float y1,
+        float thickness,
+        uint color,
+        List<OverlayVertex> vertices,
+        List<uint> indices)
+    {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float length = MathF.Sqrt(dx * dx + dy * dy);
+        if (length <= 0.0001f) return;
+
+        float nx = -dy / length * (thickness * 0.5f);
+        float ny = dx / length * (thickness * 0.5f);
+
+        uint baseIndex = (uint)vertices.Count;
+        vertices.Add(new OverlayVertex { X = x0 + nx, Y = y0 + ny, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x1 + nx, Y = y1 + ny, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x1 - nx, Y = y1 - ny, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x0 - nx, Y = y0 - ny, U = 0, V = 0, ColorRgba = color });
+
+        indices.Add(baseIndex + 0);
+        indices.Add(baseIndex + 1);
+        indices.Add(baseIndex + 2);
+        indices.Add(baseIndex + 0);
+        indices.Add(baseIndex + 2);
+        indices.Add(baseIndex + 3);
+    }
+
+    private static void EmitSolidRect(float x, float y, float w, float h, uint color, List<OverlayVertex> vertices, List<uint> indices)
+    {
+        uint baseIndex = (uint)vertices.Count;
+        vertices.Add(new OverlayVertex { X = x, Y = y, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x + w, Y = y, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x + w, Y = y + h, U = 0, V = 0, ColorRgba = color });
+        vertices.Add(new OverlayVertex { X = x, Y = y + h, U = 0, V = 0, ColorRgba = color });
+
+        indices.Add(baseIndex + 0);
+        indices.Add(baseIndex + 1);
+        indices.Add(baseIndex + 2);
+        indices.Add(baseIndex + 0);
+        indices.Add(baseIndex + 2);
+        indices.Add(baseIndex + 3);
+    }
 }
+

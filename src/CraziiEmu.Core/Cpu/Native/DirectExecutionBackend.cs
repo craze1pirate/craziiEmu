@@ -4661,7 +4661,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		if (!context.TryWriteUInt64(tlsBase - 0xF0, 0) ||
 			!context.TryWriteUInt64(tlsBase + 0x00, tlsBase) ||
 			!context.TryWriteUInt64(tlsBase + 0x10, threadHandle) ||
-			!context.TryWriteUInt64(tlsBase + 0x28, 0xC0DEC0DECAFEBA00UL) ||
+			!context.TryWriteUInt64(tlsBase + 0x28, 0) ||
 			!context.TryWriteUInt64(tlsBase + 0x60, tlsBase))
 		{
 			return false;

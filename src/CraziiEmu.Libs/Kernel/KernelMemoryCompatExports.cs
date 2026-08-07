@@ -54,6 +54,7 @@ public static partial class KernelMemoryCompatExports
     private const ulong DirectMemorySizeBytes = 16384UL * 1024 * 1024;
     private const ulong UnsetMainDirectMemoryPoolBase = ulong.MaxValue;
     private const ulong FlexibleMemorySizeBytes = 448UL * 1024 * 1024;
+    private const ulong PrtAreaStartAddress = 0x0000001000000000UL;
     private const int OrbisVirtualQueryInfoSize = 72;
     private const int OrbisKernelMaximumNameLength = 32;
     private const uint MemCommit = 0x1000;
@@ -3299,7 +3300,7 @@ public static partial class KernelMemoryCompatExports
     public static int KernelDirectMemoryQuery(CpuContext ctx)
     {
         var offset = ctx[CpuRegister.Rdi];
-        _ = ctx[CpuRegister.Rsi]; // flags
+        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
         var infoAddress = ctx[CpuRegister.Rdx];
         var infoSize = ctx[CpuRegister.Rcx];
         if (infoAddress == 0 || infoSize < 24)
@@ -3319,6 +3320,18 @@ public static partial class KernelMemoryCompatExports
                 if (!ctx.TryWriteUInt64(infoAddress, block.Start) ||
                     !ctx.TryWriteUInt64(infoAddress + sizeof(ulong), block.Start + block.Length) ||
                     !TryWriteInt32(ctx, infoAddress + (sizeof(ulong) * 2), block.MemoryType))
+                {
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            if (flags == 1 && offset < DirectMemorySizeBytes)
+            {
+                if (!ctx.TryWriteUInt64(infoAddress, DirectMemorySizeBytes) ||
+                    !ctx.TryWriteUInt64(infoAddress + sizeof(ulong), DirectMemorySizeBytes) ||
+                    !TryWriteInt32(ctx, infoAddress + (sizeof(ulong) * 2), 0))
                 {
                     return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
                 }

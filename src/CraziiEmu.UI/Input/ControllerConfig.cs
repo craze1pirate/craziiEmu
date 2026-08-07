@@ -49,8 +49,8 @@ public class ControllerConfig
         Bindings[PsControllerButton.Create] = 0x08; // Backspace
         Bindings[PsControllerButton.PsButton] = 0x24; // Home
 
-        if (!Bindings.ContainsKey(PsControllerButton.L3)) Bindings[PsControllerButton.L3] = 0x43; // C
-        if (!Bindings.ContainsKey(PsControllerButton.R3)) Bindings[PsControllerButton.R3] = 0x56; // V
+        Bindings[PsControllerButton.L3] = 0xA2; // LCtrl
+        Bindings[PsControllerButton.R3] = 0x56; // V
     }
 
     /// <summary>

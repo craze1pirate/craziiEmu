@@ -446,6 +446,18 @@ public partial class MainWindow : Window
             var vk = ControllerConfig.KeyToVirtualKey(e.Key);
             if (vk != 0) ApplyBinding(vk);
             e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F4)
+        {
+            ChkConsoleVisible.IsChecked = !(ChkConsoleVisible.IsChecked == true);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.F3)
+        {
+            CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.CycleMode();
+            e.Handled = true;
         }
     }
 

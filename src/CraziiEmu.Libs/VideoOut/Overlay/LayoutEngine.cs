@@ -18,58 +18,63 @@ public enum OverlayPosition
 public static class LayoutEngine
 {
     public const float Margin = 10f;
-    public const float Padding = 10f;
-    public const float LineHeight = 20f;
-    public const float GraphHeight = 40f;
-    public const float GraphWidth = 200f;
+    public const float Padding = 12f;
+    public const float LineHeight = 22f;
 
     public static (float X, float Y, float Width, float Height) ComputeLayout(
-        IReadOnlyList<MetricDescriptor> metrics, 
-        OverlayPosition position, 
-        float viewportWidth, 
+        OverlayMode mode,
+        OverlayPosition position,
+        float viewportWidth,
         float viewportHeight)
     {
-        // Calculate total content height and width
-        float totalHeight = Padding * 2;
-        float maxWidth = 250f; // Fixed minimum width for aesthetics
+        float width = 320f;
+        float height = Padding * 2;
 
-        MetricCategory? lastCategory = null;
-
-        foreach (var metric in metrics)
+        switch (mode)
         {
-            if (lastCategory != metric.Category)
-            {
-                // Add spacing for category header
-                totalHeight += LineHeight;
-                lastCategory = metric.Category;
-            }
+            case OverlayMode.Minimal:
+                // Frame time line + box graph + Frames line + box graph
+                height += (LineHeight + 28f + 6f) * 2;
+                break;
 
-            totalHeight += LineHeight;
-            if (metric.HistoryBuffer is null)
-            {
-                // Just text
-            }
-            else
-            {
-                // Text + Graph
-                totalHeight += GraphHeight;
-            }
+            case OverlayMode.Standard:
+                // Minimal (Frametime + Frames + 2 graphs) + GPU + VRAM + RAM + CPU
+                height += (LineHeight + 28f + 6f) * 2;
+                height += LineHeight * 4 + 16f;
+                break;
+
+            case OverlayMode.Detailed:
+                // Frame time + Box Graph (28px) + Frames + Box Graph (28px)
+                height += LineHeight * 2 + (28f + 6f) * 2 + 14f;
+                // GPU + VRAM + GPU Power + CPU + RAM + SSD R/W
+                height += LineHeight * 6 + 14f;
+                // Draw Calls + Guest Workers + Blocked Workers + SPIR-V Compiles
+                height += LineHeight * 4 + 14f;
+                // GPU Device Name footer
+                height += LineHeight + 4f;
+                break;
+
+            default:
+                width = 0;
+                height = 0;
+                break;
         }
 
-        // Anchor
         float startX = Margin;
         float startY = Margin;
 
         if (position == OverlayPosition.TopRight || position == OverlayPosition.BottomRight)
         {
-            startX = viewportWidth - maxWidth - Margin;
+            startX = viewportWidth - width - Margin;
         }
 
         if (position == OverlayPosition.BottomLeft || position == OverlayPosition.BottomRight)
         {
-            startY = viewportHeight - totalHeight - Margin;
+            startY = viewportHeight - height - Margin;
         }
 
-        return (startX, startY, maxWidth, totalHeight);
+        return (startX, startY, width, height);
     }
 }
+
+

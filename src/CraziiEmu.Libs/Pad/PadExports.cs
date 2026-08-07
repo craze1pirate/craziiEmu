@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
+using CraziiEmu.HLE.Configuration;
 using CraziiEmu.HLE.Host;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -113,8 +114,9 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorDeviceNoHandle);
         }
 
-        var typeAccepted = extended ? type is 0 or 1 or 2 : type == StandardPortType;
-        if (userId != PrimaryUserId || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
+        var typeAccepted = type is 0 or 1 or 2 or 16;
+        var validUser = userId == PrimaryUserId || userId == 0x01000000 || userId > 0;
+        if (!validUser || !typeAccepted || index != 0)
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
@@ -123,9 +125,10 @@ public static class PadExports
         input.EnsureStarted();
         if (Interlocked.Exchange(ref _controlsAnnouncementLogged, 1) == 0)
         {
+            var config = CraziiEmuConfig.Instance.Input;
             Console.Error.WriteLine(input.DescribeConnectedGamepad() is { } gamepadName
-                ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback also active)."
-                : "[LOADER][INFO] Keyboard controls: Arrow keys = D-pad, WASD = left stick, IJKL = right stick, Z/Enter = Cross, X/Esc = Circle, C = Square, V = Triangle, Q = L1, E = R1, R = L2, F = R2, Tab/Backspace = Options. A DualSense or Xbox controller will be used automatically when plugged in.");
+                ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback active)."
+                : $"[LOADER][INFO] Active controls: Cross={VkName(config.Cross)}, Circle={VkName(config.Circle)}, Square={VkName(config.Square)}, Triangle={VkName(config.Triangle)}, L1={VkName(config.L1)}, R1={VkName(config.R1)}, L2={VkName(config.L2)}, R2={VkName(config.R2)}, Options={VkName(config.Options)}.");
         }
 
         return ctx.SetReturn(PrimaryPadHandle);
@@ -631,4 +634,19 @@ public static class PadExports
         const int Deadzone = 10;
         return Math.Abs(controller - 128) > Deadzone ? controller : keyboard;
     }
+
+    private static string VkName(int vk) => vk switch
+    {
+        InputMap.MouseLeft => "MouseLeft",
+        InputMap.MouseRight => "MouseRight",
+        InputMap.MouseMiddle => "MouseMiddle",
+        0x0D => "Enter",
+        0x1B => "Esc",
+        0x20 => "Space",
+        0x09 => "Tab",
+        0x08 => "Backspace",
+        _ when vk >= 0x41 && vk <= 0x5A => ((char)vk).ToString(),
+        _ when vk >= 0x30 && vk <= 0x39 => ((char)vk).ToString(),
+        _ => $"0x{vk:X2}"
+    };
 }

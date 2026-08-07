@@ -11524,4 +11524,162 @@ public static partial class AgcExports
             $"param=0x{(uint)ctx[CpuRegister.Rsi]:X8}");
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
+
+    [SysAbiExport(
+        Nid = "dbOlWdppb4o",
+        ExportName = "Graphics5UnknownDb",
+        Target = Generation.Gen5,
+        LibraryName = "libSceGraphics5")]
+    public static int Graphics5UnknownDb(CpuContext ctx)
+    {
+        var outPtr = ctx[CpuRegister.Rdi];
+        var descPtr = ctx[CpuRegister.Rsi];
+        var srcPtr = ctx[CpuRegister.Rdx];
+
+        if (outPtr == 0)
+        {
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        static void WriteDefault(CpuContext ctx, ulong outPtr, uint first)
+        {
+            const ulong defaultEntry = 0x10000000UL;
+            for (uint i = first; i < 32u; i++)
+            {
+                uint low = (uint)defaultEntry + i;
+                uint high = (uint)(defaultEntry >> 37) * 32u + i;
+                ulong entry = ((ulong)high << 32) | low;
+                _ = ctx.TryWriteUInt64(outPtr + (i * 8u), entry);
+            }
+        }
+
+        if (srcPtr == 0)
+        {
+            WriteDefault(ctx, outPtr, 0);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        if (!ctx.TryReadUInt32(srcPtr + 0x50, out var count) || count == 0)
+        {
+            WriteDefault(ctx, outPtr, 0);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        if (!ctx.TryReadUInt16(descPtr + 0x56, out var maskCount) ||
+            !ctx.TryReadUInt64(descPtr + 0x38, out var masksPtr) ||
+            !ctx.TryReadUInt64(srcPtr + 0x30, out var srcEntriesPtr))
+        {
+            WriteDefault(ctx, outPtr, 0);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        uint actualCount = Math.Min(count, 32u);
+        for (uint i = 0; i < actualCount; i++)
+        {
+            if (!ctx.TryReadUInt32(srcEntriesPtr + (i * 4u), out var srcValue))
+            {
+                break;
+            }
+
+            uint maskIndex = (uint)maskCount;
+            uint maskVal = 0;
+
+            for (uint j = 0; j < maskCount; j++)
+            {
+                if (ctx.TryReadUInt32(masksPtr + (j * 4u), out var mVal))
+                {
+                    if (((byte)mVal ^ (byte)srcValue) == 0)
+                    {
+                        maskIndex = j;
+                        maskVal = mVal;
+                        break;
+                    }
+                }
+            }
+
+            bool hasMask = maskIndex < maskCount;
+            uint mode = (srcValue >> 20) & 0x3u;
+            uint flags = 0;
+
+            if (mode == 0)
+            {
+                flags = (((srcValue >> 24) & 0x1u) | (hasMask ? 0u : 1u)) << 5;
+                flags = ApplyTwoBitField(flags, (srcValue >> 28) & 0x3u, 8);
+            }
+            else
+            {
+                uint shiftedMode = (srcValue << 4) & 0x03000000u;
+                flags = shiftedMode + 0x80000u;
+
+                if (mode == 2)
+                {
+                    flags &= 0xFFEFFFDFu;
+                    if (hasMask)
+                    {
+                        flags |= ((~(maskVal & srcValue) >> 16) & 0x20u);
+                    }
+                    else
+                    {
+                        flags |= 0x20u;
+                    }
+                    flags = ApplyTwoBitField(flags, (srcValue >> 30) & 0x3u, 8);
+                    flags = ApplyTwoBitField(flags, (srcValue >> 30) & 0x3u, 21);
+                }
+                else
+                {
+                    if (hasMask)
+                    {
+                        uint masked = maskVal & srcValue;
+                        flags &= 0xFFFFFFDFu;
+                        flags |= (masked >> 15) & 0x20u;
+                        flags ^= 0x20u;
+                        flags &= 0xFFEFFFFFu;
+                        flags |= ((~masked >> 1) & 0x100000u);
+                        flags = ApplyTwoBitField(flags, (srcValue >> 30) & 0x3u, 8);
+                    }
+                    else
+                    {
+                        flags |= 0x100020u;
+                        flags = ApplyTwoBitField(flags, (srcValue >> 28) & 0x3u, 8);
+                    }
+                    flags = ApplyTwoBitField(flags, (srcValue >> 30) & 0x3u, 21);
+                }
+            }
+
+            if (hasMask)
+            {
+                flags &= 0xFFFFFFE0u;
+                flags |= (maskVal >> 8) & 0x1Fu;
+                flags &= 0xFFFFFBFDu;
+                flags |= (srcValue & 0x400000u) != 0 ? 0x400u : ((srcValue >> 14) & 0x400u);
+            }
+            else
+            {
+                flags &= 0xFFFFFBE0u;
+            }
+
+            ulong finalEntry = ((ulong)flags << 32) | (0x10000000u + i);
+            _ = ctx.TryWriteUInt64(outPtr + (i * 8u), finalEntry);
+        }
+
+        if (actualCount < 32u)
+        {
+            WriteDefault(ctx, outPtr, actualCount);
+        }
+
+        TraceAgc($"agc.graphics5_unknown_db out=0x{outPtr:X16} count={count}");
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    private static uint ApplyTwoBitField(uint value, uint field, int shift)
+    {
+        uint mask = 0x3u << shift;
+        return (field & 0x3u) switch
+        {
+            0 => value & ~mask,
+            1 => (value & ~mask) | (0x1u << shift),
+            2 => (value & ~mask) | (0x2u << shift),
+            _ => value | mask,
+        };
+    }
 }

@@ -195,6 +195,13 @@ public partial class ConfigWindow : Window
             var vk = ControllerConfig.KeyToVirtualKey(e.Key);
             if (vk != 0) ApplyBinding(vk);
             e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F4)
+        {
+            ChkConsoleVisible.IsChecked = !(ChkConsoleVisible.IsChecked == true);
+            e.Handled = true;
         }
     }
 

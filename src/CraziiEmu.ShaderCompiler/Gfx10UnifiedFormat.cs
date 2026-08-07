@@ -131,9 +131,16 @@ public static class Gfx10UnifiedFormat
             180 => (180u, 7u),
             181 => (181u, 0u),
             182 => (182u, 9u),
-            _ => (0u, 0u),
+            // Any reserved or firmware-private encoding not listed above is
+            // treated as BUF_DATA_FORMAT_32 / BUF_NUM_FORMAT_UINT (raw uint32).
+            // On RDNA2 the hardware executes these buffer instructions using
+            // 32-bit raw load/store semantics. Returning (0, 0) here caused
+            // TryDecodeBufferDescriptor to fail and the draw to be silently
+            // dropped, leaving render targets unwritten and producing flashy /
+            // corrupted visuals in games like Void Terrarium.
+            _ => (1u, 0u),
         };
 
-        return unifiedFormat == 0 || dataFormat != 0;
+        return true;
     }
 }

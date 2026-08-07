@@ -1316,10 +1316,7 @@ public static class KernelPthreadExtendedCompatExports
         var key = unchecked((int)ctx[CpuRegister.Rdi]);
         var value = ctx[CpuRegister.Rsi];
         var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle();
-        if (!_tlsKeys.ContainsKey(key))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-        }
+        _tlsKeys.TryAdd(key, new TlsKeyState(0));
 
         var values = _threadLocalSpecific.GetOrAdd(
             currentThreadHandle,
@@ -1346,11 +1343,6 @@ public static class KernelPthreadExtendedCompatExports
         var key = unchecked((int)ctx[CpuRegister.Rdi]);
         var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle();
         ulong value = 0;
-        if (!_tlsKeys.ContainsKey(key))
-        {
-            ctx[CpuRegister.Rax] = 0;
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
 
         if (_threadLocalSpecific.TryGetValue(currentThreadHandle, out var values) &&
             values.TryGetValue(key, out var storedValue))

@@ -2785,9 +2785,12 @@ internal static unsafe class VulkanVideoPresenter
         private ulong _stagingSize;
         // Perf overlay: CPU-rasterized panel copied through per-slot staging
         // buffers into one image, then blitted onto the swapchain.
+        private const ulong OverlayMaxBufferSize = 512 * 512 * 4;
+        private readonly List<CraziiEmu.Libs.VideoOut.Overlay.OverlayVertex> _overlayVertices = new();
+        private readonly List<uint> _overlayIndices = new();
         private Image _overlayImage;
         private DeviceMemory _overlayImageMemory;
-private VkBuffer[] _overlayStagingBuffers = [];
+        private VkBuffer[] _overlayStagingBuffers = [];
         private DeviceMemory[] _overlayStagingMemory = [];
         private nint[] _overlayStagingMapped = [];
         private long _presentedSequence;
@@ -3844,6 +3847,28 @@ private VkBuffer[] _overlayStagingBuffers = [];
         private void LoadComputeDeviceLimits()
         {
             _vk.GetPhysicalDeviceProperties(_physicalDevice, out var properties);
+            try
+            {
+                byte* namePtr = properties.DeviceName;
+                string gpuName = Marshal.PtrToStringAnsi((IntPtr)namePtr) ?? "";
+                CraziiEmu.Libs.Metrics.MetricsManager.GpuDeviceName = gpuName;
+
+                _vk.GetPhysicalDeviceMemoryProperties(_physicalDevice, out var memProps);
+                ulong totalVram = 0;
+                for (uint i = 0; i < memProps.MemoryHeapCount; i++)
+                {
+                    if ((memProps.MemoryHeaps[(int)i].Flags & MemoryHeapFlags.DeviceLocalBit) != 0)
+                    {
+                        totalVram += memProps.MemoryHeaps[(int)i].Size;
+                    }
+                }
+                if (totalVram > 0)
+                {
+                    CraziiEmu.Libs.Metrics.MetricsManager.VramTotalGB = totalVram / (1024.0 * 1024.0 * 1024.0);
+                }
+            }
+            catch { }
+
             var subgroupSizeControl = new PhysicalDeviceSubgroupSizeControlProperties
             {
                 SType = StructureType.PhysicalDeviceSubgroupSizeControlProperties,
@@ -4416,9 +4441,115 @@ private VkBuffer[] _overlayStagingBuffers = [];
             CreateOverlayResources();
         }
 
-        private void CreateOverlayResources() { }
+        private unsafe void CreateOverlayResources()
+        {
+            _overlayStagingBuffers = new VkBuffer[MaxFramesInFlight];
+            _overlayStagingMemory = new DeviceMemory[MaxFramesInFlight];
+            _overlayStagingMapped = new nint[MaxFramesInFlight];
 
-        private void RecordOverlayBlit(uint imageIndex, int frameSlot) { }
+            for (int slot = 0; slot < MaxFramesInFlight; slot++)
+            {
+                _overlayStagingBuffers[slot] = CreateBuffer(
+                    OverlayMaxBufferSize,
+                    BufferUsageFlags.TransferSrcBit,
+                    MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit,
+                    out _overlayStagingMemory[slot]);
+
+                void* mapped;
+                Check(_vk.MapMemory(_device, _overlayStagingMemory[slot], 0, OverlayMaxBufferSize, 0, &mapped), "vkMapMemory(overlay)");
+                _overlayStagingMapped[slot] = (nint)mapped;
+            }
+        }
+
+        private unsafe void RecordOverlayBlit(uint imageIndex, int frameSlot)
+        {
+            if (CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode == CraziiEmu.Libs.VideoOut.Overlay.OverlayMode.Off)
+            {
+                return;
+            }
+
+            var (startX, startY, width, height) = CraziiEmu.Libs.VideoOut.Overlay.LayoutEngine.ComputeLayout(
+                CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode,
+                CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Position,
+                _extent.Width,
+                _extent.Height);
+
+            int panelW = Math.Clamp((int)MathF.Ceiling(width), 1, 512);
+            int panelH = Math.Clamp((int)MathF.Ceiling(height), 1, 512);
+            int dstX = Math.Clamp((int)startX, 0, Math.Max(0, (int)_extent.Width - panelW));
+            int dstY = Math.Clamp((int)startY, 0, Math.Max(0, (int)_extent.Height - panelH));
+
+            byte* destPtr = (byte*)_overlayStagingMapped[frameSlot];
+            Span<uint> panelPixels = new Span<uint>(destPtr, panelW * panelH);
+
+            CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.RenderToBuffer(panelPixels, panelW, panelH);
+
+            var toTransfer = new ImageMemoryBarrier
+            {
+                SType = StructureType.ImageMemoryBarrier,
+                SrcAccessMask = AccessFlags.MemoryReadBit,
+                DstAccessMask = AccessFlags.TransferWriteBit,
+                OldLayout = ImageLayout.PresentSrcKhr,
+                NewLayout = ImageLayout.TransferDstOptimal,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = _swapchainImages[imageIndex],
+                SubresourceRange = ColorSubresourceRange(),
+            };
+
+            _vk.CmdPipelineBarrier(
+                _commandBuffer,
+                PipelineStageFlags.BottomOfPipeBit,
+                PipelineStageFlags.TransferBit,
+                0,
+                0, null,
+                0, null,
+                1, &toTransfer);
+
+            var copyRegion = new BufferImageCopy
+            {
+                BufferOffset = 0,
+                BufferRowLength = (uint)panelW,
+                BufferImageHeight = (uint)panelH,
+                ImageSubresource = new ImageSubresourceLayers
+                {
+                    AspectMask = ImageAspectFlags.ColorBit,
+                    LayerCount = 1,
+                },
+                ImageOffset = new Offset3D(dstX, dstY, 0),
+                ImageExtent = new Extent3D((uint)panelW, (uint)panelH, 1),
+            };
+
+            _vk.CmdCopyBufferToImage(
+                _commandBuffer,
+                _overlayStagingBuffers[frameSlot],
+                _swapchainImages[imageIndex],
+                ImageLayout.TransferDstOptimal,
+                1,
+                &copyRegion);
+
+            var toPresent = new ImageMemoryBarrier
+            {
+                SType = StructureType.ImageMemoryBarrier,
+                SrcAccessMask = AccessFlags.TransferWriteBit,
+                DstAccessMask = AccessFlags.MemoryReadBit,
+                OldLayout = ImageLayout.TransferDstOptimal,
+                NewLayout = ImageLayout.PresentSrcKhr,
+                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+                Image = _swapchainImages[imageIndex],
+                SubresourceRange = ColorSubresourceRange(),
+            };
+
+            _vk.CmdPipelineBarrier(
+                _commandBuffer,
+                PipelineStageFlags.TransferBit,
+                PipelineStageFlags.BottomOfPipeBit,
+                0,
+                0, null,
+                0, null,
+                1, &toPresent);
+        }
 
         private CommandBuffer AllocateGuestCommandBuffer()
         {
@@ -11829,6 +11960,8 @@ private VkBuffer[] _overlayStagingBuffers = [];
             return view;
         }
 
+        private long _lastPresenterFrameTimestamp;
+
         private ImageView GetOrCreateGuestImageIdentityView(
             GuestImageResource resource,
             Format format,
@@ -11905,7 +12038,16 @@ private VkBuffer[] _overlayStagingBuffers = [];
                 System.Threading.Monitor.Wait(_gate, gpuWorkInFlight ? 1 : 8);
             }
         }
-private void PollPerfOverlayHotkey() { }
+private bool _f3WasDown;
+private void PollPerfOverlayHotkey()
+{
+    bool f3Down = Pad.HostWindowInput.IsKeyDown(Silk.NET.Input.Key.F3);
+    if (f3Down && !_f3WasDown)
+    {
+        VideoOut.Overlay.OverlayRenderer.CycleMode();
+    }
+    _f3WasDown = f3Down;
+}
 
         private void Render(double _)
         {
@@ -12376,6 +12518,7 @@ private void PollPerfOverlayHotkey() { }
                     $"Unsupported translated guest draw: {presentation.DrawKind}.");
             }
 
+            RecordOverlayBlit(imageIndex, frameSlot);
             Check(_vk.EndCommandBuffer(_commandBuffer), "vkEndCommandBuffer");
 
             var imageAvailable = _frameImageAvailable[frameSlot];
@@ -12430,7 +12573,19 @@ private void PollPerfOverlayHotkey() { }
             CheckSwapchainResult(presentResult, "vkQueuePresentKHR");
             recreateAfterPresent |= presentResult == Result.SuboptimalKhr;
             VideoOutExports.ReportPresentedFrame();
-            
+
+            long frameNow = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (_lastPresenterFrameTimestamp > 0)
+            {
+                double deltaMs = (frameNow - _lastPresenterFrameTimestamp) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                if (deltaMs > 0.1)
+                {
+                    CraziiEmu.Libs.Metrics.MetricsManager.Frametime.Update(deltaMs);
+                    CraziiEmu.Libs.Metrics.MetricsManager.Fps.Update(1000.0 / deltaMs);
+                }
+            }
+            _lastPresenterFrameTimestamp = frameNow;
+
             VideoOutExports.CompleteFlip(presentation.VideoOutHandle, presentation.FlipArg);
             
             if (_hostSurface is not null && !_firstHostFramePresented)

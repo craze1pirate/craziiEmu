@@ -25,9 +25,19 @@ public static class MetricsManager
     public static MetricDescriptor GuestWorkerThreads { get; }
     public static MetricDescriptor GuestBlockedThreads { get; }
 
-    private static readonly Process _currentProcess = Process.GetCurrentProcess();
-    private static TimeSpan _lastCpuTime = _currentProcess.TotalProcessorTime;
-    private static long _lastCpuCheckTimestamp = Stopwatch.GetTimestamp();
+    // Live Telemetry Values (Updated by SystemTelemetrySampler async thread)
+    public static double CpuUsagePercent { get; set; } = 0;
+    public static float CpuFreqMHz { get; set; } = 3600;
+    public static double RamUsedGB { get; set; } = 0;
+    public static double SsdReadWriteMBs { get; set; } = 0;
+
+    public static float GpuTempC { get; set; } = 0;
+    public static float GpuClockMHz { get; set; } = 0;
+    public static float GpuLoadPercent { get; set; } = 0;
+    public static float GpuPowerW { get; set; } = 0;
+    public static double VramUsedGB { get; set; } = 0;
+    public static double VramTotalGB { get; set; } = 0;
+    public static string GpuDeviceName { get; set; } = "";
 
     static MetricsManager()
     {
@@ -38,9 +48,9 @@ public static class MetricsManager
             TryFormatFloat1(MetricsManager.Frametime.CurrentValue, dest, out written, " ms"));
 
         var countFormatter = new MetricFormatter((Span<char> dest, out int written) =>
-            TryFormatInt((long)MetricsManager.DrawCalls.CurrentValue, dest, out written)); // Shared
+            TryFormatInt((long)MetricsManager.DrawCalls.CurrentValue, dest, out written));
 
-        Fps = Register(new MetricDescriptor("FPS", MetricCategory.User, fpsFormatter, TimeSpan.FromMilliseconds(500), 300));
+        Fps = Register(new MetricDescriptor("FPS", MetricCategory.User, fpsFormatter, TimeSpan.FromMilliseconds(16), 300));
         Frametime = Register(new MetricDescriptor("Frametime", MetricCategory.User, timeFormatter, TimeSpan.FromMilliseconds(16), 300));
         
         DrawCalls = Register(new MetricDescriptor("Draw Calls", MetricCategory.Emulator, countFormatter, TimeSpan.FromMilliseconds(500)));
@@ -53,6 +63,9 @@ public static class MetricsManager
 
         GuestWorkerThreads = Register(new MetricDescriptor("Guest Workers", MetricCategory.Emulator, countFormatter, TimeSpan.FromMilliseconds(1000)));
         GuestBlockedThreads = Register(new MetricDescriptor("Blocked Workers", MetricCategory.Emulator, countFormatter, TimeSpan.FromMilliseconds(1000)));
+
+        // Start background telemetry sampling
+        SystemTelemetrySampler.Start();
     }
 
     private static MetricDescriptor Register(MetricDescriptor metric)
@@ -63,28 +76,11 @@ public static class MetricsManager
 
     public static void SampleHostMetrics()
     {
-        var now = Stopwatch.GetTimestamp();
-        var elapsed = now - _lastCpuCheckTimestamp;
-        
-        if (elapsed > Stopwatch.Frequency)
-        {
-            _currentProcess.Refresh();
-            var cpuTime = _currentProcess.TotalProcessorTime;
-            var cpuDelta = cpuTime - _lastCpuTime;
-            
-            var seconds = (double)elapsed / Stopwatch.Frequency;
-            var cpuPercent = (cpuDelta.TotalSeconds / seconds) * 100.0 / Environment.ProcessorCount;
-            
-            ProcessCpuUsage.Update(cpuPercent);
-            ProcessRamUsageMB.Update(_currentProcess.WorkingSet64 / 1024.0 / 1024.0);
-            
-            _lastCpuTime = cpuTime;
-            _lastCpuCheckTimestamp = now;
-        }
+        // No-op on render thread! Metrics are sampled asynchronously by SystemTelemetrySampler.
     }
 
     // Zero-allocation formatting helpers
-    private static bool TryFormatFloat1(double value, Span<char> dest, out int written, string suffix = "")
+    public static bool TryFormatFloat1(double value, Span<char> dest, out int written, string suffix = "")
     {
         written = 0;
         if (!value.TryFormat(dest, out var valWritten, "F1")) return false;
@@ -99,7 +95,7 @@ public static class MetricsManager
         return true;
     }
 
-    private static bool TryFormatInt(long value, Span<char> dest, out int written, string suffix = "")
+    public static bool TryFormatInt(long value, Span<char> dest, out int written, string suffix = "")
     {
         written = 0;
         if (!value.TryFormat(dest, out var valWritten)) return false;
@@ -114,3 +110,4 @@ public static class MetricsManager
         return true;
     }
 }
+

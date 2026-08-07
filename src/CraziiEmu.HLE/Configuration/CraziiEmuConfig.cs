@@ -107,7 +107,7 @@ public class InputMap
 
     // Stick Clicks
     public int L3 { get; set; } = 0xA2;        // LCtrl
-    public int R3 { get; set; } = 0xA3;        // RCtrl
+    public int R3 { get; set; } = 0x56;        // V
 
     // Analog Sticks
     public int LeftStickLeft { get; set; } = 0x41;  // A

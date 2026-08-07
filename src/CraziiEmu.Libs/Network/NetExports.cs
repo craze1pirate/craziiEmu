@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using CraziiEmu.HLE;
+using CraziiEmu.Libs.Kernel;
 
 namespace CraziiEmu.Libs.Network;
 
@@ -155,6 +156,12 @@ public static class NetExports
         var id = unchecked((int)ctx[CpuRegister.Rdi]);
         if (!_sockets.TryRemove(id, out var socket))
         {
+            if (KernelSocketCompatExports.TryCloseSocketFd(id))
+            {
+                TraceNet("socket.close.kernel", id, 0, 0, 0);
+                return ctx.SetReturn(0);
+            }
+
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
 
@@ -766,6 +773,64 @@ public static class NetExports
     {
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static int _nextEpollId = 1;
+
+    [SysAbiExport(
+        Nid = "SF47kB2MNTo",
+        ExportName = "sceNetEpollCreate",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetEpollCreate(CpuContext ctx)
+    {
+        var nameAddress = ctx[CpuRegister.Rdi];
+        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
+        var epollId = Interlocked.Increment(ref _nextEpollId);
+        TraceNet("epoll.create", epollId, unchecked((ulong)flags), 0, 0);
+        return ctx.SetReturn(epollId);
+    }
+
+    [SysAbiExport(
+        Nid = "ZVw46bsasAk",
+        ExportName = "sceNetEpollControl",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetEpollControl(CpuContext ctx)
+    {
+        var eid = unchecked((int)ctx[CpuRegister.Rdi]);
+        var op = unchecked((int)ctx[CpuRegister.Rsi]);
+        var id = unchecked((int)ctx[CpuRegister.Rdx]);
+        var evAddress = ctx[CpuRegister.Rcx];
+        TraceNet("epoll.control", eid, unchecked((ulong)op), unchecked((ulong)id), evAddress);
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "drjIbDbA7UQ",
+        ExportName = "sceNetEpollWait",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetEpollWait(CpuContext ctx)
+    {
+        var eid = unchecked((int)ctx[CpuRegister.Rdi]);
+        var eventsAddress = ctx[CpuRegister.Rsi];
+        var maxEvents = unchecked((int)ctx[CpuRegister.Rdx]);
+        var timeoutUsec = unchecked((int)ctx[CpuRegister.Rcx]);
+        TraceNet("epoll.wait", eid, unchecked((ulong)maxEvents), unchecked((ulong)timeoutUsec), eventsAddress);
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "Inp1lfL+Jdw",
+        ExportName = "sceNetEpollDestroy",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetEpollDestroy(CpuContext ctx)
+    {
+        var eid = unchecked((int)ctx[CpuRegister.Rdi]);
+        TraceNet("epoll.destroy", eid, 0, 0, 0);
+        return ctx.SetReturn(0);
     }
 
     private static void TraceNet(string operation, int id, ulong arg0, ulong arg1, ulong arg2)

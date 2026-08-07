@@ -90,6 +90,25 @@ public static class NpWebApi2Exports
         return ctx.SetReturn(filterId);
     }
 
+    private static int _nextCallbackId = 1;
+
+    [SysAbiExport(
+        Nid = "fY3QqeNkF8k",
+        ExportName = "sceNpWebApi2PushEventRegisterCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2PushEventRegisterCallback(CpuContext ctx)
+    {
+        var userContextId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var filterId = unchecked((int)ctx[CpuRegister.Rsi]);
+        var callback = ctx[CpuRegister.Rdx];
+        var userArg = ctx[CpuRegister.Rcx];
+
+        var callbackId = Interlocked.Increment(ref _nextCallbackId);
+        TraceNpWebApi2("push-event-register-callback", userContextId, unchecked((ulong)callbackId));
+        return ctx.SetReturn(callbackId);
+    }
+
     [SysAbiExport(
         Nid = "bEvXpcEk200",
         ExportName = "sceNpWebApi2Terminate",

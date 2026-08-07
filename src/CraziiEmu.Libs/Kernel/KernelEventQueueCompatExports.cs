@@ -431,11 +431,10 @@ public static class KernelEventQueueCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        if (timeoutAddress != 0 && ctx.TryReadUInt64(timeoutAddress, out var timeoutRaw))
+        if (timeoutAddress != 0)
         {
-            var timeoutMicros = timeoutRaw & 0xFFFF_FFFFUL;
             var deadline = Environment.TickCount64 +
-                Math.Max(1L, (long)Math.Min(timeoutMicros / 1000, int.MaxValue));
+                Math.Max(1L, (long)Math.Min((ulong)timeoutUsec / 1000, int.MaxValue));
             lock (_eventQueueGate)
             {
                 while (!HasPendingEvents(handle))

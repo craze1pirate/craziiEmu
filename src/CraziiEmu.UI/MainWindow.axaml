@@ -707,23 +707,23 @@
                                                         <TextBlock Text="L1" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
                                                         <Button x:Name="BindL1" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
-                                                        <TextBlock Text="R1" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
-                                                        <Button x:Name="BindR1" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                
                                                         <TextBlock Text="L2" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" />
                                                         <Button x:Name="BindL2" Grid.Row="2" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+
+                                                        <TextBlock Text="R1" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
+                                                        <Button x:Name="BindR1" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                                        
+                                                        <TextBlock Text="R2" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
+                                                        <Button x:Name="BindR2" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <TextBlock Text="R2" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
-                                                        <Button x:Name="BindR2" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                                        <TextBlock Text="Options" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                                        <Button x:Name="BindOptions" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                 
-                                                        <TextBlock Text="Options" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" />
-                                                        <Button x:Name="BindOptions" Grid.Row="3" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                                        <TextBlock Text="Create" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="2" Grid.Column="3" Margin="0,8,0,0" />
+                                                        <Button x:Name="BindCreate" Grid.Row="2" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                 
-                                                        <TextBlock Text="Create" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
-                                                        <Button x:Name="BindCreate" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
-                
-                                                        <TextBlock Text="PS Button" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="4" Grid.Column="0" Margin="0,8,0,0" />
-                                                        <Button x:Name="BindPsButton" Grid.Row="4" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
+                                                        <TextBlock Text="PS Button" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="3" Grid.Column="3" Margin="0,8,0,0" />
+                                                        <Button x:Name="BindPsButton" Grid.Row="3" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Margin="0,8,0,0" />
                                                     </Grid>
                                                 </StackPanel>
                                             </Border>
