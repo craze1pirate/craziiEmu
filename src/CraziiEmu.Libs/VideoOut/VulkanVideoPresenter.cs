@@ -12049,15 +12049,30 @@ internal static unsafe class VulkanVideoPresenter
                 System.Threading.Monitor.Wait(_gate, gpuWorkInFlight ? 1 : 8);
             }
         }
+private bool _overlayModeInitialized;
 private bool _f3WasDown;
 private void PollPerfOverlayHotkey()
 {
-    bool f3Down = Pad.HostWindowInput.IsKeyDown(Silk.NET.Input.Key.F3);
-    if (f3Down && !_f3WasDown)
+    var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+    if (!_overlayModeInitialized)
+    {
+        _overlayModeInitialized = true;
+        VideoOut.Overlay.OverlayRenderer.Mode = (VideoOut.Overlay.OverlayMode)config.MetricsOverlayMode;
+    }
+
+    var vk = config.HotkeyMetricsOverlay;
+    bool hotkeyDown = false;
+    if (vk >= 0x70 && vk <= 0x7B)
+    {
+        var silkKey = (Silk.NET.Input.Key)(Silk.NET.Input.Key.F1 + (vk - 0x70));
+        hotkeyDown = Pad.HostWindowInput.IsKeyDown(silkKey);
+    }
+
+    if (hotkeyDown && !_f3WasDown)
     {
         VideoOut.Overlay.OverlayRenderer.CycleMode();
     }
-    _f3WasDown = f3Down;
+    _f3WasDown = hotkeyDown;
 }
 
         private void Render(double _)

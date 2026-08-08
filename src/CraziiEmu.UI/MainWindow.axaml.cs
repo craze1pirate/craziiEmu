@@ -434,13 +434,27 @@ public partial class MainWindow : Window
         PanelGraphics.IsVisible = tag == "Graphics";
         PanelAudio.IsVisible    = tag == "Audio";
         PanelControls.IsVisible = tag == "Controls";
+        PanelHotkeys.IsVisible  = tag == "Hotkeys";
         PanelVisual.IsVisible   = tag == "Debug";
     }
 
-    // Removed wallpaper methods
+    private Button? _bindingHotkeyButton;
+    private string? _bindingHotkeyName;
 
     private void OnGlobalKeyDown(object? sender, KeyEventArgs e)
     {
+        if (_bindingHotkeyButton != null && _bindingHotkeyName != null)
+        {
+            // Strictly enforce F1-F12 keys only
+            if (e.Key >= Key.F1 && e.Key <= Key.F12)
+            {
+                int newVk = 0x70 + (int)(e.Key - Key.F1);
+                ApplyHotkeyBinding(newVk);
+            }
+            e.Handled = true;
+            return;
+        }
+
         if (_bindingButton != null && _bindingProperty.HasValue)
         {
             var vk = ControllerConfig.KeyToVirtualKey(e.Key);
@@ -449,15 +463,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (e.Key == Key.F4)
+        var pressedVk = ControllerConfig.KeyToVirtualKey(e.Key);
+        if (pressedVk != 0)
         {
-            ChkConsoleVisible.IsChecked = !(ChkConsoleVisible.IsChecked == true);
-            e.Handled = true;
-        }
-        else if (e.Key == Key.F3)
-        {
-            CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.CycleMode();
-            e.Handled = true;
+            var config = CraziiEmuConfig.Instance;
+            if (pressedVk == config.HotkeyVerboseConsole)
+            {
+                ChkConsoleVisible.IsChecked = !(ChkConsoleVisible.IsChecked == true);
+                e.Handled = true;
+            }
+            else if (pressedVk == config.HotkeyMetricsOverlay)
+            {
+                CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.CycleMode();
+                e.Handled = true;
+            }
         }
     }
 
@@ -1021,6 +1040,94 @@ public partial class MainWindow : Window
         
         SldVolume.Value = config.MasterVolume;
         SldVolume.ValueChanged += (s, e) => { config.MasterVolume = (float)SldVolume.Value; config.Save(); };
+
+        CmbMetricsOverlay.SelectedIndex = Math.Clamp(config.MetricsOverlayMode, 0, 3);
+        CmbMetricsOverlay.SelectionChanged += (s, e) =>
+        {
+            config.MetricsOverlayMode = CmbMetricsOverlay.SelectedIndex;
+            config.Save();
+            CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode = (CraziiEmu.Libs.VideoOut.Overlay.OverlayMode)config.MetricsOverlayMode;
+        };
+
+        InitializeHotkeyBindings();
+    }
+
+    private void InitializeHotkeyBindings()
+    {
+        var config = CraziiEmuConfig.Instance;
+        BindHotkeyOverlay.Content = GetFKeyName(config.HotkeyMetricsOverlay);
+        BindHotkeyConsole.Content = GetFKeyName(config.HotkeyVerboseConsole);
+
+        AttachHotkeyBinding(BindHotkeyOverlay, "MetricsOverlay");
+        AttachHotkeyBinding(BindHotkeyConsole, "VerboseConsole");
+    }
+
+    private void AttachHotkeyBinding(Button btn, string hotkeyName)
+    {
+        btn.Click -= OnBindHotkeyBtnClicked;
+        btn.Tag = hotkeyName;
+        btn.Click += OnBindHotkeyBtnClicked;
+    }
+
+    private void OnBindHotkeyBtnClicked(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn) return;
+
+        if (_bindingButton != null || _bindingHotkeyButton != null)
+        {
+            InitializeBindings();
+            InitializeHotkeyBindings();
+        }
+
+        _bindingHotkeyName = (string)btn.Tag!;
+        _bindingHotkeyButton = btn;
+        btn.Content = "[Press F Key...]";
+    }
+
+    private static string GetFKeyName(int vk)
+    {
+        if (vk >= 0x70 && vk <= 0x7B)
+        {
+            return $"F{vk - 0x70 + 1}";
+        }
+        return "F3";
+    }
+
+    private void OnRestoreDefaultHotkeysClicked(object? sender, RoutedEventArgs e)
+    {
+        var config = CraziiEmuConfig.Instance;
+        config.HotkeyMetricsOverlay = 0x72; // F3
+        config.HotkeyVerboseConsole = 0x73; // F4
+        config.Save();
+        InitializeHotkeyBindings();
+    }
+
+    private void ApplyHotkeyBinding(int newVk)
+    {
+        var config = CraziiEmuConfig.Instance;
+        var hotkeyName = _bindingHotkeyName!;
+
+        if (hotkeyName == "MetricsOverlay")
+        {
+            if (config.HotkeyVerboseConsole == newVk)
+            {
+                config.HotkeyVerboseConsole = config.HotkeyMetricsOverlay;
+            }
+            config.HotkeyMetricsOverlay = newVk;
+        }
+        else if (hotkeyName == "VerboseConsole")
+        {
+            if (config.HotkeyMetricsOverlay == newVk)
+            {
+                config.HotkeyMetricsOverlay = config.HotkeyVerboseConsole;
+            }
+            config.HotkeyVerboseConsole = newVk;
+        }
+
+        config.Save();
+        _bindingHotkeyButton = null;
+        _bindingHotkeyName = null;
+        InitializeHotkeyBindings();
     }
 
     private void InitializeGpuName()

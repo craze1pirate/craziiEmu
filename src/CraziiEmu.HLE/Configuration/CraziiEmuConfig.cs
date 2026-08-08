@@ -36,6 +36,10 @@ public class CraziiEmuConfig
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
     public bool UiFullscreenOnStartup { get; set; } = false;
+
+    public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
+    public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3
+    public int HotkeyVerboseConsole { get; set; } = 0x73; // VK 0x73 = F4
     public static void Load()
     {
         try

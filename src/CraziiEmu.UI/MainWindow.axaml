@@ -574,6 +574,7 @@
                             <ListBoxItem Content="Graphics" Tag="Graphics" />
                             <ListBoxItem Content="Audio"    Tag="Audio"    />
                             <ListBoxItem Content="Controls" Tag="Controls" />
+                            <ListBoxItem Content="Hotkeys"  Tag="Hotkeys"  />
                             <ListBoxItem Content="Debug"   Tag="Debug"   />
                         </ListBox>
                 
@@ -732,11 +733,46 @@
                                         </StackPanel>
                                     </StackPanel>
                 
+                                    <!-- ── Hotkeys ── -->
+                                    <StackPanel x:Name="PanelHotkeys" IsVisible="False">
+                                        <TextBlock Classes="SectionHeader" Text="Hotkeys" />
+                                        <TextBlock Foreground="#666666" FontSize="12" Margin="0,0,0,24"
+                                                   Text="Click any button below and press an F key (F1–F12) to rebind it. Conflicting keys swap automatically." />
+
+                                        <StackPanel Spacing="16">
+                                            <Border Background="#0A0A0F" BorderBrush="#1F1F28" BorderThickness="1" CornerRadius="6" Padding="20">
+                                                <StackPanel Spacing="12">
+                                                    <Grid ColumnDefinitions="160,140,40,160,140" RowDefinitions="Auto,Auto">
+                                                        <TextBlock Text="FUNCTION KEYS" FontSize="12" Foreground="#888888" FontWeight="SemiBold" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8" />
+
+                                                        <TextBlock Text="Metrics Overlay" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
+                                                        <Button x:Name="BindHotkeyOverlay" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+
+                                                        <TextBlock Text="Verbose Console" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                                        <Button x:Name="BindHotkeyConsole" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                                                    </Grid>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <Button x:Name="BtnRestoreDefaultHotkeys" Content="Restore Defaults" Click="OnRestoreDefaultHotkeysClicked" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Center" Padding="20,10" Margin="0,10,0,0" />
+                                        </StackPanel>
+                                    </StackPanel>
+
                                     <!-- ── Visual ── -->
                                     <StackPanel x:Name="PanelVisual" IsVisible="False" Spacing="20">
                                         <TextBlock Classes="SectionHeader" Text="Debug" />
                                         
                                         <CheckBox x:Name="ChkConsoleVisible" Content="Show Emulator Console" IsChecked="False" Foreground="#FFFFFF" Margin="0,10,0,0" />
+
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Classes="SettingsLabel" Text="METRICS OVERLAY" />
+                                            <ComboBox x:Name="CmbMetricsOverlay" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                                <ComboBoxItem Content="None" />
+                                                <ComboBoxItem Content="Minimal Mode" />
+                                                <ComboBoxItem Content="Standard Mode" />
+                                                <ComboBoxItem Content="Developer Mode" />
+                                            </ComboBox>
+                                        </StackPanel>
                                     </StackPanel>
                 
                                 </Grid>

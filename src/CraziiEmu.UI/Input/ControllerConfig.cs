@@ -113,6 +113,7 @@ public class ControllerConfig
     {
         if (key >= Key.A && key <= Key.Z) return 0x41 + (key - Key.A);
         if (key >= Key.D0 && key <= Key.D9) return 0x30 + (key - Key.D0);
+        if (key >= Key.F1 && key <= Key.F12) return 0x70 + (key - Key.F1);
         return key switch
         {
             Key.Left => 0x25, Key.Up => 0x26, Key.Right => 0x27, Key.Down => 0x28, Key.Home => 0x24,
@@ -127,6 +128,7 @@ public class ControllerConfig
     {
         if (vk >= 0x41 && vk <= 0x5A) return (Key)(Key.A + (vk - 0x41));
         if (vk >= 0x30 && vk <= 0x39) return (Key)(Key.D0 + (vk - 0x30));
+        if (vk >= 0x70 && vk <= 0x7B) return (Key)(Key.F1 + (vk - 0x70));
         return vk switch
         {
             0x25 => Key.Left, 0x26 => Key.Up, 0x27 => Key.Right, 0x28 => Key.Down, 0x24 => Key.Home,

@@ -270,6 +270,7 @@ public static class HostWindowInput
             0xA5 => Key.AltRight,
             >= 0x30 and <= 0x39 => Key.Number0 + (vk - 0x30),
             >= 0x41 and <= 0x5A => Key.A + (vk - 0x41),
+            >= 0x70 and <= 0x7B => Key.F1 + (vk - 0x70),
             _ => Key.Unknown,
         };
         return key != Key.Unknown;
