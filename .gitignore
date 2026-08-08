@@ -104,6 +104,7 @@ hardware/
 *.pdf
 plan.md
 AGENTS.md
+Rules.md
 ai-conv.txt
 
 # Root images not needed

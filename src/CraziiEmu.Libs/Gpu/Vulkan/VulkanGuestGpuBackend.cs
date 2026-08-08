@@ -50,6 +50,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         }
 
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
+        VulkanVideoPresenter.CountSpirvCompilation();
         return true;
     }
 
@@ -86,6 +87,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         }
 
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
+        VulkanVideoPresenter.CountSpirvCompilation();
         return true;
     }
 
@@ -120,6 +122,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         }
 
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
+        VulkanVideoPresenter.CountSpirvCompilation();
         return true;
     }
 

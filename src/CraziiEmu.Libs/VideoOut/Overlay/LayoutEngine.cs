@@ -48,10 +48,8 @@ public static class LayoutEngine
                 height += LineHeight * 2 + (28f + 6f) * 2 + 14f;
                 // GPU + VRAM + GPU Power + CPU + RAM + SSD R/W
                 height += LineHeight * 6 + 14f;
-                // Draw Calls + Guest Workers + Blocked Workers + SPIR-V Compiles
-                height += LineHeight * 4 + 14f;
-                // GPU Device Name footer
-                height += LineHeight + 4f;
+                // Draw Calls + Alloc + GC + EMU RAM + Guest Workers + Blocked Workers + SPIR-V Compiles
+                height += LineHeight * 7;
                 break;
 
             default:

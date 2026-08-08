@@ -892,6 +892,8 @@ internal static unsafe class VulkanVideoPresenter
             return;
         }
 
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordDraw();
+
         lock (_gate)
         {
             if (_closed ||
@@ -943,6 +945,8 @@ internal static unsafe class VulkanVideoPresenter
         {
             return;
         }
+
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordDraw();
 
         lock (_gate)
         {
@@ -1076,6 +1080,8 @@ internal static unsafe class VulkanVideoPresenter
             return;
         }
 
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordDraw();
+
         var firstTarget = targets[0];
         if (RenderTargetsMismatchedOrAliased(targets, firstTarget))
         {
@@ -1167,6 +1173,8 @@ internal static unsafe class VulkanVideoPresenter
         {
             return;
         }
+
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordDraw();
 
         lock (_gate)
         {
@@ -1275,8 +1283,11 @@ internal static unsafe class VulkanVideoPresenter
         return (draws, ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency, pipelines, spirv);
     }
 
-    internal static void CountSpirvCompilation() =>
+    internal static void CountSpirvCompilation()
+    {
         Interlocked.Increment(ref _perfSpirvCompilations);
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordSpirvCompilation();
+    }
 
     internal static IReadOnlyList<(ulong Address, uint Width, uint Height, ulong ByteCount)> GetGuestImageExtents()
     {

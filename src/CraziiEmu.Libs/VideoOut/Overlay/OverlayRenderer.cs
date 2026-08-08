@@ -113,13 +113,13 @@ public static class OverlayRenderer
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
             curY += lineH;
 
-            DrawString(pixels, panelW, panelH, curX, curY, "RAM".AsSpan(), ColorCyan);
-            MetricsManager.TryFormatFloat1(MetricsManager.RamUsedGB, buf, out written, " GB");
+            DrawString(pixels, panelW, panelH, curX, curY, "CPU".AsSpan(), ColorCyan);
+            FormatCpuStandard(buf, out written);
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
             curY += lineH;
 
-            DrawString(pixels, panelW, panelH, curX, curY, "CPU".AsSpan(), ColorCyan);
-            FormatCpuStandard(buf, out written);
+            DrawString(pixels, panelW, panelH, curX, curY, "RAM".AsSpan(), ColorCyan);
+            FormatRamStandard(buf, out written);
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
         }
         else if (Mode == OverlayMode.Detailed)
@@ -163,7 +163,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawString(pixels, panelW, panelH, curX, curY, "RAM".AsSpan(), ColorCyan);
-            MetricsManager.TryFormatFloat1(MetricsManager.RamUsedGB, buf, out written, " GB");
+            FormatRamStandard(buf, out written);
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
             curY += lineH;
 
@@ -172,8 +172,23 @@ public static class OverlayRenderer
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
             curY += lineH + 14;
 
-            DrawString(pixels, panelW, panelH, curX, curY, "Draw Calls".AsSpan(), ColorGold);
-            MetricsManager.TryFormatInt((long)MetricsManager.DrawCalls.CurrentValue, buf, out written);
+            DrawString(pixels, panelW, panelH, curX, curY, "Draws".AsSpan(), ColorGold);
+            MetricsManager.TryFormatInt((long)MetricsManager.DrawCalls.CurrentValue, buf, out written, "/s");
+            DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
+            curY += lineH;
+
+            DrawString(pixels, panelW, panelH, curX, curY, "Alloc".AsSpan(), ColorGold);
+            MetricsManager.TryFormatFloat1(MetricsManager.AllocatedMBs, buf, out written, " MB/s");
+            DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
+            curY += lineH;
+
+            DrawString(pixels, panelW, panelH, curX, curY, "GC".AsSpan(), ColorGold);
+            FormatGc(buf, out written);
+            DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
+            curY += lineH;
+
+            DrawString(pixels, panelW, panelH, curX, curY, "EMU RAM".AsSpan(), ColorGold);
+            MetricsManager.TryFormatInt((long)MetricsManager.EmuRamMB, buf, out written, " MB");
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
             curY += lineH;
 
@@ -190,10 +205,6 @@ public static class OverlayRenderer
             DrawString(pixels, panelW, panelH, curX, curY, "SPIR-V Compiles".AsSpan(), ColorGold);
             MetricsManager.TryFormatInt((long)MetricsManager.SpirvCompilations.CurrentValue, buf, out written);
             DrawRightString(pixels, panelW, panelH, rightX, curY, buf.Slice(0, written), ColorOrange);
-            curY += lineH + 14;
-
-            string gpuName = string.IsNullOrEmpty(MetricsManager.GpuDeviceName) ? "Direct3D12 / Vulkan GPU" : MetricsManager.GpuDeviceName;
-            DrawString(pixels, panelW, panelH, curX, curY, gpuName.AsSpan(), ColorDimGrey);
         }
     }
 
@@ -334,9 +345,9 @@ public static class OverlayRenderer
 
     private static void FormatGpuStandard(Span<char> dest, out int written)
     {
-        int temp = (int)MetricsManager.GpuTempC;
+        int clock = (int)MetricsManager.GpuClockMHz;
         int load = (int)MetricsManager.GpuLoadPercent;
-        string s = temp > 0 ? $"{temp} \u00B0C    {load} %" : $"{load} %";
+        string s = clock > 0 ? $"{clock} MHz    {load} %" : $"{load} %";
         s.AsSpan().CopyTo(dest);
         written = s.Length;
     }
@@ -370,20 +381,37 @@ public static class OverlayRenderer
         written = s.Length;
     }
 
+    private static void FormatRamStandard(Span<char> dest, out int written)
+    {
+        double used = MetricsManager.RamUsedGB;
+        double total = MetricsManager.RamTotalGB;
+        string s = total > 0 ? $"{used:F1} GB / {total:F1} GB" : $"{used:F1} GB";
+        s.AsSpan().CopyTo(dest);
+        written = s.Length;
+    }
+
+    private static void FormatGc(Span<char> dest, out int written)
+    {
+        string s = $"{MetricsManager.Gen0Count} / {MetricsManager.Gen1Count} / {MetricsManager.Gen2Count}";
+        s.AsSpan().CopyTo(dest);
+        written = s.Length;
+    }
+
     private static void FormatCpuStandard(Span<char> dest, out int written)
     {
+        int mhz = (int)MetricsManager.CpuFreqMHz;
         int cpuPct = (int)MetricsManager.CpuUsagePercent;
-        float ghz = MetricsManager.CpuFreqMHz / 1000.0f;
-        string s = $"{cpuPct} %      {ghz:F1} GHz";
+        string s = $"{mhz} MHz    {cpuPct} %";
         s.AsSpan().CopyTo(dest);
         written = s.Length;
     }
 
     private static void FormatCpuDetailed(Span<char> dest, out int written)
     {
-        int cpuPct = (int)MetricsManager.CpuUsagePercent;
+        int procCpu = (int)MetricsManager.ProcessCpuPercent;
         int mhz = (int)MetricsManager.CpuFreqMHz;
-        string s = $"{cpuPct} %   {mhz} MHz";
+        int sysCpu = (int)MetricsManager.CpuUsagePercent;
+        string s = $"{procCpu}%   {mhz} MHz    {sysCpu}%";
         s.AsSpan().CopyTo(dest);
         written = s.Length;
     }

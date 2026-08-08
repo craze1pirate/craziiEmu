@@ -27,9 +27,16 @@ public static class MetricsManager
 
     // Live Telemetry Values (Updated by SystemTelemetrySampler async thread)
     public static double CpuUsagePercent { get; set; } = 0;
-    public static float CpuFreqMHz { get; set; } = 3600;
+    public static double ProcessCpuPercent { get; set; } = 0;
+    public static float CpuFreqMHz { get; set; } = 3625;
     public static double RamUsedGB { get; set; } = 0;
+    public static double RamTotalGB { get; set; } = 0;
     public static double SsdReadWriteMBs { get; set; } = 0;
+    public static double AllocatedMBs { get; set; } = 0;
+    public static int Gen0Count { get; set; } = 0;
+    public static int Gen1Count { get; set; } = 0;
+    public static int Gen2Count { get; set; } = 0;
+    public static double EmuRamMB { get; set; } = 0;
 
     public static float GpuTempC { get; set; } = 0;
     public static float GpuClockMHz { get; set; } = 0;
@@ -38,6 +45,18 @@ public static class MetricsManager
     public static double VramUsedGB { get; set; } = 0;
     public static double VramTotalGB { get; set; } = 0;
     public static string GpuDeviceName { get; set; } = "";
+
+    private static long _drawsInWindow;
+    private static long _totalSpirvCompilations;
+
+    public static void RecordDraw() => Interlocked.Increment(ref _drawsInWindow);
+    public static long FlushDrawCount() => Interlocked.Exchange(ref _drawsInWindow, 0);
+
+    public static void RecordSpirvCompilation()
+    {
+        long count = Interlocked.Increment(ref _totalSpirvCompilations);
+        SpirvCompilations.Update(count);
+    }
 
     static MetricsManager()
     {
