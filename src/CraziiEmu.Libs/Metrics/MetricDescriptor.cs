@@ -27,6 +27,7 @@ public class MetricDescriptor
     public MetricFormatter Formatter { get; }
 
     private int _historyIndex;
+    private int _validSamples;
     private long _lastRefreshTimestamp;
 
     public MetricDescriptor(
@@ -47,38 +48,45 @@ public class MetricDescriptor
         }
     }
 
-    public void Update(double value)
+    public void PushHistory(float sample)
     {
-        var now = Stopwatch.GetTimestamp();
-        if (_lastRefreshTimestamp != 0)
-        {
-            var elapsedSeconds = (double)(now - _lastRefreshTimestamp) / Stopwatch.Frequency;
-            if (elapsedSeconds < RefreshInterval.TotalSeconds)
-            {
-                return;
-            }
-        }
-
-        _lastRefreshTimestamp = now;
-        CurrentValue = value;
-
         if (HistoryBuffer is not null)
         {
-            HistoryBuffer[_historyIndex] = (float)value;
+            HistoryBuffer[_historyIndex] = sample;
             _historyIndex = (_historyIndex + 1) % HistoryBuffer.Length;
+            if (_validSamples < HistoryBuffer.Length)
+            {
+                _validSamples++;
+            }
         }
+    }
+
+    public void Update(double value)
+    {
+        _lastRefreshTimestamp = Stopwatch.GetTimestamp();
+        CurrentValue = value;
     }
 
     public void GetHistory(Span<float> destination)
     {
-        if (HistoryBuffer is null)
+        if (HistoryBuffer is null || _validSamples == 0)
         {
+            destination.Clear();
             return;
         }
 
         var length = Math.Min(destination.Length, HistoryBuffer.Length);
-        
-        // Copy older samples first, then newer samples
+        if (_validSamples < HistoryBuffer.Length)
+        {
+            for (int i = 0; i < length; i++)
+            {
+                int srcIdx = (i * _validSamples) / length;
+                destination[i] = HistoryBuffer[srcIdx];
+            }
+            return;
+        }
+
+        // Full ring buffer: copy older samples first, then newer samples
         var tailLength = HistoryBuffer.Length - _historyIndex;
         if (tailLength >= length)
         {

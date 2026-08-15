@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.Logging;
@@ -139,10 +140,7 @@ public static class VideoOutExports
     {
         lock (_stateGate)
         {
-            var gpuSuffix = string.IsNullOrWhiteSpace(_selectedGpuName)
-                ? string.Empty
-                : $" · {_selectedGpuName}";
-            return $"CraziiEmu · {BuildInfo.CommitSha ?? "dev"} - {_applicationWindowTitle}{gpuSuffix}";
+            return $"CraziiEmu - {_applicationWindowTitle}";
         }
     }
 
@@ -212,6 +210,9 @@ public static class VideoOutExports
         public List<FlipEventRegistration> VblankEvents { get; } = new();
         public long OpenTimestamp;
         public long LastVblankTimestamp;
+        public bool IsGen5 { get; set; }
+        public long LastFlipArg { get; set; } = -1;
+        public int PendingFlipsCount { get; set; }
     }
 
     private sealed class VideoOutBufferGroup
@@ -282,6 +283,7 @@ public static class VideoOutExports
                 Handle = handle,
                 OpenTimestamp = openedAt,
                 LastVblankTimestamp = openedAt,
+                IsGen5 = ctx.TargetGeneration == Generation.Gen5,
             };
             return handle;
         }
@@ -714,25 +716,42 @@ public static class VideoOutExports
 
         ulong count;
         uint currentBuffer;
+        long lastFlipArg;
+        int pendingFlips;
         lock (_stateGate)
         {
             count = port.FlipCount;
             currentBuffer = unchecked((uint)port.CurrentBuffer);
+            lastFlipArg = port.LastFlipArg;
+            pendingFlips = port.PendingFlipsCount;
         }
 
+        var processTimeTicks = (ulong)Stopwatch.GetTimestamp();
+        var processTimeMicros = processTimeTicks * 1_000_000UL / (ulong)Stopwatch.Frequency;
+
+        // Write PS5 VideoOutFlipStatus struct matching C struct layout (KytyPS5 reference):
+        // offset 0x00: uint64_t count
+        // offset 0x08: uint64_t processTime
+        // offset 0x10: uint64_t reserved0 / tsc
+        // offset 0x18: int64_t  flipArg
+        // offset 0x20: uint64_t reserved1 / currentBuffer
+        // offset 0x28: uint64_t processTimeCounter / submitTsc
+        // offset 0x30: int32_t  gcQueueNum
+        // offset 0x34: int32_t  flipPendingNum
+        // offset 0x38: int32_t  currentBuffer
+        // offset 0x3C: uint32_t reserved2
+        // offset 0x40: uint64_t submitProcessTimeCounter
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x00, count);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, 0);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, 0);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, 0);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x08, processTimeMicros);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x10, 0UL);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x18, unchecked((ulong)lastFlipArg));
         KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x20, currentBuffer);
-        // Ghost of Yotei polls a flag past the classic 0x28-byte struct and
-        // spins on sceKernelUsleep(1) while it's nonzero; the caller never
-        // pre-zeroes that stack buffer, so an untouched field reads back as
-        // garbage. Flips complete synchronously in this emulator (see
-        // SubmitFlip/sceVideoOutIsFlipPending, always not-pending), so the
-        // extended region must read zero here too.
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x28, 0);
-        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x30, 0);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x28, processTimeTicks);
+        _ = ctx.TryWriteUInt32(statusAddress + 0x30, 0u);
+        _ = ctx.TryWriteUInt32(statusAddress + 0x34, unchecked((uint)pendingFlips));
+        _ = ctx.TryWriteUInt32(statusAddress + 0x38, currentBuffer);
+        _ = ctx.TryWriteUInt32(statusAddress + 0x3C, 0u);
+        KernelMemoryCompatExports.TryWriteUInt64Compat(ctx, statusAddress + 0x40, processTimeTicks);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -1208,7 +1227,9 @@ public static class VideoOutExports
                     displayBuffer.Address,
                     displayBuffer.Width,
                     displayBuffer.Height,
-                    displayBuffer.PitchInPixel);
+                    displayBuffer.PitchInPixel,
+                    handle,
+                    flipArg);
             }
         }
 
@@ -1245,7 +1266,10 @@ public static class VideoOutExports
 
         if (submitGpuImage)
         {
-            TriggerFlipEvents();
+            if (!guestImageSubmitted)
+            {
+                TriggerFlipEvents();
+            }
         }
         else if (GuestGpu.Current.SubmitOrderedGuestAction(
                      TriggerFlipEvents,
@@ -1281,6 +1305,87 @@ public static class VideoOutExports
 
     internal static void ReportPresentedFrame() =>
         ReportFrameRate(presented: true);
+
+    internal static void CompleteFlip(int handle, long flipArg)
+    {
+        if (!TryGetPort(handle, out var port))
+        {
+            if (handle != 0)
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][WARN] CompleteFlip: port not found for handle={handle}");
+            }
+            if (flipArg != 0)
+            {
+                KernelSemaphoreCompatExports.SignalAllSemaphores();
+            }
+            return;
+        }
+
+        ulong eventHint;
+        FlipEventRegistration[]? flipEvents = null;
+        int flipEventCount;
+
+        FlipEventRegistration[]? vblankEvents = null;
+        int vblankEventCount;
+
+        lock (_stateGate)
+        {
+            port.VblankCount++;
+            
+            eventHint = SceVideoOutInternalEventFlip |
+                ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            flipEventCount = port.FlipEvents.Count;
+            if (flipEventCount != 0)
+            {
+                flipEvents = ArrayPool<FlipEventRegistration>.Shared.Rent(flipEventCount);
+                port.FlipEvents.CopyTo(flipEvents);
+            }
+
+            vblankEventCount = port.VblankEvents.Count;
+            if (vblankEventCount != 0)
+            {
+                vblankEvents = ArrayPool<FlipEventRegistration>.Shared.Rent(vblankEventCount);
+                port.VblankEvents.CopyTo(vblankEvents);
+            }
+        }
+
+        if (flipEvents != null)
+        {
+            for (var i = 0; i < flipEventCount; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    flipEvents[i].Equeue,
+                    port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip,
+                    OrbisKernelEventFilterVideoOut,
+                    port.IsGen5 ? unchecked((ulong)flipArg) : eventHint,
+                    flipEvents[i].UserData);
+            }
+            ArrayPool<FlipEventRegistration>.Shared.Return(flipEvents);
+        }
+
+        if (vblankEvents != null)
+        {
+            var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
+            for (var i = 0; i < vblankEventCount; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    vblankEvents[i].Equeue,
+                    ident,
+                    OrbisKernelEventFilterVideoOut,
+                    dataHint,
+                    vblankEvents[i].UserData);
+            }
+            ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
+        }
+
+        // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
+        if (flipArg != 0)
+        {
+            KernelSemaphoreCompatExports.SignalAllSemaphores();
+        }
+    }
 
     private static void ReportFrameRate(bool presented)
     {

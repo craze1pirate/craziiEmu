@@ -46,30 +46,115 @@ public static class MetricsManager
     public static double VramTotalGB { get; set; } = 0;
     public static string GpuDeviceName { get; set; } = "";
 
+    private static long _lastSubmitTimestamp;
+    private static long _lastPresentTimestamp;
+    private static long _sessionStartTimestamp;
+    private static long _submittedInWindow;
+    private static long _presentedInWindow;
     private static long _drawsInWindow;
     private static long _totalSpirvCompilations;
-    private static long _lastFrameTimestamp;
     private static long _totalFrames;
+    private static long _statsWindowStart = Stopwatch.GetTimestamp();
+    private static long _lastAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
+    private static int _lastGen0 = GC.CollectionCount(0);
+    private static int _lastGen1 = GC.CollectionCount(1);
+    private static int _lastGen2 = GC.CollectionCount(2);
+    private static double _lastFrameIntervalMs = 16.6;
 
-    public static void RecordFrame()
+    /// <summary>Called on every guest flip submission.</summary>
+    public static void RecordSubmit()
     {
         Interlocked.Increment(ref _totalFrames);
         var now = Stopwatch.GetTimestamp();
-        var last = Interlocked.Exchange(ref _lastFrameTimestamp, now);
+        Interlocked.CompareExchange(ref _sessionStartTimestamp, now, 0);
+        Interlocked.Increment(ref _submittedInWindow);
+        var last = Interlocked.Exchange(ref _lastSubmitTimestamp, now);
         if (last != 0)
         {
             var deltaMs = (double)(now - last) * 1000.0 / Stopwatch.Frequency;
             if (deltaMs > 0.05 && deltaMs < 2000.0)
             {
-                Frametime.Update(deltaMs);
-                var fps = 1000.0 / deltaMs;
-                Fps.Update(fps);
+                _lastFrameIntervalMs = deltaMs;
+                Frametime.PushHistory((float)deltaMs);
+                Fps.PushHistory((float)(1000.0 / deltaMs));
             }
         }
     }
 
+    /// <summary>Called by the presenter after each successful host present.</summary>
+    public static void RecordPresent()
+    {
+        Interlocked.CompareExchange(ref _sessionStartTimestamp, Stopwatch.GetTimestamp(), 0);
+        Interlocked.Increment(ref _presentedInWindow);
+        _lastPresentTimestamp = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>Called per translated draw/dispatch executed.</summary>
     public static void RecordDraw() => Interlocked.Increment(ref _drawsInWindow);
     public static long FlushDrawCount() => Interlocked.Exchange(ref _drawsInWindow, 0);
+
+    public static void RefreshStatsIfDue(int pendingWork = 0, int inFlightSubmissions = 0)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var elapsedTicks = now - _statsWindowStart;
+        if (elapsedTicks >= Stopwatch.Frequency / 2) // 500ms update cadence
+        {
+            var seconds = (double)elapsedTicks / Stopwatch.Frequency;
+            _statsWindowStart = now;
+
+            var submitted = Interlocked.Exchange(ref _submittedInWindow, 0);
+            var presented = Interlocked.Exchange(ref _presentedInWindow, 0);
+            var draws = Interlocked.Exchange(ref _drawsInWindow, 0);
+
+            var fps = submitted / seconds;
+            var presentFps = presented / seconds;
+            var drawsPerSec = draws / seconds;
+
+            var allocated = GC.GetTotalAllocatedBytes(precise: false);
+            AllocatedMBs = Math.Max(0, (allocated - _lastAllocatedBytes) / seconds / (1024.0 * 1024.0));
+            _lastAllocatedBytes = allocated;
+
+            var gen0 = GC.CollectionCount(0);
+            var gen1 = GC.CollectionCount(1);
+            var gen2 = GC.CollectionCount(2);
+            Gen0Count = gen0 - _lastGen0;
+            Gen1Count = gen1 - _lastGen1;
+            Gen2Count = gen2 - _lastGen2;
+            _lastGen0 = gen0;
+            _lastGen1 = gen1;
+            _lastGen2 = gen2;
+
+            EmuRamMB = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
+
+            var lastSubmit = Interlocked.Read(ref _lastSubmitTimestamp);
+            double avgFrameMs;
+            if (fps > 0)
+            {
+                avgFrameMs = _lastFrameIntervalMs > 0 ? _lastFrameIntervalMs : 1000.0 / fps;
+                Fps.Update(fps);
+                Frametime.Update(avgFrameMs);
+            }
+            else if (lastSubmit != 0)
+            {
+                avgFrameMs = (now - lastSubmit) * 1000.0 / Stopwatch.Frequency;
+                Fps.Update(0);
+                Frametime.Update(avgFrameMs);
+            }
+            else if (presentFps > 0)
+            {
+                avgFrameMs = 1000.0 / presentFps;
+                Fps.Update(presentFps);
+                Frametime.Update(avgFrameMs);
+            }
+            else
+            {
+                Fps.Update(0);
+                Frametime.Update(0);
+            }
+
+            DrawCalls.Update(drawsPerSec);
+        }
+    }
 
     public static void RecordSpirvCompilation()
     {

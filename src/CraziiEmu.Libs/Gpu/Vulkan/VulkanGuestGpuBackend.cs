@@ -2,6 +2,7 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using CraziiEmu.Libs.Metrics;
 using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.ShaderCompiler;
 using CraziiEmu.ShaderCompiler.Vulkan;
@@ -49,6 +50,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
             return false;
         }
 
+        MetricsManager.RecordSpirvCompilation();
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
         return true;
     }
@@ -87,6 +89,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
             return false;
         }
 
+        MetricsManager.RecordSpirvCompilation();
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
         return true;
     }
@@ -121,6 +124,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
             return false;
         }
 
+        MetricsManager.RecordSpirvCompilation();
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
         return true;
     }
@@ -293,12 +297,15 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel) =>
-        VulkanVideoPresenter.TrySubmitGuestImage(address, width, height, pitchInPixel);
+        uint pitchInPixel,
+        int videoOutHandle = 0,
+        long flipArg = 0) =>
+        VulkanVideoPresenter.TrySubmitGuestImage(address, width, height, pitchInPixel, videoOutHandle, flipArg);
 
     public bool TrySubmitOrderedGuestImageFlip(
         int videoOutHandle,
         int displayBufferIndex,
+        long flipArg,
         ulong address,
         uint width,
         uint height,
@@ -306,6 +313,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         VulkanVideoPresenter.TrySubmitOrderedGuestImageFlip(
             videoOutHandle,
             displayBufferIndex,
+            flipArg,
             address,
             width,
             height,

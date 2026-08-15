@@ -735,4 +735,21 @@ public static class KernelSemaphoreCompatExports
         return true;
     }
 
+    public static void SignalAllSemaphores(int signalCount = 1)
+    {
+        foreach (var (handle, semaphore) in _semaphores)
+        {
+            lock (semaphore.Gate)
+            {
+                if (semaphore.WaitingThreads > 0)
+                {
+                    semaphore.Count = semaphore.MaxCount > 0
+                        ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
+                        : semaphore.Count + signalCount;
+                    Monitor.PulseAll(semaphore.Gate);
+                }
+            }
+            _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
+        }
+    }
 }

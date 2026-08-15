@@ -11,14 +11,6 @@ public enum HostWindowMode
     ExclusiveFullscreen,
 }
 
-public enum HostScalingMode
-{
-    Fit,
-    Cover,
-    Stretch,
-    Integer,
-}
-
 public enum HostHdrMode
 {
     Auto,
@@ -31,8 +23,6 @@ public sealed record HostVideoOptions
     public static HostVideoOptions Default { get; } = new();
 
     public HostWindowMode WindowMode { get; init; } = HostWindowMode.Windowed;
-
-    public HostScalingMode ScalingMode { get; init; } = HostScalingMode.Fit;
 
     public int Width { get; init; } = 1920;
 

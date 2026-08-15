@@ -13,15 +13,6 @@ namespace CraziiEmu.Libs.VideoOut;
 /// </summary>
 public static class PerfOverlay
 {
-    private static long _lastPresentTimestamp;
-    private static long _lastSubmitTimestamp;
-    private static long _sessionStartTimestamp;
-    private const int FrameHistorySize = 128;
-    private static readonly double[] _frameMilliseconds = new double[FrameHistorySize];
-    private static int _frameHistoryIndex;
-    private static long _presentedInWindow;
-    private static long _submittedInWindow;
-    private static long _drawsInWindow;
     private static long _guestBufferCacheBytes;
 
     public static bool Enabled => OverlayRenderer.Mode != OverlayMode.Off;
@@ -31,34 +22,18 @@ public static class PerfOverlay
     /// <summary>Called by the presenter after each successful host present.</summary>
     public static void RecordPresent()
     {
-        Interlocked.CompareExchange(ref _sessionStartTimestamp, Stopwatch.GetTimestamp(), 0);
-        Interlocked.Increment(ref _presentedInWindow);
-        _lastPresentTimestamp = Stopwatch.GetTimestamp();
-        MetricsManager.RecordFrame();
+        MetricsManager.RecordPresent();
     }
 
     /// <summary>Called on every guest flip submission.</summary>
     public static void RecordSubmit()
     {
-        var now = Stopwatch.GetTimestamp();
-        Interlocked.CompareExchange(ref _sessionStartTimestamp, now, 0);
-        Interlocked.Increment(ref _submittedInWindow);
-        var last = Interlocked.Exchange(ref _lastSubmitTimestamp, now);
-        if (last != 0)
-        {
-            var milliseconds = (now - last) * 1000.0 / Stopwatch.Frequency;
-            var index = _frameHistoryIndex;
-            _frameMilliseconds[index] = milliseconds;
-            _frameHistoryIndex = (index + 1) % FrameHistorySize;
-        }
-
-        MetricsManager.RecordFrame();
+        MetricsManager.RecordSubmit();
     }
 
     /// <summary>Called per translated draw/dispatch executed.</summary>
     public static void RecordDraw()
     {
-        Interlocked.Increment(ref _drawsInWindow);
         MetricsManager.RecordDraw();
     }
 
@@ -73,6 +48,7 @@ public static class PerfOverlay
             return;
         }
 
+        MetricsManager.RefreshStatsIfDue(pendingWork, pendingSubmissions);
         var uintSpan = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(destination);
         OverlayRenderer.RenderToBuffer(uintSpan, 376, 176);
     }

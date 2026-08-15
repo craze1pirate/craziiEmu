@@ -27,6 +27,10 @@ internal static class Program
         {
             try
             {
+                var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
+                CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode =
+                    (CraziiEmu.Libs.VideoOut.Overlay.OverlayMode)Math.Clamp(config.MetricsOverlayMode, 0, 3);
+
                 var options = new CraziiEmu.Core.Runtime.CraziiEmuRuntimeOptions();
                 using var runtime = CraziiEmu.Core.Runtime.CraziiEmuRuntime.CreateDefault(options);
                 var result = runtime.Run(args[1]);
