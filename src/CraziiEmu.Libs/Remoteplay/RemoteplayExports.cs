@@ -1,6 +1,5 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
 using System;
 using CraziiEmu.HLE;
