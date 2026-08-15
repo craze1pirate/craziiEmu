@@ -476,6 +476,7 @@ internal static unsafe class VulkanVideoPresenter
     private static readonly Dictionary<ulong, uint> _availableGuestImages = new();
     private static readonly Dictionary<(int Handle, int BufferIndex), long>
         _lastOrderedGuestFlipVersions = new();
+    private static readonly Dictionary<long, long> _flipCaptureWorkSequences = new();
     private static long _orderedGuestFlipVersionSequence;
     // Storage-image initialization is copied only by the first queued writer.
     // Later dispatches targeting the same image must not each retain another
@@ -814,6 +815,7 @@ internal static unsafe class VulkanVideoPresenter
         _guestImageWorkSequences.Clear();
         _availableGuestImages.Clear();
         _lastOrderedGuestFlipVersions.Clear();
+        _flipCaptureWorkSequences.Clear();
         _orderedGuestFlipVersionSequence = 0;
         _pendingGuestImageUploads.Clear();
         _pendingGuestImageInitialData.Clear();
@@ -896,11 +898,7 @@ internal static unsafe class VulkanVideoPresenter
 
         lock (_gate)
         {
-            if (_closed ||
-                _latestPresentation is { Pixels: null } latest &&
-                latest.DrawKind == drawKind &&
-                latest.Width == width &&
-                latest.Height == height)
+            if (_closed)
             {
                 return;
             }
@@ -1602,14 +1600,15 @@ internal static unsafe class VulkanVideoPresenter
         {
             if (_closed ||
                 _thread is null ||
-                !_availableGuestImages.ContainsKey(address))
+                address == 0 ||
+                width == 0 ||
+                height == 0)
             {
                 return false;
             }
 
             var version = ++_orderedGuestFlipVersionSequence;
-            _lastOrderedGuestFlipVersions[(videoOutHandle, displayBufferIndex)] = version;
-            return EnqueueGuestWorkLocked(
+            var workSequence = EnqueueGuestWorkLocked(
                 new VulkanOrderedGuestFlip(
                     version,
                     videoOutHandle,
@@ -1618,7 +1617,16 @@ internal static unsafe class VulkanVideoPresenter
                     address,
                     width,
                     height,
-                    pitchInPixel)) > 0;
+                    pitchInPixel));
+
+            if (workSequence > 0)
+            {
+                _flipCaptureWorkSequences[version] = workSequence;
+                _lastOrderedGuestFlipVersions[(videoOutHandle, displayBufferIndex)] = version;
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -1838,13 +1846,23 @@ internal static unsafe class VulkanVideoPresenter
             return false;
         }
 
+        var sourceGuestFormat = GetGuestTextureFormat(sourceFormat, sourceNumberType);
+        var destGuestFormat = GetGuestTextureFormat(destinationFormat, 0);
+        if (sourceGuestFormat == 0 || destGuestFormat == 0)
+        {
+            return false;
+        }
+
         lock (_gate)
         {
-            if (_closed ||
-                !_availableGuestImages.ContainsKey(sourceAddress) ||
-                GetGuestTextureFormat(destinationFormat, 0) == 0)
+            if (_closed)
             {
                 return false;
+            }
+
+            if (!_availableGuestImages.ContainsKey(sourceAddress))
+            {
+                _availableGuestImages[sourceAddress] = sourceGuestFormat;
             }
         }
 
@@ -2391,6 +2409,13 @@ internal static unsafe class VulkanVideoPresenter
 
     private static long GetGuestWorkDependencyLocked(object work)
     {
+        if (work is VulkanOrderedGuestFlipWait flipWait &&
+            flipWait.Version != 0 &&
+            _flipCaptureWorkSequences.TryGetValue(flipWait.Version, out var captureWorkSequence))
+        {
+            return captureWorkSequence;
+        }
+
         IReadOnlyList<GuestDrawTexture> textures = work switch
         {
             VulkanOffscreenGuestDraw draw => draw.Draw.Textures,
@@ -5057,6 +5082,19 @@ internal static unsafe class VulkanVideoPresenter
         {
             FlushBatchedGuestCommands();
             _guestImages.TryGetValue(work.Address, out var source);
+            if (source is null && work.Address != 0 && work.Width != 0 && work.Height != 0)
+            {
+                source = GetOrCreateGuestImage(
+                    new GuestRenderTarget(
+                        work.Address,
+                        work.Width,
+                        work.Height,
+                        1,
+                        0),
+                    Format.B8G8R8A8Unorm,
+                    requiresStorage: false);
+                source.Initialized = true;
+            }
             if (_deviceLost ||
                 source is null ||
                 !source.Initialized)
@@ -5236,24 +5274,25 @@ internal static unsafe class VulkanVideoPresenter
         {
             var captured = work.Version != 0 &&
                 _capturedGuestFlipVersions.Contains(work.Version);
+            if (work.Version != 0 && !captured)
+            {
+                Console.Error.WriteLine(
+                    $"[LOADER][WARN] vk.flip_wait_order version={work.Version} " +
+                    $"executed before its flip capture; continuing.");
+            }
             TraceVulkanShader(
                 $"vk.flip_wait_safe version={work.Version} " +
                 $"queue={_activeGuestQueue.Name} submission={_activeGuestQueue.SubmissionId} " +
                 $"handle={work.VideoOutHandle} index={work.DisplayBufferIndex} " +
                 $"capture_complete={(captured ? 1 : 0)}");
-            // Demon's Souls executes wait-safe markers before their flip capture;
-            // an assert here would fail-fast the process, so warn once instead.
-            // Dedup on a flag, not the (per-frame-unique) version, to bound growth.
-            if (work.Version != 0 && !captured && !_loggedFlipWaitOrderViolation)
+            if (work.Version != 0)
             {
-                _loggedFlipWaitOrderViolation = true;
-                Console.Error.WriteLine(
-                    $"[LOADER][WARN] vk.flip_wait_order version={work.Version} " +
-                    "executed before its flip capture; continuing.");
+                lock (_gate)
+                {
+                    _flipCaptureWorkSequences.Remove(work.Version);
+                }
             }
         }
-
-        private bool _loggedFlipWaitOrderViolation;
 
         private GuestImageResource CreateGuestFlipSnapshot(
             GuestImageResource source,
@@ -6950,6 +6989,42 @@ internal static unsafe class VulkanVideoPresenter
             return true;
         }
 
+        private static ulong GetGuestImageByteSize(GuestImageResource image)
+        {
+            var format = (uint)(image.GuestFormat >> 8) & 0x1FFu;
+            var bytes = GetTextureByteCount(format, image.Width, image.Height);
+            return bytes > 0 ? bytes : ((ulong)image.Width * image.Height * 4);
+        }
+
+        private bool HasLiveGpuRenderTargetForAddress(ulong address)
+        {
+            foreach (var image in _guestImages.Values)
+            {
+                if (!image.IsCpuBacked)
+                {
+                    var size = GetGuestImageByteSize(image);
+                    if (address >= image.Address && address < image.Address + size)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            foreach (var image in _guestImageVariants.Values)
+            {
+                if (!image.IsCpuBacked)
+                {
+                    var size = GetGuestImageByteSize(image);
+                    if (address >= image.Address && address < image.Address + size)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private bool TryResolveGuestImageAlias(
             GuestDrawTexture texture,
             Format viewFormat,
@@ -6970,6 +7045,14 @@ internal static unsafe class VulkanVideoPresenter
                 // but it must not make a differently sized alias outrank the image
                 // that the texture descriptor actually names.
                 var score = 0;
+                if (!candidate.IsCpuBacked)
+                {
+                    score += 64;
+                }
+                if (candidate.RenderPass.Handle != 0)
+                {
+                    score += 32;
+                }
                 if (candidate.Width == texture.Width &&
                     candidate.Height == texture.Height)
                 {
@@ -7003,14 +7086,19 @@ internal static unsafe class VulkanVideoPresenter
                 }
             }
 
-            if (_guestImages.TryGetValue(texture.Address, out var active))
+            foreach (var active in _guestImages.Values)
             {
-                Consider(active, isActive: true);
+                var size = GetGuestImageByteSize(active);
+                if (texture.Address >= active.Address && texture.Address < active.Address + size)
+                {
+                    Consider(active, isActive: true);
+                }
             }
 
-            foreach (var (key, candidate) in _guestImageVariants)
+            foreach (var candidate in _guestImageVariants.Values)
             {
-                if (key.Address == texture.Address)
+                var size = GetGuestImageByteSize(candidate);
+                if (texture.Address >= candidate.Address && texture.Address < candidate.Address + size)
                 {
                     Consider(candidate, isActive: false);
                 }
@@ -7026,7 +7114,8 @@ internal static unsafe class VulkanVideoPresenter
                         $"addr=0x{texture.Address:X16} " +
                         $"tex={texture.Width}x{texture.Height}/{viewFormat} " +
                         $"image={best.Width}x{best.Height}/{best.Format} " +
-                        $"initialized={best.Initialized}");
+                        $"initialized={best.Initialized} " +
+                        $"cpuBacked={best.IsCpuBacked}");
                 }
                 return true;
             }
@@ -7634,7 +7723,8 @@ internal static unsafe class VulkanVideoPresenter
             };
 
             if (texture.Address != 0 &&
-                !_guestImages.ContainsKey(texture.Address))
+                !_guestImages.ContainsKey(texture.Address) &&
+                !HasLiveGpuRenderTargetForAddress(texture.Address))
             {
                 var guestFormat = GetGuestTextureFormat(texture.Format, texture.NumberType);
                 var guestImage = new GuestImageResource
@@ -9918,35 +10008,36 @@ internal static unsafe class VulkanVideoPresenter
                              pageStart += pageSize)
                         {
                             var pageEnd = Math.Min(pageStart + pageSize, mappedBytes.Length);
-                            pageRuns.Clear();
-                            var cursor = pageStart;
-                            while (cursor < pageEnd)
-                            {
-                                while (cursor < pageEnd &&
-                                       mappedBytes[cursor] == shadowBytes[cursor])
-                                {
-                                    cursor++;
-                                }
+                            var pageLength = pageEnd - pageStart;
+                            var mappedPage = mappedBytes.Slice(pageStart, pageLength);
+                            var shadowPage = shadowBytes.Slice(pageStart, pageLength);
 
-                                if (cursor == pageEnd)
+                            if (mappedPage.SequenceEqual(shadowPage))
+                            {
+                                continue;
+                            }
+
+                            pageRuns.Clear();
+                            var cursor = 0;
+                            while (cursor < pageLength)
+                            {
+                                cursor = SkipEqualBytes(mappedPage, shadowPage, cursor, pageLength);
+
+                                if (cursor == pageLength)
                                 {
                                     break;
                                 }
 
                                 var runStart = cursor;
-                                while (cursor < pageEnd &&
-                                       mappedBytes[cursor] != shadowBytes[cursor])
-                                {
-                                    cursor++;
-                                }
+                                cursor = SkipDifferentBytes(mappedPage, shadowPage, cursor, pageLength);
 
                                 var runLength = cursor - runStart;
-                                pageRuns.Add((runStart, runLength));
+                                pageRuns.Add((pageStart + runStart, runLength));
                                 changedRuns++;
                                 changedBytes += (ulong)runLength;
                                 if (firstChangedOffset < 0)
                                 {
-                                    firstChangedOffset = runStart;
+                                    firstChangedOffset = pageStart + runStart;
                                 }
                             }
 
@@ -9956,7 +10047,6 @@ internal static unsafe class VulkanVideoPresenter
                             }
 
                             changedPages++;
-                            var pageLength = pageEnd - pageStart;
                             var livePage = livePageBuffer.AsSpan(0, pageLength);
                             if (memory.TryRead(guestAddress + (ulong)pageStart, livePage))
                             {
@@ -10114,6 +10204,49 @@ internal static unsafe class VulkanVideoPresenter
                     }
                 }
             }
+        }
+
+        private static int SkipEqualBytes(
+            ReadOnlySpan<byte> a,
+            ReadOnlySpan<byte> b,
+            int start,
+            int end)
+        {
+            var cursor = start;
+            var vectorSize = System.Numerics.Vector<byte>.Count;
+            while (cursor + vectorSize <= end)
+            {
+                var va = new System.Numerics.Vector<byte>(a.Slice(cursor, vectorSize));
+                var vb = new System.Numerics.Vector<byte>(b.Slice(cursor, vectorSize));
+                if (va != vb)
+                {
+                    break;
+                }
+
+                cursor += vectorSize;
+            }
+
+            while (cursor < end && a[cursor] == b[cursor])
+            {
+                cursor++;
+            }
+
+            return cursor;
+        }
+
+        private static int SkipDifferentBytes(
+            ReadOnlySpan<byte> a,
+            ReadOnlySpan<byte> b,
+            int start,
+            int end)
+        {
+            var cursor = start;
+            while (cursor < end && a[cursor] != b[cursor])
+            {
+                cursor++;
+            }
+
+            return cursor;
         }
 
         private void RecordChunkedComputeDispatch(
@@ -12339,6 +12472,7 @@ private void PollPerfOverlayHotkey()
                 presentation.TranslatedDraw is null &&
                 presentation.GuestImageAddress == 0)
             {
+                _presentedSequence = presentation.Sequence;
                 return;
             }
 
@@ -12362,6 +12496,7 @@ private void PollPerfOverlayHotkey()
                         _extent.Height);
                 if ((ulong)pixels.Length > _stagingSize)
                 {
+                    _presentedSequence = presentation.Sequence;
                     return;
                 }
             }
@@ -14997,6 +15132,7 @@ private void PollPerfOverlayHotkey()
             {
                 _availableGuestImages.Clear();
                 _lastOrderedGuestFlipVersions.Clear();
+                _flipCaptureWorkSequences.Clear();
             }
             DestroySwapchainResources();
             if (_device.Handle != 0)

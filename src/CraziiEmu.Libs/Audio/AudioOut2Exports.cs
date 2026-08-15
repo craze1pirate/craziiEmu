@@ -113,22 +113,52 @@ public static class AudioOut2Exports
     public static int AudioOut2ContextQueryMemory(CpuContext ctx)
     {
         var paramAddress = ctx[CpuRegister.Rdi];
-        var memoryInfoAddress = ctx[CpuRegister.Rsi];
+        var memoryInfoAddress = ResolveGuestOutBuffer(ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
         if (paramAddress == 0 || memoryInfoAddress == 0)
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        Span<byte> memoryInfo = stackalloc byte[0x20];
-        memoryInfo.Clear();
-        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x00..], AudioOut2ContextMemorySize);
-        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x08..], AudioOut2ContextMemoryAlignment);
-        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x10..], AudioOut2ContextMemorySize);
-        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x18..], AudioOut2ContextMemoryAlignment);
+        var contextMemorySize = (ulong)AudioOut2ContextMemorySize;
+        Span<byte> param = stackalloc byte[AudioOut2ContextParamSize];
+        if (ctx.Memory.TryRead(paramAddress, param))
+        {
+            var queueDepth = BinaryPrimitives.ReadUInt32LittleEndian(param[0x0C..]);
+            if (queueDepth == 0)
+            {
+                queueDepth = 4;
+            }
 
-        return ctx.Memory.TryWrite(memoryInfoAddress, memoryInfo)
-            ? SetReturn(ctx, 0)
-            : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            contextMemorySize = checked(0x10000UL + (queueDepth * 0x590UL));
+        }
+
+        if (IsGuestStackAddress(memoryInfoAddress))
+        {
+            Span<byte> sizeOnly = stackalloc byte[sizeof(ulong)];
+            BinaryPrimitives.WriteUInt64LittleEndian(sizeOnly, contextMemorySize);
+            if (!ctx.Memory.TryWrite(memoryInfoAddress, sizeOnly))
+            {
+                return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            TraceAudioOut2(
+                $"context-query-mem stack-size-only size=0x{contextMemorySize:X} out=0x{memoryInfoAddress:X}");
+            return SetReturn(ctx, 0);
+        }
+
+        Span<byte> memoryInfo = stackalloc byte[0x10];
+        memoryInfo.Clear();
+        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x00..], contextMemorySize);
+        BinaryPrimitives.WriteUInt64LittleEndian(memoryInfo[0x08..], AudioOut2ContextMemoryAlignment);
+
+        if (!ctx.Memory.TryWrite(memoryInfoAddress, memoryInfo))
+        {
+            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAudioOut2(
+            $"context-query-mem heap size=0x{contextMemorySize:X} align=0x{AudioOut2ContextMemoryAlignment:X} out=0x{memoryInfoAddress:X}");
+        return SetReturn(ctx, 0);
     }
 
     [SysAbiExport(
@@ -289,7 +319,7 @@ public static class AudioOut2Exports
     public static int AudioOut2PortGetState(CpuContext ctx)
     {
         var handle = ctx[CpuRegister.Rdi];
-        var stateAddress = ctx[CpuRegister.Rsi];
+        var stateAddress = ResolveGuestOutBuffer(ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
         if (handle == 0 || stateAddress == 0)
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
@@ -316,17 +346,17 @@ public static class AudioOut2Exports
         LibraryName = "libSceAudioOut2")]
     public static int AudioOut2GetSpeakerInfo(CpuContext ctx)
     {
-        var infoAddress = ctx[CpuRegister.Rdi];
+        var infoAddress = ResolveGuestOutBuffer(ctx[CpuRegister.Rdi], ctx[CpuRegister.Rdx]);
         if (infoAddress == 0)
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        Span<byte> info = stackalloc byte[0x40];
+        Span<byte> info = stackalloc byte[0x20];
         info.Clear();
-        BinaryPrimitives.WriteUInt32LittleEndian(info[0x00..], 1);
-        BinaryPrimitives.WriteUInt32LittleEndian(info[0x04..], 2);
-        BinaryPrimitives.WriteUInt32LittleEndian(info[0x08..], 48000);
+        BinaryPrimitives.WriteUInt32LittleEndian(info[0x00..], 2);
+        BinaryPrimitives.WriteUInt32LittleEndian(info[0x04..], 48000);
+        BinaryPrimitives.WriteUInt16LittleEndian(info[0x08..], 0x01);
 
         return ctx.Memory.TryWrite(infoAddress, info)
             ? SetReturn(ctx, 0)
@@ -346,6 +376,95 @@ public static class AudioOut2Exports
         Target = Generation.Gen5,
         LibraryName = "libSceAudioOut2")]
     public static int AudioOut2UserDestroy(CpuContext ctx) => SetReturn(ctx, 0);
+
+    [SysAbiExport(
+        Nid = "4BlZurolOAo",
+        ExportName = "sceAudioOut2GetSpeakerArrayCoefficients",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAudioOut2")]
+    public static int AudioOut2GetSpeakerArrayCoefficients(CpuContext ctx) =>
+        WriteZeroSpeakerArrayCoefficients(ctx, "coefficients");
+
+    [SysAbiExport(
+        Nid = "28QqMnuuJ9Y",
+        ExportName = "sceAudioOut2GetSpeakerArrayAmbisonicsCoefficients",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAudioOut2")]
+    public static int AudioOut2GetSpeakerArrayAmbisonicsCoefficients(CpuContext ctx) =>
+        WriteZeroSpeakerArrayCoefficients(ctx, "ambisonics-coefficients");
+
+    [SysAbiExport(
+        Nid = "G1YOKDJYX2Y",
+        ExportName = "sceAudioOut2GetSpeakerArrayMemorySize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAudioOut2")]
+    public static int AudioOut2GetSpeakerArrayMemorySize(CpuContext ctx)
+    {
+        var numChannels = (uint)ctx[CpuRegister.Rdi];
+        if (numChannels == 0 || numChannels > SpeakerArrayMaxChannels)
+        {
+            numChannels = SpeakerArrayDefaultChannels;
+        }
+
+        var size = ComputeSpeakerArrayBytes(numChannels);
+        TraceAudioOut2($"speaker-array-get-size rdi=0x{ctx[CpuRegister.Rdi]:X} -> 0x{size:X}");
+        ctx[CpuRegister.Rax] = unchecked((ulong)size);
+        return size;
+    }
+
+    [SysAbiExport(
+        Nid = "+k91hoTuoA8",
+        ExportName = "sceAudioOut2SpeakerArrayCreate",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAudioOut2")]
+    public static int AudioOut2SpeakerArrayCreate(CpuContext ctx)
+    {
+        var param = ctx[CpuRegister.Rdi];
+        var outHandleAddress = ctx[CpuRegister.Rsi];
+        var outReservedAddress = ctx[CpuRegister.Rdx];
+        var channels = (uint)ctx[CpuRegister.Rcx];
+        if (channels == 0 || channels > SpeakerArrayMaxChannels)
+        {
+            channels = SpeakerArrayDefaultChannels;
+        }
+
+        if (outHandleAddress == 0)
+        {
+            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        var bytes = ComputeSpeakerArrayBytes(channels);
+        if (!TryAllocateSpeakerArrayMemory(ctx, (ulong)bytes, out var memory) ||
+            !InitializeSpeakerArrayObject(ctx, memory, channels))
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][ERROR] audio_out2.speaker-array-create alloc-failed bytes=0x{bytes:X} channels={channels}");
+            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        SpeakerArrays[memory] = 0;
+        if (!TryWriteUInt64(ctx, outHandleAddress, memory))
+        {
+            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAudioOut2(
+            $"speaker-array-create object=0x{memory:X} bytes=0x{bytes:X} channels={channels} param=0x{param:X} out=0x{outHandleAddress:X}");
+
+        ctx[CpuRegister.Rax] = memory;
+        return 0;
+    }
+
+    [SysAbiExport(
+        Nid = "erCWQR5eKiQ",
+        ExportName = "sceAudioOut2SpeakerArrayDestroy",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAudioOut2")]
+    public static int AudioOut2SpeakerArrayDestroy(CpuContext ctx)
+    {
+        SpeakerArrays.TryRemove(ctx[CpuRegister.Rdi], out _);
+        return SetReturn(ctx, 0);
+    }
 
     [SysAbiExport(
         Nid = "xywYcRB7nbQ",
@@ -368,6 +487,127 @@ public static class AudioOut2Exports
             : SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
+    private const int SpeakerArrayHeaderSize = 0x40;
+    private const int SpeakerArrayEntrySize = 0x100;
+    private const int SpeakerArrayScratchBytes = 0x400;
+    private const uint SpeakerArrayDefaultChannels = 8;
+    private const uint SpeakerArrayMaxChannels = 32;
+    private const int SpeakerArrayDivisorFieldOffset = 0x34;
+    private const int SpeakerArrayResultFieldOffset = 0x3C;
+    private const uint SpeakerArrayDefaultDivisor = 1;
+    private const int SpeakerArrayCoefficientBytes = 0x400;
+
+    private static readonly ConcurrentDictionary<ulong, byte> SpeakerArrays = new();
+
+    private static int ComputeSpeakerArrayBytes(uint channels) =>
+        SpeakerArrayHeaderSize + (int)(channels * SpeakerArrayEntrySize) + SpeakerArrayScratchBytes;
+
+    private static bool InitializeSpeakerArrayObject(CpuContext ctx, ulong memory, uint channels)
+    {
+        Span<byte> body = stackalloc byte[SpeakerArrayHeaderSize];
+        body.Clear();
+        BinaryPrimitives.WriteUInt32LittleEndian(body[0x00..], (uint)SpeakerArrayHeaderSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(body[0x04..], channels);
+        BinaryPrimitives.WriteUInt32LittleEndian(body[SpeakerArrayDivisorFieldOffset..], SpeakerArrayDefaultDivisor);
+        BinaryPrimitives.WriteUInt32LittleEndian(body[SpeakerArrayResultFieldOffset..], 0);
+        return ctx.Memory.TryWrite(memory, body);
+    }
+
+    private static bool TryAllocateSpeakerArrayMemory(CpuContext ctx, ulong bytes, out ulong memory)
+    {
+        memory = 0;
+        var length = Math.Max(bytes, 0x1000UL);
+
+        if (TryAllocateViaGuestAllocator(ctx, length, 0x1000, out memory) &&
+            IsSafeSpeakerArrayAddress(memory))
+        {
+            return true;
+        }
+
+        if (Kernel.KernelMemoryCompatExports.TryAllocateHleData(ctx, length, 0x1000, out memory) &&
+            IsSafeSpeakerArrayAddress(memory))
+        {
+            return true;
+        }
+
+        memory = 0;
+        return false;
+    }
+
+    private static bool TryAllocateViaGuestAllocator(CpuContext ctx, ulong length, ulong alignment, out ulong memory)
+    {
+        memory = 0;
+        var allocator = ctx.Memory as IGuestMemoryAllocator;
+        if (allocator is null && ctx.Memory is ICpuMemoryWrapper { Inner: IGuestMemoryAllocator inner })
+        {
+            allocator = inner;
+        }
+
+        return allocator is not null && allocator.TryAllocateGuestMemory(length, alignment, out memory);
+    }
+
+    private static bool IsSafeSpeakerArrayAddress(ulong value) =>
+        IsPlausibleGuestObjectPointer(value) &&
+        !IsGuestStackAddress(value) &&
+        !IsDirectMemoryWindowAddress(value);
+
+    private static bool IsDirectMemoryWindowAddress(ulong value) =>
+        value >= 0x0000_1400_0000_0000UL && value < 0x0000_1800_0000_0000UL;
+
+    private static bool IsPlausibleGuestObjectPointer(ulong value) =>
+        value >= 0x1000_0000UL &&
+        value != 0x10000UL &&
+        value < 0x0000_8000_0000_0000UL;
+
+    private static bool IsGuestStackAddress(ulong value) =>
+        value >= 0x0000_7FF0_0000_0000UL && value <= 0x0000_7FFF_FFFF_FFFFUL;
+
+    private static ulong ResolveGuestOutBuffer(ulong primary, ulong secondary)
+    {
+        if (IsWritableOutBuffer(primary))
+        {
+            return primary;
+        }
+
+        if (IsWritableOutBuffer(secondary))
+        {
+            return secondary;
+        }
+
+        return 0;
+    }
+
+    private static bool IsWritableOutBuffer(ulong value) =>
+        value != 0 &&
+        value != 0x10000UL &&
+        value >= 0x1000UL &&
+        (IsPlausibleGuestObjectPointer(value) || IsGuestStackAddress(value));
+
+    private static int WriteZeroSpeakerArrayCoefficients(CpuContext ctx, string label)
+    {
+        var destination = ctx[CpuRegister.Rsi];
+        if (destination == 0)
+        {
+            destination = ctx[CpuRegister.Rdx];
+        }
+
+        if (destination != 0 &&
+            IsPlausibleGuestObjectPointer(destination) &&
+            !IsGuestStackAddress(destination))
+        {
+            Span<byte> zeros = stackalloc byte[SpeakerArrayCoefficientBytes];
+            zeros.Clear();
+            if (!ctx.Memory.TryWrite(destination, zeros))
+            {
+                TraceAudioOut2($"{label} write-failed dest=0x{destination:X}");
+                return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+        }
+
+        TraceAudioOut2($"{label} ok dest=0x{destination:X}");
+        return SetReturn(ctx, 0);
+    }
+
     private static bool TryWriteUInt64(CpuContext ctx, ulong address, ulong value)
     {
         Span<byte> buffer = stackalloc byte[sizeof(ulong)];
@@ -383,7 +623,7 @@ public static class AudioOut2Exports
 
     private static void TraceAudioOut2(string message)
     {
-        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AUDIO_OUT2"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AUDIO_OUT2") ?? Environment.GetEnvironmentVariable("SHARPEMU_LOG_AUDIO_OUT2"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine($"[LOADER][TRACE] audio_out2.{message}");
         }

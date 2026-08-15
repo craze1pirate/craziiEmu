@@ -12,8 +12,9 @@ namespace CraziiEmu.Libs.Kernel;
 
 public static class KernelEventQueueCompatExports
 {
-    private const int KernelEventSize = 0x20;
+    public const int KernelEventSize = 0x20;
     public const short KernelEventFilterGraphics = -14;
+    public const short KernelEventFilterHRTimer = -15;
     public const short KernelEventFilterUser = -11;
     public const short KernelEventFilterAmpr = -16;
     public const short KernelEventFilterAmprSystem = -17;
@@ -35,7 +36,8 @@ public static class KernelEventQueueCompatExports
     private readonly record struct KernelEventRegistration(
         ulong Ident,
         short Filter,
-        ulong UserData);
+        ulong UserData,
+        long DeadlineTimestamp = 0);
 
     // Grow-only ring buffer standing in for LinkedList<KernelQueuedEvent>, which
     // allocated a node per enqueue — steady churn at one enqueue per vblank/flip edge
@@ -401,6 +403,11 @@ public static class KernelEventQueueCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
+        lock (_eventQueueGate)
+        {
+            CheckAndTriggerExpiredTimersLocked();
+        }
+
         var deliveredCount = DequeueEvents(ctx, handle, eventsAddress, eventCapacity);
         if (outCountAddress != 0 && !TryWriteUInt32(ctx, outCountAddress, (uint)deliveredCount))
         {
@@ -506,11 +513,84 @@ public static class KernelEventQueueCompatExports
         return queued;
     }
 
+    [SysAbiExport(
+        Nid = "R74tt43xP6k",
+        ExportName = "sceKernelAddHRTimerEvent",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelAddHRTimerEvent(CpuContext ctx)
+    {
+        var handle = ctx[CpuRegister.Rdi];
+        var ident = unchecked((ulong)(long)(int)ctx[CpuRegister.Rsi]);
+        var tsAddress = ctx[CpuRegister.Rdx];
+        var userData = ctx[CpuRegister.Rcx];
+
+        if (!IsValidEqueue(handle))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        if (tsAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        Span<byte> tsBytes = stackalloc byte[16];
+        if (!ctx.Memory.TryRead(tsAddress, tsBytes))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var tvSec = BinaryPrimitives.ReadInt64LittleEndian(tsBytes[0x00..]);
+        var tvNsec = BinaryPrimitives.ReadInt64LittleEndian(tsBytes[0x08..]);
+
+        if (tvSec < 0 || tvNsec < 0 || tvNsec >= 1_000_000_000L)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        var delayTicks = (long)Math.Ceiling(tvSec * (double)System.Diagnostics.Stopwatch.Frequency + tvNsec * (double)System.Diagnostics.Stopwatch.Frequency / 1_000_000_000.0);
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var deadlineTimestamp = now + Math.Max(1L, delayTicks);
+
+        var registered = RegisterEvent(
+            handle,
+            ident,
+            KernelEventFilterHRTimer,
+            userData,
+            deadlineTimestamp);
+
+        TraceEventQueue(ctx, "add_hrtimer", handle);
+        return registered
+            ? (int)OrbisGen2Result.ORBIS_GEN2_OK
+            : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+    }
+
+    [SysAbiExport(
+        Nid = "J+LF6LwObXU",
+        ExportName = "sceKernelDeleteHRTimerEvent",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelDeleteHRTimerEvent(CpuContext ctx)
+    {
+        var handle = ctx[CpuRegister.Rdi];
+        var ident = unchecked((ulong)(long)(int)ctx[CpuRegister.Rsi]);
+        var deleted = DeleteRegisteredEvent(
+            handle,
+            ident,
+            KernelEventFilterHRTimer);
+        TraceEventQueue(ctx, "delete_hrtimer", handle);
+        return deleted
+            ? (int)OrbisGen2Result.ORBIS_GEN2_OK
+            : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+    }
+
     public static bool RegisterEvent(
         ulong handle,
         ulong ident,
         short filter,
-        ulong userData)
+        ulong userData,
+        long deadlineTimestamp = 0)
     {
         lock (_eventQueueGate)
         {
@@ -525,7 +605,7 @@ public static class KernelEventQueueCompatExports
                 _registeredEvents[handle] = events;
             }
 
-            events[(ident, filter)] = new KernelEventRegistration(ident, filter, userData);
+            events[(ident, filter)] = new KernelEventRegistration(ident, filter, userData, deadlineTimestamp);
             return true;
         }
     }
@@ -619,15 +699,29 @@ public static class KernelEventQueueCompatExports
                         _pendingEvents[handle] = queue;
                     }
 
-                    QueueOrUpdateEvent(
-                        queue,
-                        new KernelQueuedEvent(
-                            registration.Ident,
-                            registration.Filter,
-                            0,
-                            1,
-                            data,
-                            registration.UserData));
+                    // GPU interrupt events must not coalesce: the AGC driver's
+                    // interrupt thread accounts exactly one completion per
+                    // delivered kevent (it never reads the kevent payload), so
+                    // merging N triggers into one pending entry silently drops
+                    // N-1 completions and wedges its dependency counters. Queue
+                    // a distinct entry per trigger, with a defensive cap so an
+                    // undrained queue cannot grow without bound.
+                    var queuedEvent = new KernelQueuedEvent(
+                        registration.Ident,
+                        registration.Filter,
+                        0,
+                        1,
+                        data,
+                        registration.UserData);
+                    if (CountPendingEvents(queue, registration.Ident, registration.Filter) < 256)
+                    {
+                        queue.AddLast(queuedEvent);
+                    }
+                    else
+                    {
+                        QueueOrUpdateEvent(queue, queuedEvent);
+                    }
+
                     (wakeHandles ??= new List<ulong>()).Add(handle);
                     triggeredCount++;
 
@@ -677,15 +771,22 @@ public static class KernelEventQueueCompatExports
                         _pendingEvents[handle] = queue;
                     }
 
-                    QueueOrUpdateEvent(
-                        queue,
-                        new KernelQueuedEvent(
-                            registration.Ident,
-                            registration.Filter,
-                            0,
-                            1,
-                            registration.Ident,
-                            registration.UserData));
+                    var queuedEvent = new KernelQueuedEvent(
+                        registration.Ident,
+                        registration.Filter,
+                        0,
+                        1,
+                        registration.Ident,
+                        registration.UserData);
+                    if (CountPendingEvents(queue, registration.Ident, registration.Filter) < 256)
+                    {
+                        queue.AddLast(queuedEvent);
+                    }
+                    else
+                    {
+                        QueueOrUpdateEvent(queue, queuedEvent);
+                    }
+
                     (wakeHandles ??= []).Add(handle);
                     triggeredCount++;
                 }
@@ -820,12 +921,79 @@ public static class KernelEventQueueCompatExports
             : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT;
     }
 
+    private static void CheckAndTriggerExpiredTimersLocked()
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        List<(ulong Handle, ulong Ident, ulong UserData)>? expired = null;
+
+        foreach (var (handle, registrations) in _registeredEvents)
+        {
+            foreach (var registration in registrations.Values)
+            {
+                if (registration.Filter == KernelEventFilterHRTimer &&
+                    registration.DeadlineTimestamp > 0 &&
+                    now >= registration.DeadlineTimestamp)
+                {
+                    (expired ??= new()).Add((handle, registration.Ident, registration.UserData));
+                }
+            }
+        }
+
+        if (expired is not null)
+        {
+            foreach (var (handle, ident, userData) in expired)
+            {
+                if (_registeredEvents.TryGetValue(handle, out var registrations))
+                {
+                    registrations.Remove((ident, KernelEventFilterHRTimer));
+                }
+
+                if (!_pendingEvents.TryGetValue(handle, out var queue))
+                {
+                    queue = new KernelEventDeque();
+                    _pendingEvents[handle] = queue;
+                }
+
+                QueueOrUpdateEvent(
+                    queue,
+                    new KernelQueuedEvent(
+                        ident,
+                        KernelEventFilterHRTimer,
+                        0x11, // EV_ADD | EV_ONESHOT
+                        0,
+                        0,
+                        userData));
+
+                WakeEventQueue(handle);
+            }
+        }
+    }
+
     private static bool HasPendingEvents(ulong handle)
     {
         lock (_eventQueueGate)
         {
+            CheckAndTriggerExpiredTimersLocked();
             return _pendingEvents.TryGetValue(handle, out var events) && events.Count != 0;
         }
+    }
+
+    private static int CountPendingEvents(
+        KernelEventDeque queue,
+        ulong ident,
+        short filter)
+    {
+        var count = 0;
+        for (var i = 0; i < queue.Count; i++)
+        {
+            var pending = queue[i];
+            if (pending.Ident == ident && pending.Filter == filter)
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private static void QueueOrUpdateEvent(

@@ -357,6 +357,34 @@ public static class KernelSemaphoreCompatExports
         return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
+    public static bool TrySignalSemaInternal(uint handle, int signalCount = 1)
+    {
+        if (!_semaphores.TryGetValue(handle, out var semaphore) || signalCount <= 0)
+        {
+            return false;
+        }
+
+        lock (semaphore.Gate)
+        {
+            if (semaphore.MaxCount > 0 && semaphore.Count > semaphore.MaxCount - signalCount)
+            {
+                return false;
+            }
+
+            semaphore.Count = semaphore.MaxCount > 0
+                ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
+                : semaphore.Count + signalCount;
+            Monitor.PulseAll(semaphore.Gate);
+            if (_traceSema)
+            {
+                TraceSemaphore($"signal_internal handle=0x{handle:X8} name='{semaphore.Name}' signal={signalCount} count={semaphore.Count} waiters={semaphore.WaitingThreads}");
+            }
+        }
+
+        _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
+        return true;
+    }
+
     public static void SignalAllSemaphores(int signalCount = 1)
     {
         foreach (var (handle, semaphore) in _semaphores)

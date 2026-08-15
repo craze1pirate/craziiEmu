@@ -12,7 +12,23 @@ public static class NpManagerExports
     private const int NpTitleIdSize = 16;
     private const int NpTitleSecretSize = 128;
     private const int NpErrorInvalidArgument = unchecked((int)0x80550003);
-    private static int _nextRequestId;
+    private const int NpErrorSignedOut = unchecked((int)0x80550006);
+    private const int NpErrorAborted = unchecked((int)0x80550012);
+    private const int NpErrorRequestMax = unchecked((int)0x80550013);
+    private const int NpErrorRequestNotFound = unchecked((int)0x80550014);
+    private const int NpRequestMax = 128;
+
+    private enum NpRequestState { Free, Ready, Aborted, Complete }
+
+    private sealed class NpRequest
+    {
+        public NpRequestState State;
+        public bool Async;
+        public int Result;
+    }
+
+    private static readonly object _requestGate = new();
+    private static readonly List<NpRequest> _requests = new();
 
     [SysAbiExport(
         Nid = "hw5KNqAAels",
@@ -36,10 +52,18 @@ public static class NpManagerExports
     {
         var reqId = unchecked((int)ctx[CpuRegister.Rdi]);
         var userId = unchecked((int)ctx[CpuRegister.Rsi]);
-        _ = reqId;
-        _ = userId;
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+
+        if (reqId <= 0)
+        {
+            return SetReturn(ctx, NpErrorInvalidArgument);
+        }
+
+        // KytyPS5 completes the request with np_error_signed_out so that
+        // PSNCore.prx takes the offline path instead of trying to initialise
+        // online session objects that crash on NULL pointers.
+        var result = CompleteSignedOut(reqId);
+        ctx[CpuRegister.Rax] = unchecked((ulong)result);
+        return result;
     }
 
     [SysAbiExport(
@@ -60,8 +84,10 @@ public static class NpManagerExports
         LibraryName = "libSceNpManager")]
     public static int NpDeleteRequest(CpuContext ctx)
     {
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        var reqId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var result = DeleteRequest(reqId);
+        ctx[CpuRegister.Rax] = unchecked((ulong)result);
+        return result;
     }
 
     [SysAbiExport(
@@ -71,9 +97,9 @@ public static class NpManagerExports
         LibraryName = "libSceNpManager")]
     public static int NpCreateRequest(CpuContext ctx)
     {
-        var reqId = Interlocked.Increment(ref _nextRequestId);
+        var reqId = CreateRequest(async: false);
         ctx[CpuRegister.Rax] = unchecked((ulong)reqId);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        return reqId > 0 ? (int)OrbisGen2Result.ORBIS_GEN2_OK : reqId;
     }
 
     [SysAbiExport(
@@ -317,5 +343,77 @@ public static class NpManagerExports
         return ctx.Memory.TryWrite(address, onlineId)
             ? ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK)
             : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
+
+    // --- NP Request State Machine (ported from KytyPS5) ---
+
+    private static int CreateRequest(bool async)
+    {
+        lock (_requestGate)
+        {
+            for (int i = 0; i < _requests.Count; i++)
+            {
+                if (_requests[i].State == NpRequestState.Free)
+                {
+                    _requests[i].State = NpRequestState.Ready;
+                    _requests[i].Async = async;
+                    _requests[i].Result = 0;
+                    return i + 1;
+                }
+            }
+
+            if (_requests.Count >= NpRequestMax)
+            {
+                return NpErrorRequestMax;
+            }
+
+            _requests.Add(new NpRequest { State = NpRequestState.Ready, Async = async });
+            return _requests.Count;
+        }
+    }
+
+    private static int CompleteSignedOut(int reqId)
+    {
+        lock (_requestGate)
+        {
+            if (reqId <= 0 || reqId > _requests.Count ||
+                _requests[reqId - 1].State == NpRequestState.Free)
+            {
+                return NpErrorRequestNotFound;
+            }
+
+            var request = _requests[reqId - 1];
+            if (request.State == NpRequestState.Complete)
+            {
+                request.Result = NpErrorInvalidArgument;
+                return NpErrorInvalidArgument;
+            }
+            if (request.State == NpRequestState.Aborted)
+            {
+                request.Result = NpErrorAborted;
+                return NpErrorAborted;
+            }
+
+            request.State = NpRequestState.Complete;
+            request.Result = NpErrorSignedOut;
+            return request.Async ? 0 : NpErrorSignedOut;
+        }
+    }
+
+    private static int DeleteRequest(int reqId)
+    {
+        lock (_requestGate)
+        {
+            if (reqId <= 0 || reqId > _requests.Count ||
+                _requests[reqId - 1].State == NpRequestState.Free)
+            {
+                return NpErrorRequestNotFound;
+            }
+
+            _requests[reqId - 1].State = NpRequestState.Free;
+            _requests[reqId - 1].Async = false;
+            _requests[reqId - 1].Result = 0;
+            return 0;
+        }
     }
 }

@@ -47,6 +47,22 @@ public static class SystemServiceExports
     }
 
     [SysAbiExport(
+        Nid = "8Lo6Zv94aho",
+        ExportName = "sceSystemServiceDisableNoticeScreenSkipFlagAutoSet",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSystemService")]
+    public static int SystemServiceDisableNoticeScreenSkipFlagAutoSet(CpuContext ctx) =>
+        ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "Q3utJvma4Mo",
+        ExportName = "sceSystemServiceSetNoticeScreenSkipFlag",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSystemService")]
+    public static int SystemServiceSetNoticeScreenSkipFlag(CpuContext ctx) =>
+        ctx.SetReturn(0);
+
+    [SysAbiExport(
         Nid = "4veE0XiIugA",
         ExportName = "sceSystemServiceGetMainAppTitleId",
         Target = Generation.Gen5,

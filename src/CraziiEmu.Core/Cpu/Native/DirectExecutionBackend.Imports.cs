@@ -21,7 +21,6 @@ namespace CraziiEmu.Core.Cpu.Native;
 
 public sealed partial class DirectExecutionBackend
 {
-	private static readonly ConcurrentDictionary<ulong, object> _syncWaitObjects = new();
 	
 	// The native import trampoline keeps the original guest GPR stack layout at
 	// argPackPtr and stores volatile SysV-only state immediately below it.  This
@@ -646,55 +645,7 @@ public sealed partial class DirectExecutionBackend
 					return 0ul;
 				}
 
-				if (importStubEntry.Nid == "Hc4CaR6JBL0")
-				{
-					// Hc4CaR6JBL0 is sceKernelSyncOnAddressWait.
-					LastError = null;
-					dispatchResolved = true;
 
-					if (value == 0L)
-					{
-						return 0x80020016ul; // SCE_KERNEL_ERROR_EINVAL
-					}
-
-					ulong expectedValue = (uint)value2;
-					uint lockValue = 0;
-					bool canRead = cpuContext != null && cpuContext.TryReadUInt32(value, out lockValue);
-
-					if (canRead && lockValue != expectedValue)
-					{
-						return 0x80020023ul; // SCE_KERNEL_ERROR_EAGAIN
-					}
-
-					object syncObj = _syncWaitObjects.GetOrAdd(value, _ => new object());
-					lock (syncObj)
-					{
-						if (cpuContext != null && cpuContext.TryReadUInt32(value, out lockValue) && lockValue != expectedValue)
-						{
-							return 0x80020023ul; // SCE_KERNEL_ERROR_EAGAIN
-						}
-
-						// True blocking wait using 0% host CPU until pulsed or timed out
-						Monitor.Wait(syncObj, 50);
-					}
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "q2y-wDIVWZA")
-				{
-					// q2y-wDIVWZA is sceKernelSyncOnAddressWake.
-					// Notifies threads waiting on address mutation.
-					LastError = null;
-					dispatchResolved = true;
-					if (value != 0L && _syncWaitObjects.TryGetValue(value, out var syncObj))
-					{
-						lock (syncObj)
-						{
-							Monitor.PulseAll(syncObj);
-						}
-					}
-					return 0ul;
-				}
 
 				if (importStubEntry.Nid == "NH6xARDOVv8")
 				{
@@ -1619,6 +1570,12 @@ public sealed partial class DirectExecutionBackend
 		var expectedMutexTrylockBusy =
 			string.Equals(nid, "K-jXhbt2gn4", StringComparison.Ordinal) &&
 			result == OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
+		var expectedSemaphoreTrywaitAgain =
+			string.Equals(nid, "H2a+IN9TP0E", StringComparison.Ordinal) &&
+			result == OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
+		var expectedPollSemaBusy =
+			string.Equals(nid, "12wOHk8ywb0", StringComparison.Ordinal) &&
+			result == OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
 		var expectedNetAcceptWouldBlock =
 			string.Equals(nid, "PIWqhn9oSxc", StringComparison.Ordinal) &&
 			resultValue == unchecked((int)0x80410123);
@@ -1632,6 +1589,8 @@ public sealed partial class DirectExecutionBackend
 			!expectedTimedWaitTimeout &&
 			!expectedEqueueTimeout &&
 			!expectedMutexTrylockBusy &&
+			!expectedSemaphoreTrywaitAgain &&
+			!expectedPollSemaBusy &&
 			!expectedNetAcceptWouldBlock &&
 			!expectedUserServiceNoEvent &&
 			!expectedPrivacyInvalidParameter)
@@ -2205,19 +2164,14 @@ public sealed partial class DirectExecutionBackend
 			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress) &&
 			!TryResolveImportStubAddress(symbolName, out resolvedAddress))
 		{
-			if (_unresolvedReturnStub != 0)
+			Console.Error.WriteLine(
+				$"[LOADER][WARN] sceKernelDlsym unresolved symbol: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
+			if (outputAddress != 0L)
 			{
-				resolvedAddress = (ulong)_unresolvedReturnStub;
-				Console.Error.WriteLine(
-					$"[LOADER][INFO] sceKernelDlsym fallback for symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
+				_ = TryWriteUInt64Compat(outputAddress, 0UL);
 			}
-			else
-			{
-				Console.Error.WriteLine(
-					$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-				cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
-				return OrbisGen2Result.ORBIS_GEN2_OK;
-			}
+			cpuContext[CpuRegister.Rax] = 0x80020003UL; // KERNEL_ERROR_ESRCH (matching KytyPS5)
+			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
 		{

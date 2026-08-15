@@ -29,10 +29,8 @@ public static class NetExports
 
     private static readonly ConcurrentDictionary<int, NetPool> _pools = new();
     private static readonly ConcurrentDictionary<int, ResolverContext> _resolvers = new();
-    private static readonly ConcurrentDictionary<int, Socket> _sockets = new();
     private static int _nextPoolId;
     private static int _nextResolverId = 0x2000;
-    private static int _nextSocketId = 0x4000;
     // The platform networking module is usable immediately after it is loaded.
     // Games and middleware (notably FMOD) can create internal sockets before an
     // explicit sceNetInit call reaches application code.
@@ -97,11 +95,7 @@ public static class NetExports
         _initialized = false;
         _pools.Clear();
         _resolvers.Clear();
-        foreach (var socket in _sockets.Values)
-        {
-            socket.Dispose();
-        }
-        _sockets.Clear();
+        SocketRegistry.Clear();
         TraceNet("term", 0, 0, 0, 0);
         return ctx.SetReturn(0);
     }
@@ -134,8 +128,7 @@ public static class NetExports
         try
         {
             var socket = new Socket(addressFamily, socketType, protocolType);
-            var id = Interlocked.Increment(ref _nextSocketId);
-            _sockets[id] = socket;
+            var id = SocketRegistry.Allocate(family, type, protocol, socket);
             TraceNet("socket.create", id, unchecked((ulong)family), unchecked((ulong)type), unchecked((ulong)protocol));
             ctx[CpuRegister.Rax] = unchecked((ulong)id);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -154,20 +147,13 @@ public static class NetExports
     public static int NetSocketClose(CpuContext ctx)
     {
         var id = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!_sockets.TryRemove(id, out var socket))
+        if (SocketRegistry.TryClose(id))
         {
-            if (KernelSocketCompatExports.TryCloseSocketFd(id))
-            {
-                TraceNet("socket.close.kernel", id, 0, 0, 0);
-                return ctx.SetReturn(0);
-            }
-
-            return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
+            TraceNet("socket.close", id, 0, 0, 0);
+            return ctx.SetReturn(0);
         }
 
-        socket.Dispose();
-        TraceNet("socket.close", id, 0, 0, 0);
-        return ctx.SetReturn(0);
+        return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
     }
 
     [SysAbiExport(
@@ -182,44 +168,118 @@ public static class NetExports
         var option = unchecked((int)ctx[CpuRegister.Rdx]);
         var valueAddress = ctx[CpuRegister.Rcx];
         var valueLength = unchecked((int)ctx[CpuRegister.R8]);
-        if (!_sockets.TryGetValue(id, out var socket))
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
         {
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
 
-        // ORBIS_NET_SOL_SOCKET / ORBIS_NET_SO_NBIO. This is the first option
-        // used by FMOD's discovery socket and maps directly to host blocking.
-        if (level == 0xFFFF && option == 0x1200)
+        if (valueAddress == 0 || valueLength < sizeof(int))
         {
-            Span<byte> value = stackalloc byte[sizeof(int)];
-            if (valueLength < value.Length || valueAddress == 0 || !ctx.Memory.TryRead(valueAddress, value))
-            {
-                return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
-            }
-
-            socket.Blocking = BinaryPrimitives.ReadInt32LittleEndian(value) == 0;
-            TraceNet("socket.nonblocking", id, socket.Blocking ? 0UL : 1UL, 0, 0);
-            return ctx.SetReturn(0);
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
         }
 
-        // ORBIS_NET_SO_REUSEADDR uses the BSD value 0x0004.
-        if (level == 0xFFFF && option == 0x0004)
+        Span<byte> value = stackalloc byte[sizeof(int)];
+        if (!ctx.Memory.TryRead(valueAddress, value))
         {
-            Span<byte> value = stackalloc byte[sizeof(int)];
-            if (valueLength < value.Length || valueAddress == 0 || !ctx.Memory.TryRead(valueAddress, value))
-            {
-                return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
-            }
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
 
-            socket.SetSocketOption(
-                SocketOptionLevel.Socket,
-                SocketOptionName.ReuseAddress,
-                BinaryPrimitives.ReadInt32LittleEndian(value) != 0);
-            TraceNet("socket.reuseaddr", id, BinaryPrimitives.ReadUInt32LittleEndian(value), 0, 0);
-            return ctx.SetReturn(0);
+        var valInt = BinaryPrimitives.ReadInt32LittleEndian(value);
+
+        if (level == 0xFFFF) // SOL_SOCKET
+        {
+            switch (option)
+            {
+                case 0x1200: // SO_NBIO
+                    socket.SetNonBlocking(valInt != 0);
+                    TraceNet("socket.nonblocking", id, socket.IsNonBlocking() ? 1UL : 0UL, 0, 0);
+                    return ctx.SetReturn(0);
+
+                case 0x0004: // SO_REUSEADDR
+                    socket.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
+                    TraceNet("socket.reuseaddr", id, (ulong)valInt, 0, 0);
+                    return ctx.SetReturn(0);
+
+                case 0x0008: // SO_KEEPALIVE
+                    socket.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, valInt != 0);
+                    return ctx.SetReturn(0);
+
+                case 0x1001: // SO_RCVBUF
+                    if (socket.NativeSocket is not null) socket.NativeSocket.ReceiveBufferSize = valInt;
+                    return ctx.SetReturn(0);
+
+                case 0x1002: // SO_SNDBUF
+                    if (socket.NativeSocket is not null) socket.NativeSocket.SendBufferSize = valInt;
+                    return ctx.SetReturn(0);
+            }
         }
 
         return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+    }
+
+    private const int NetErrorConnectionRefused = unchecked((int)0x8041013D);
+    private const int NetErrnoConnectionRefused = 61;
+
+    [SysAbiExport(
+        Nid = "OXXX4mUk3uk",
+        ExportName = "sceNetConnect",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetConnect(CpuContext ctx)
+    {
+        var id = unchecked((int)ctx[CpuRegister.Rdi]);
+        var nameAddress = ctx[CpuRegister.Rsi];
+        var namelen = unchecked((int)ctx[CpuRegister.Rdx]);
+
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
+        {
+            return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
+        }
+
+        if (!TryReadSocketAddress(ctx, nameAddress, namelen, out var endpoint) || endpoint is null)
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+
+        try
+        {
+            if (socket.NativeSocket is null)
+            {
+                socket.NativeSocket = new Socket(endpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                socket.NativeSocket.Blocking = !socket.NonBlocking;
+            }
+
+            if (socket.IsNonBlocking())
+            {
+                socket.NativeSocket.ConnectAsync(endpoint);
+                socket.BoundAddress = endpoint.Address;
+                socket.BoundPort = endpoint.Port;
+                socket.Bound = true;
+                TraceNet("socket.connect_async", id, unchecked((ulong)endpoint.Port), 0, 0);
+                return SetNetError(ctx, NetErrorWouldBlock, NetErrnoWouldBlock);
+            }
+
+            socket.NativeSocket.Connect(endpoint);
+            socket.Connected = true;
+            socket.BoundAddress = endpoint.Address;
+            socket.BoundPort = endpoint.Port;
+            socket.Bound = true;
+            TraceNet("socket.connect", id, unchecked((ulong)endpoint.Port), 0, 0);
+            return ctx.SetReturn(0);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.WouldBlock || ex.SocketErrorCode == SocketError.IsConnected || ex.SocketErrorCode == SocketError.InProgress)
+        {
+            return SetNetError(ctx, NetErrorWouldBlock, NetErrnoWouldBlock);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused)
+        {
+            socket.LastError = NetErrnoConnectionRefused;
+            return SetNetError(ctx, NetErrorConnectionRefused, NetErrnoConnectionRefused);
+        }
+        catch (SocketException)
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
     }
 
     [SysAbiExport(
@@ -230,7 +290,7 @@ public static class NetExports
     public static int NetBind(CpuContext ctx)
     {
         var id = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!_sockets.TryGetValue(id, out var socket))
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
         {
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
@@ -241,7 +301,16 @@ public static class NetExports
 
         try
         {
-            socket.Bind(endpoint);
+            if (socket.NativeSocket is null)
+            {
+                socket.NativeSocket = new Socket(endpoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                socket.NativeSocket.Blocking = !socket.NonBlocking;
+            }
+
+            socket.NativeSocket.Bind(endpoint);
+            socket.BoundAddress = endpoint.Address;
+            socket.BoundPort = endpoint.Port;
+            socket.Bound = true;
             TraceNet("socket.bind", id, unchecked((ulong)endpoint.Port), 0, 0);
             return ctx.SetReturn(0);
         }
@@ -263,14 +332,17 @@ public static class NetExports
     public static int NetListen(CpuContext ctx)
     {
         var id = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!_sockets.TryGetValue(id, out var socket))
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
         {
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
 
         try
         {
-            socket.Listen(Math.Max(0, unchecked((int)ctx[CpuRegister.Rsi])));
+            if (socket.NativeSocket is not null)
+            {
+                socket.NativeSocket.Listen(Math.Max(0, unchecked((int)ctx[CpuRegister.Rsi])));
+            }
             TraceNet("socket.listen", id, ctx[CpuRegister.Rsi], 0, 0);
             return ctx.SetReturn(0);
         }
@@ -288,16 +360,20 @@ public static class NetExports
     public static int NetAccept(CpuContext ctx)
     {
         var id = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!_sockets.TryGetValue(id, out var socket))
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
         {
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
 
         try
         {
-            var accepted = socket.Accept();
-            var acceptedId = Interlocked.Increment(ref _nextSocketId);
-            _sockets[acceptedId] = accepted;
+            if (socket.NativeSocket is null)
+            {
+                return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+            }
+
+            var accepted = socket.NativeSocket.Accept();
+            var acceptedId = SocketRegistry.Allocate(socket.Family, socket.Type, socket.Protocol, accepted);
             TraceNet("socket.accept", acceptedId, unchecked((ulong)id), 0, 0);
             ctx[CpuRegister.Rax] = unchecked((ulong)acceptedId);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -314,6 +390,138 @@ public static class NetExports
 
     [SysAbiExport(
         Nid = "xphrZusl78E",
+        ExportName = "sceNetGetsockopt",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNet")]
+    public static int NetGetsockopt(CpuContext ctx)
+    {
+        var id = unchecked((int)ctx[CpuRegister.Rdi]);
+        var level = unchecked((int)ctx[CpuRegister.Rsi]);
+        var option = unchecked((int)ctx[CpuRegister.Rdx]);
+        var valueAddress = ctx[CpuRegister.Rcx];
+        var optlenAddress = ctx[CpuRegister.R8];
+
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
+        {
+            return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
+        }
+
+        if (valueAddress == 0 || optlenAddress == 0)
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+
+        Span<byte> optlenBuf = stackalloc byte[sizeof(int)];
+        if (!ctx.Memory.TryRead(optlenAddress, optlenBuf))
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+
+        var optlen = BinaryPrimitives.ReadInt32LittleEndian(optlenBuf);
+        if (optlen < sizeof(int))
+        {
+            return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+        }
+
+        if (level == 0xFFFF) // SOL_SOCKET
+        {
+            int valInt = 0;
+            switch (option)
+            {
+                case 0x1200: // SO_NBIO
+                    valInt = socket.IsNonBlocking() ? 1 : 0;
+                    break;
+
+                case 0x0004: // SO_REUSEADDR
+                    valInt = socket.NativeSocket is not null
+                        ? (int)socket.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress)!
+                        : 0;
+                    break;
+
+                case 0x0008: // SO_KEEPALIVE
+                    valInt = socket.NativeSocket is not null
+                        ? (int)socket.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)!
+                        : 0;
+                    break;
+
+                case 0x1001: // SO_RCVBUF
+                    valInt = socket.NativeSocket?.ReceiveBufferSize ?? 8192;
+                    break;
+
+                case 0x1002: // SO_SNDBUF
+                    valInt = socket.NativeSocket?.SendBufferSize ?? 8192;
+                    break;
+
+                case 0x1007: // SO_ERROR
+                    try
+                    {
+                        if (socket.LastError != 0)
+                        {
+                            valInt = socket.LastError;
+                            socket.LastError = 0;
+                        }
+                        else if (socket.NativeSocket is not null)
+                        {
+                            var rawErr = socket.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Error);
+                            var errCode = rawErr is int errInt ? errInt : 0;
+                            if (errCode == (int)SocketError.ConnectionRefused)
+                            {
+                                valInt = NetErrnoConnectionRefused; // 61
+                            }
+                            else if (errCode == (int)SocketError.TimedOut)
+                            {
+                                valInt = 60; // ETIMEDOUT (60 in FreeBSD / Orbis)
+                            }
+                            else if (errCode == (int)SocketError.IOPending || errCode == (int)SocketError.WouldBlock || errCode == (int)SocketError.InProgress)
+                            {
+                                valInt = NetErrnoWouldBlock; // 35
+                            }
+                            else if (errCode != 0)
+                            {
+                                valInt = errCode;
+                            }
+                            else if (!socket.Connected && socket.IsNonBlocking())
+                            {
+                                valInt = NetErrnoConnectionRefused; // 61
+                            }
+                            else
+                            {
+                                valInt = 0;
+                            }
+                        }
+                        else
+                        {
+                            valInt = 0;
+                        }
+                    }
+                    catch
+                    {
+                        valInt = NetErrnoConnectionRefused; // 61
+                    }
+                    break;
+
+                default:
+                    return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+            }
+
+            Span<byte> valBuf = stackalloc byte[sizeof(int)];
+            BinaryPrimitives.WriteInt32LittleEndian(valBuf, valInt);
+            if (!ctx.Memory.TryWrite(valueAddress, valBuf))
+            {
+                return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, sizeof(int));
+            ctx.Memory.TryWrite(optlenAddress, optlenBuf);
+            return ctx.SetReturn(0);
+        }
+
+        return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+    }
+
+    [SysAbiExport(
+        Nid = "hoOAofhhRvE",
+        ExportName = "sceNetGetsockname",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceNet")]
     public static int NetGetsockname(CpuContext ctx)
@@ -322,7 +530,7 @@ public static class NetExports
         var sockaddrAddress = ctx[CpuRegister.Rsi];
         var addrlenAddress = ctx[CpuRegister.Rdx];
 
-        if (!_sockets.TryGetValue(id, out var socket))
+        if (!SocketRegistry.TryGet(id, out var socket) || socket is null)
         {
             return SetNetError(ctx, NetErrorBadFileDescriptor, NetErrnoBadFileDescriptor);
         }
@@ -334,13 +542,30 @@ public static class NetExports
 
         try
         {
-            if (socket.LocalEndPoint is IPEndPoint ep)
+            if (socket.NativeSocket?.LocalEndPoint is IPEndPoint ep)
             {
                 Span<byte> sockaddr = stackalloc byte[16];
                 sockaddr[0] = 16;
                 sockaddr[1] = (byte)(ep.AddressFamily == AddressFamily.InterNetwork ? 2 : 28);
                 BinaryPrimitives.WriteUInt16BigEndian(sockaddr.Slice(2, 2), (ushort)ep.Port);
                 var addressBytes = ep.Address.GetAddressBytes();
+                if (addressBytes.Length == 4)
+                {
+                    addressBytes.CopyTo(sockaddr.Slice(4, 4));
+                }
+                ctx.Memory.TryWrite(sockaddrAddress, sockaddr);
+
+                Span<byte> addrlenBytes = stackalloc byte[4];
+                BinaryPrimitives.WriteUInt32LittleEndian(addrlenBytes, 16);
+                ctx.Memory.TryWrite(addrlenAddress, addrlenBytes);
+            }
+            else if (socket.Bound)
+            {
+                Span<byte> sockaddr = stackalloc byte[16];
+                sockaddr[0] = 16;
+                sockaddr[1] = 2;
+                BinaryPrimitives.WriteUInt16BigEndian(sockaddr.Slice(2, 2), (ushort)socket.BoundPort);
+                var addressBytes = socket.BoundAddress.GetAddressBytes();
                 if (addressBytes.Length == 4)
                 {
                     addressBytes.CopyTo(sockaddr.Slice(4, 4));
@@ -612,7 +837,7 @@ public static class NetExports
             _errnoAddress = Marshal.AllocHGlobal(sizeof(int));
         }
         Marshal.WriteInt32(_errnoAddress, errno);
-        return ctx.SetReturn(result);
+        return ctx.SetReturn(-1);
     }
 
     private static bool TryTranslateSocketParameters(
@@ -657,15 +882,34 @@ public static class NetExports
             return false;
         }
 
-        Span<byte> bytes = stackalloc byte[16];
-        if (!ctx.Memory.TryRead(address, bytes) || bytes[1] != 2)
+        Span<byte> bytes = stackalloc byte[28];
+        var readLen = Math.Min(length, 28);
+        if (!ctx.Memory.TryRead(address, bytes[..readLen]))
         {
             return false;
         }
 
-        var port = BinaryPrimitives.ReadUInt16BigEndian(bytes[2..4]);
-        endpoint = new IPEndPoint(new IPAddress(bytes[4..8]), port);
-        return true;
+        var family = bytes[1];
+        if (family == 2) // AF_INET
+        {
+            var port = BinaryPrimitives.ReadUInt16BigEndian(bytes[2..4]);
+            endpoint = new IPEndPoint(new IPAddress(bytes[4..8]), port);
+            return true;
+        }
+
+        if (family == 28) // AF_INET6
+        {
+            if (readLen < 28)
+            {
+                return false;
+            }
+
+            var port = BinaryPrimitives.ReadUInt16BigEndian(bytes[2..4]);
+            endpoint = new IPEndPoint(new IPAddress(bytes[8..24]), port);
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryReadUtf8Z(CpuContext ctx, ulong address, int maxLength, out string value)

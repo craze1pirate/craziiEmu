@@ -2,6 +2,9 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using System;
+using System.Collections.Generic;
+
 namespace CraziiEmu.Libs.Agc;
 
 /// <summary>
@@ -50,6 +53,13 @@ internal static class GpuWaitRegistry
         public long RetryDeadlineTicks;
     }
 
+    public readonly record struct OutstandingSnapshot(
+        int TotalWaiters,
+        int DistinctWaitAddresses,
+        ulong FirstWaitAddress,
+        ulong FirstReferenceValue,
+        uint FirstCompareFunction);
+
     private static readonly object _gate = new();
     private static readonly Dictionary<ulong, List<WaitingDcb>> _waiters = new();
     // The last value each label producer wrote. Used only by the deadlock
@@ -58,6 +68,16 @@ internal static class GpuWaitRegistry
     // cycle forever even though a real producer did signal it. Keyed by (memory,
     // address) so distinct guest processes never alias.
     private static readonly Dictionary<(object, ulong), ulong> _lastProduced = new();
+
+    private static object? Canonicalize(object? memory)
+    {
+        while (memory is CraziiEmu.HLE.ICpuMemoryWrapper wrapper)
+        {
+            memory = wrapper.Inner;
+        }
+
+        return memory;
+    }
 
     public static int Count
     {
@@ -78,6 +98,7 @@ internal static class GpuWaitRegistry
 
     public static int CountForMemory(object memory)
     {
+        memory = Canonicalize(memory)!;
         lock (_gate)
         {
             var total = 0;
@@ -93,9 +114,64 @@ internal static class GpuWaitRegistry
         }
     }
 
+    /// <summary>
+    /// Captures a lightweight snapshot of outstanding waiters without allocating.
+    /// Used by the AGC stall detector to classify a stuck queue.
+    /// </summary>
+    public static OutstandingSnapshot SnapshotOutstanding(object? memory = null)
+    {
+        memory = Canonicalize(memory);
+        lock (_gate)
+        {
+            var outstanding = 0;
+            var distinctAddresses = 0;
+            var firstAddress = 0UL;
+            var firstRef = 0UL;
+            var firstCmp = 0u;
+            var hasFirst = false;
+
+            foreach (var (address, list) in _waiters)
+            {
+                var addressMatches = 0;
+                for (var i = 0; i < list.Count; i++)
+                {
+                    var waiter = list[i];
+                    if (memory is not null && !ReferenceEquals(waiter.Memory, memory))
+                    {
+                        continue;
+                    }
+
+                    if (!hasFirst)
+                    {
+                        firstAddress = address;
+                        firstRef = waiter.ReferenceValue;
+                        firstCmp = waiter.CompareFunction;
+                        hasFirst = true;
+                    }
+
+                    addressMatches++;
+                    outstanding++;
+                }
+
+                if (addressMatches > 0)
+                {
+                    distinctAddresses++;
+                }
+            }
+
+            return new OutstandingSnapshot(
+                outstanding,
+                distinctAddresses,
+                firstAddress,
+                firstRef,
+                firstCmp);
+        }
+    }
+
     public static void Register(ulong address, WaitingDcb waiter)
     {
         waiter.WaitAddress = address;
+        waiter.Memory = Canonicalize(waiter.Memory);
         lock (_gate)
         {
             if (!_waiters.TryGetValue(address, out var list))
@@ -118,6 +194,7 @@ internal static class GpuWaitRegistry
         object memory,
         Func<ulong, bool, ulong?> readValue)
     {
+        memory = Canonicalize(memory)!;
         List<WaitingDcb>? woken = null;
         lock (_gate)
         {
@@ -178,6 +255,7 @@ internal static class GpuWaitRegistry
         long nowTicks,
         long maxAgeTicks)
     {
+        memory = Canonicalize(memory)!;
         List<WaitingDcb>? stale = null;
         lock (_gate)
         {
@@ -214,6 +292,7 @@ internal static class GpuWaitRegistry
         ulong start,
         ulong length)
     {
+        memory = Canonicalize(memory)!;
         var matches = new List<(ulong Address, int Count)>();
         if (length == 0)
         {
@@ -269,6 +348,7 @@ internal static class GpuWaitRegistry
     /// </summary>
     public static bool LatchSatisfiedByValue(object memory, ulong address, ulong value)
     {
+        memory = Canonicalize(memory)!;
         var latchedAny = false;
         lock (_gate)
         {
@@ -304,6 +384,7 @@ internal static class GpuWaitRegistry
     /// </summary>
     public static List<WaitingDcb>? CollectExpiredRetries(object memory, long nowTicks)
     {
+        memory = Canonicalize(memory)!;
         List<WaitingDcb>? expired = null;
         lock (_gate)
         {
@@ -344,15 +425,107 @@ internal static class GpuWaitRegistry
         return expired;
     }
 
+    public static List<WaitingDcb>? CollectAllForMemory(object memory)
+    {
+        memory = Canonicalize(memory)!;
+        List<WaitingDcb>? collected = null;
+        lock (_gate)
+        {
+            List<ulong>? emptied = null;
+            foreach (var (address, list) in _waiters)
+            {
+                for (var index = list.Count - 1; index >= 0; index--)
+                {
+                    if (!ReferenceEquals(list[index].Memory, memory))
+                    {
+                        continue;
+                    }
+
+                    collected ??= new List<WaitingDcb>();
+                    collected.Add(list[index]);
+                    list.RemoveAt(index);
+                }
+
+                if (list.Count == 0)
+                {
+                    emptied ??= new List<ulong>();
+                    emptied.Add(address);
+                }
+            }
+
+            if (emptied is not null)
+            {
+                foreach (var address in emptied)
+                {
+                    _waiters.Remove(address);
+                }
+            }
+        }
+
+        return collected;
+    }
+
+    /// <summary>
+    /// Drops produced-label values that no registered waiter is watching. Called
+    /// under <see cref="_gate"/> when the table reaches its soft bound. A value
+    /// still watched by a waiter is the only thing that can release that waiter
+    /// once the guest recycles its label, so those are always retained even if
+    /// the table has to grow past the bound.
+    /// </summary>
+    private static void PruneUnwatchedProducedLocked()
+    {
+        List<(object Memory, ulong Address)>? unwatched = null;
+        foreach (var (key, _) in _lastProduced)
+        {
+            if (_waiters.TryGetValue(key.Item2, out var list))
+            {
+                var watched = false;
+                foreach (var waiter in list)
+                {
+                    if (ReferenceEquals(waiter.Memory, key.Item1))
+                    {
+                        watched = true;
+                        break;
+                    }
+                }
+
+                if (watched)
+                {
+                    continue;
+                }
+            }
+
+            (unwatched ??= []).Add(key);
+        }
+
+        if (unwatched is null)
+        {
+            return;
+        }
+
+        foreach (var key in unwatched)
+        {
+            _lastProduced.Remove(key);
+        }
+    }
+
     /// <summary>Records the value a label producer wrote, for the deadlock
     /// breaker. Also latches any already-waiting waiter it satisfies.</summary>
     public static bool RecordProduced(object memory, ulong address, ulong value)
     {
+        memory = Canonicalize(memory)!;
         lock (_gate)
         {
             if (_lastProduced.Count >= 8192)
             {
-                _lastProduced.Clear();
+                // These entries are release state, not a cache. CollectDeadlockBroken
+                // can only free a waiter whose label the guest has since recycled by
+                // replaying the value a real producer wrote to it, so clearing the
+                // table wholesale strands every such waiter forever — the suspended
+                // queue then never resumes and the title wedges with its render
+                // thread parked. Drop only values no live waiter is watching, and
+                // let the table exceed the bound when they all are.
+                PruneUnwatchedProducedLocked();
             }
 
             _lastProduced[(memory, address)] = value;
@@ -374,6 +547,7 @@ internal static class GpuWaitRegistry
         long nowTicks,
         long minAgeTicks)
     {
+        memory = Canonicalize(memory)!;
         List<WaitingDcb>? broken = null;
         lock (_gate)
         {
@@ -415,6 +589,21 @@ internal static class GpuWaitRegistry
         return broken;
     }
 
+    // Under orphan force-submit, producers can run ahead of waiter
+    // registration and pass an equal-compare value before it's ever seen.
+    // Treat == as "reached or passed" only in that mode, so other titles
+    // keep exact hardware semantics. CRAZIIEMU_GPU_WAIT_EQ_EXACT=1 restores
+    // strict equality for A/B.
+    private static readonly bool _equalCompareExact =
+        string.Equals(
+            Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_EQ_EXACT") ?? Environment.GetEnvironmentVariable("SHARPEMU_GPU_WAIT_EQ_EXACT"),
+            "1",
+            StringComparison.Ordinal) ||
+        !string.Equals(
+            Environment.GetEnvironmentVariable("CRAZIIEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES") ?? Environment.GetEnvironmentVariable("SHARPEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES"),
+            "1",
+            StringComparison.Ordinal);
+
     public static bool Compare(in WaitingDcb waiter, ulong value)
     {
         var masked = value & waiter.Mask;
@@ -424,7 +613,7 @@ internal static class GpuWaitRegistry
             0 => true,
             1 => masked < reference,
             2 => masked <= reference,
-            3 => masked == reference,
+            3 => _equalCompareExact ? masked == reference : masked >= reference,
             4 => masked != reference,
             5 => masked >= reference,
             6 => masked > reference,

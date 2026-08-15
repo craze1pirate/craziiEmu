@@ -971,7 +971,10 @@ public static class KernelRuntimeCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        if (apertureBase < PrtAreaStartAddress)
+        const ulong PrtAreaStartAddress = 0x0F00000000UL;
+        const ulong PrtAreaEndAddress = 0xFC00000000UL;
+
+        if (apertureBase < PrtAreaStartAddress || apertureBase > PrtAreaEndAddress)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
@@ -998,6 +1001,59 @@ public static class KernelRuntimeCompatExports
             Console.Error.WriteLine(
                 $"[LOADER][TRACE] set_prt_aperture raw: rdi=0x{rawId:X16} rsi=0x{apertureBase:X16} rdx=0x{apertureSize:X16} rcx=0x{ctx[CpuRegister.Rcx]:X16} r8=0x{ctx[CpuRegister.R8]:X16} r9=0x{ctx[CpuRegister.R9]:X16}");
         }
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    internal static bool IsAddressInPrtAperture(ulong address)
+    {
+        lock (_prtApertureGate)
+        {
+            foreach (var (apertureBase, apertureSize) in _prtApertures)
+            {
+                if (apertureSize > 0 && address >= apertureBase && address < apertureBase + apertureSize)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    [SysAbiExport(
+        Nid = "L0v2Go5jOuM",
+        ExportName = "sceKernelGetPrtAperture",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelGetPrtAperture(CpuContext ctx)
+    {
+        var rawId = ctx[CpuRegister.Rdi];
+        var outAddressPtr = ctx[CpuRegister.Rsi];
+        var outSizePtr = ctx[CpuRegister.Rdx];
+        var apertureId = unchecked((int)rawId);
+
+        if (apertureId < 0 || apertureId >= _prtApertures.Length)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (outAddressPtr == 0 || outSizePtr == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        (ulong apertureBase, ulong apertureSize) entry;
+        lock (_prtApertureGate)
+        {
+            entry = _prtApertures[apertureId];
+        }
+
+        if (!ctx.TryWriteUInt64(outAddressPtr, entry.apertureBase) ||
+            !ctx.TryWriteUInt64(outSizePtr, entry.apertureSize))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -2324,7 +2380,34 @@ public static class KernelRuntimeCompatExports
 
 
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, bool> _loggedWaitAddrs = new();
+    private sealed class SyncAddressWaiter : IGuestThreadBlockWaiter
+    {
+        public required CpuContext Context { get; init; }
+        public required ulong WaitAddress { get; init; }
+        public required uint ExpectedValue { get; init; }
+        public bool WokenBySignal { get; set; }
+
+        public int Resume()
+        {
+            if (WokenBySignal)
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            if (Context.TryReadUInt32(WaitAddress, out var currentVal) && currentVal != ExpectedValue)
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT;
+        }
+
+        public bool TryWake()
+        {
+            WokenBySignal = true;
+            return true;
+        }
+    }
 
     [SysAbiExport(
         Nid = "Hc4CaR6JBL0",
@@ -2336,36 +2419,53 @@ public static class KernelRuntimeCompatExports
         var waitAddress = ctx[CpuRegister.Rdi];         // uaddr
         var futexOp = (uint)ctx[CpuRegister.Rsi];       // op
         var expectedValue = (uint)ctx[CpuRegister.Rdx]; // val
+        var timeoutUs = ctx[CpuRegister.R8];           // timeout in us
 
-        // FUTEX_WAIT is 0
-        if (futexOp == 0 && waitAddress != 0)
+        if (waitAddress == 0)
         {
-            if (ctx.TryReadUInt32(waitAddress, out var initialVal))
+            ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        // FUTEX_WAKE (op == 1)
+        if (futexOp == 1)
+        {
+            var wakeKey = $"sync_addr:0x{waitAddress:X16}";
+            var count = expectedValue > 0 ? (int)expectedValue : int.MaxValue;
+            _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(wakeKey, count);
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
+        // FUTEX_WAIT (op == 0)
+        if (ctx.TryReadUInt32(waitAddress, out var initialVal))
+        {
+            if (initialVal != expectedValue)
             {
-                if (initialVal != expectedValue)
-                {
-                    ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN);
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
-                }
-
-                for (int spin = 0; spin < 10; spin++)
-                {
-                    if (ctx.TryReadUInt32(waitAddress, out var currentVal) && currentVal != expectedValue)
-                    {
-                        ctx[CpuRegister.Rax] = 0;
-                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-                    }
-                    System.Threading.Thread.Sleep(1);
-                }
-
-                ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                ctx[CpuRegister.Rax] = unchecked((ulong)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN);
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
             }
         }
-        else if (futexOp != 0 && waitAddress == 0 && expectedValue == 0)
+
+        var wakeKeyWait = $"sync_addr:0x{waitAddress:X16}";
+        var deadline = timeoutUs > 0
+            ? GuestThreadExecution.ComputeDeadlineTimestamp(TimeSpan.FromTicks((long)timeoutUs * 10))
+            : 0;
+
+        var waiter = new SyncAddressWaiter
         {
-            var timeout = (ulong)ctx[CpuRegister.R8];
-            System.Threading.Thread.Sleep(timeout == 0 ? 1 : 2);
+            Context = ctx,
+            WaitAddress = waitAddress,
+            ExpectedValue = expectedValue
+        };
+
+        if (GuestThreadExecution.RequestCurrentThreadBlock(
+            ctx,
+            "sync_on_address_wait",
+            wakeKeyWait,
+            waiter,
+            deadline))
+        {
             ctx[CpuRegister.Rax] = 0;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -2379,5 +2479,19 @@ public static class KernelRuntimeCompatExports
         ExportName = "_sync_on_address_v1_alias2",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int KernelSyncOnAddressV1Alias2(CpuContext ctx) => KernelSyncOnAddressV1(ctx);
+    public static int KernelSyncOnAddressV1Alias2(CpuContext ctx)
+    {
+        var wakeAddress = ctx[CpuRegister.Rdi];
+        var wakeCountArg = (int)ctx[CpuRegister.Rsi];
+
+        if (wakeAddress != 0)
+        {
+            var wakeKey = $"sync_addr:0x{wakeAddress:X16}";
+            var maxCount = (wakeCountArg <= 0) ? int.MaxValue : wakeCountArg;
+            _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(wakeKey, maxCount);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
 }

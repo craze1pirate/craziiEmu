@@ -197,7 +197,16 @@ public static partial class KernelMemoryCompatExports
 
     private readonly record struct DirectAllocation(ulong Start, ulong Length, int MemoryType);
     private readonly record struct LibcHeapAllocation(nint BaseAddress, nuint Size, nuint Alignment);
-    private readonly record struct MappedRegion(ulong Address, ulong Length, int Protection, bool IsFlexible, bool IsDirect, ulong DirectStart);
+    private readonly record struct MappedRegion(
+        ulong Address,
+        ulong Length,
+        int Protection,
+        bool IsFlexible,
+        bool IsDirect,
+        ulong DirectStart,
+        bool IsPoolReserved = false,
+        bool IsPooled = false,
+        string Name = "");
     private readonly record struct BatchMapEntry(ulong Start, ulong Offset, ulong Length, byte Protection, byte Type, int Operation);
 
     public static void RegisterGuestPathMount(string guestMountPoint, string hostRoot)
@@ -1679,6 +1688,108 @@ public static partial class KernelMemoryCompatExports
 
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "w5fcCG+t31g",
+        ExportName = "sceKernelAprResolveFilepathsWithPrefixToIdsAndFileSizes",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelAprResolveFilepathsWithPrefixToIdsAndFileSizes(CpuContext ctx)
+    {
+        var prefixAddress = ctx[CpuRegister.Rdi];
+        var pathListAddress = ctx[CpuRegister.Rsi];
+        var count = ctx[CpuRegister.Rdx];
+        var idsAddress = ctx[CpuRegister.Rcx];
+        var sizesAddress = ctx[CpuRegister.R8];
+        var errorIndexAddress = ctx[CpuRegister.R9];
+        if (pathListAddress == 0 || count == 0 || sizesAddress == 0 || count > 1024)
+        {
+            KernelRuntimeCompatExports.TrySetErrno(ctx, Einval);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        var prefix = string.Empty;
+        if (prefixAddress != 0)
+        {
+            _ = TryReadNullTerminatedUtf8(ctx, prefixAddress, MaxGuestStringLength, out prefix);
+        }
+
+        for (ulong i = 0; i < count; i++)
+        {
+            if (idsAddress != 0 &&
+                !TryWriteUInt32Compat(ctx, idsAddress + (i * sizeof(uint)), uint.MaxValue))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            if (!TryResolveAprFilepath(ctx, pathListAddress, i, out var relativePath))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            var guestPath = CombineAprPrefixedPath(prefix, relativePath);
+            var hostPath = ResolveGuestPath(guestPath);
+            if (!TryGetAprFileSize(hostPath, out var fileSize))
+            {
+                LogIoTrace("apr_resolve_with_prefix", guestPath, $"host='{hostPath}' index={i} count={count} result=not_found");
+                if (sizesAddress != 0 &&
+                    !TryWriteUInt64Compat(ctx, sizesAddress + (i * sizeof(ulong)), 0))
+                {
+                    KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+
+                if (errorIndexAddress != 0 &&
+                    !TryWriteUInt32Compat(ctx, errorIndexAddress, (uint)i))
+                {
+                    KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+
+                KernelRuntimeCompatExports.TrySetErrno(ctx, 2); // ENOENT
+                ctx[CpuRegister.Rax] = ulong.MaxValue;
+                return -1;
+            }
+
+            LogIoTrace("apr_resolve_with_prefix", guestPath, $"host='{hostPath}' index={i} count={count} size=0x{fileSize:X}");
+
+            if (idsAddress != 0)
+            {
+                var fileId = AmprFileRegistry.Register(guestPath, hostPath);
+                if (!TryWriteUInt32Compat(ctx, idsAddress + (i * sizeof(uint)), fileId))
+                {
+                    KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+            }
+
+            if (!TryWriteUInt64Compat(ctx, sizesAddress + (i * sizeof(ulong)), fileSize))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, Efault);
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    private static string CombineAprPrefixedPath(string prefix, string relative)
+    {
+        if (string.IsNullOrEmpty(prefix))
+        {
+            return relative;
+        }
+
+        if (string.IsNullOrEmpty(relative))
+        {
+            return prefix;
+        }
+
+        return $"{prefix.TrimEnd('/')}/{relative.TrimStart('/')}";
     }
 
     // The IDs-only sibling of sceKernelAprResolveFilepathsToIdsAndFileSizes.
@@ -3214,14 +3325,27 @@ public static partial class KernelMemoryCompatExports
             stateFlags |= 0x02u;
         }
 
-        stateFlags |= 0x10u;
+        if (region.IsPoolReserved || region.IsPooled)
+        {
+            stateFlags |= 0x08u;
+        }
+
+        if (region.IsPooled || region.IsDirect || region.IsFlexible || (!region.IsPoolReserved && region.Protection != 0))
+        {
+            stateFlags |= 0x10u;
+        }
+
+        if (KernelRuntimeCompatExports.IsAddressInPrtAperture(queryAddress))
+        {
+            stateFlags |= 0x20u;
+        }
 
         BinaryPrimitives.WriteUInt64LittleEndian(payload[0..8], region.Address);
         BinaryPrimitives.WriteUInt64LittleEndian(payload[8..16], regionEnd);
         BinaryPrimitives.WriteUInt64LittleEndian(payload[16..24], region.DirectStart);
         BinaryPrimitives.WriteInt32LittleEndian(payload[24..28], region.Protection);
         BinaryPrimitives.WriteInt32LittleEndian(payload[28..32], memoryType);
-        payload[32] = unchecked((byte)stateFlags);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[32..36], stateFlags);
 
         string name;
         lock (_memoryGate)
@@ -3236,8 +3360,8 @@ public static partial class KernelMemoryCompatExports
         if (!string.IsNullOrEmpty(name))
         {
             var nameBytes = Encoding.ASCII.GetBytes(name);
-            nameBytes.AsSpan(0, Math.Min(nameBytes.Length, OrbisKernelMaximumNameLength))
-                .CopyTo(payload.Slice(33, OrbisKernelMaximumNameLength));
+            nameBytes.AsSpan(0, Math.Min(nameBytes.Length, OrbisKernelMaximumNameLength - 1))
+                .CopyTo(payload.Slice(36, OrbisKernelMaximumNameLength));
         }
 
         if (!TryWriteCompat(ctx, infoAddress, payload))
@@ -3300,7 +3424,7 @@ public static partial class KernelMemoryCompatExports
     public static int KernelDirectMemoryQuery(CpuContext ctx)
     {
         var offset = ctx[CpuRegister.Rdi];
-        var flags = unchecked((int)ctx[CpuRegister.Rsi]);
+        var flags = ctx[CpuRegister.Rsi];
         var infoAddress = ctx[CpuRegister.Rdx];
         var infoSize = ctx[CpuRegister.Rcx];
         if (infoAddress == 0 || infoSize < 24)
@@ -3308,39 +3432,76 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
+        if (offset >= DirectMemorySizeBytes)
+        {
+            // Real hardware returns EACCES here (0x8002000D), not ENOENT.
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DELETED;
+        }
+
+        var findNext = (flags & 1) != 0;
+        var found = false;
+        var matchStart = 0UL;
+        var matchEnd = 0UL;
+        var matchMemoryType = 0;
+
         lock (_memoryGate)
         {
-            foreach (var block in _directAllocations.Values)
+            var candidates = _directAllocations.Values
+                .Where(block => findNext
+                    ? block.Start + block.Length > offset
+                    : offset >= block.Start && offset < block.Start + block.Length)
+                .OrderBy(block => block.Start);
+
+            foreach (var block in candidates)
             {
-                if (offset < block.Start || offset >= block.Start + block.Length)
-                {
-                    continue;
-                }
-
-                if (!ctx.TryWriteUInt64(infoAddress, block.Start) ||
-                    !ctx.TryWriteUInt64(infoAddress + sizeof(ulong), block.Start + block.Length) ||
-                    !TryWriteInt32(ctx, infoAddress + (sizeof(ulong) * 2), block.MemoryType))
-                {
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-                }
-
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            if (flags == 1 && offset < DirectMemorySizeBytes)
-            {
-                if (!ctx.TryWriteUInt64(infoAddress, DirectMemorySizeBytes) ||
-                    !ctx.TryWriteUInt64(infoAddress + sizeof(ulong), DirectMemorySizeBytes) ||
-                    !TryWriteInt32(ctx, infoAddress + (sizeof(ulong) * 2), 0))
-                {
-                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-                }
-
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                found = true;
+                matchStart = block.Start;
+                matchEnd = block.Start + block.Length;
+                matchMemoryType = block.MemoryType;
+                break;
             }
         }
 
-        return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        if (!found)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_DELETED;
+        }
+
+        if (!ctx.TryWriteUInt64(infoAddress, matchStart) ||
+            !ctx.TryWriteUInt64(infoAddress + sizeof(ulong), matchEnd) ||
+            !TryWriteInt32(ctx, infoAddress + (sizeof(ulong) * 2), matchMemoryType))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "mkgXxsoxWHg",
+        ExportName = "sceKernelClearVirtualRangeName",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelClearVirtualRangeName(CpuContext ctx)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        var length = ctx[CpuRegister.Rsi];
+
+        lock (_memoryGate)
+        {
+            if (!TryFindVirtualQueryRegionLocked(address, findNext: false, out var region) ||
+                length > region.Length ||
+                address < region.Address ||
+                length > region.Address + region.Length - address)
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            }
+
+            _mappedRegionNames.Remove(region.Address);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
     [SysAbiExport(
@@ -5678,6 +5839,59 @@ public static partial class KernelMemoryCompatExports
                 : HostPageNoAccess;
     }
 
+    private static MappedRegion GetMergedRegionExtentLocked(MappedRegion baseCandidate, int startIndex, IList<ulong> keys, IList<MappedRegion> values, int count)
+    {
+        var mergedStart = baseCandidate.Address;
+        var mergedEnd = baseCandidate.Address + baseCandidate.Length;
+
+        if (baseCandidate.IsDirect && TryFindDirectAllocationLocked(baseCandidate.DirectStart, out var alloc))
+        {
+            if (TryAddU64(alloc.Start, alloc.Length, out _))
+            {
+                var allocOffset = baseCandidate.DirectStart >= alloc.Start ? baseCandidate.DirectStart - alloc.Start : 0UL;
+                if (alloc.Length > allocOffset)
+                {
+                    var allocVirtEnd = baseCandidate.Address + (alloc.Length - allocOffset);
+                    mergedEnd = Math.Max(mergedEnd, allocVirtEnd);
+                }
+            }
+        }
+
+        var nextIndex = startIndex + 1;
+        while (nextIndex < count)
+        {
+            var next = values[nextIndex];
+            if (next.Address <= mergedEnd)
+            {
+                if (next.Protection == baseCandidate.Protection &&
+                    next.IsDirect == baseCandidate.IsDirect &&
+                    next.IsFlexible == baseCandidate.IsFlexible &&
+                    next.IsPooled == baseCandidate.IsPooled &&
+                    next.IsPoolReserved == baseCandidate.IsPoolReserved)
+                {
+                    if (TryAddU64(next.Address, next.Length, out var nEnd))
+                    {
+                        mergedEnd = Math.Max(mergedEnd, nEnd);
+                        nextIndex++;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
+
+        return new MappedRegion(
+            Address: mergedStart,
+            Length: mergedEnd - mergedStart,
+            Protection: baseCandidate.Protection,
+            IsFlexible: baseCandidate.IsFlexible,
+            IsDirect: baseCandidate.IsDirect,
+            DirectStart: baseCandidate.DirectStart,
+            IsPoolReserved: baseCandidate.IsPoolReserved,
+            IsPooled: baseCandidate.IsPooled,
+            Name: baseCandidate.Name);
+    }
+
     private static bool TryFindVirtualQueryRegionLocked(ulong queryAddress, bool findNext, out MappedRegion region)
     {
         region = default;
@@ -5685,13 +5899,17 @@ public static partial class KernelMemoryCompatExports
         var values = _mappedRegions.Values;
         var count = keys.Count;
 
-        // First index whose region address is >= queryAddress.
+        if (count == 0)
+        {
+            return false;
+        }
+
         var lo = 0;
         var hi = count;
         while (lo < hi)
         {
             var mid = (int)(((uint)lo + (uint)hi) >> 1);
-            if (keys[mid] < queryAddress)
+            if (keys[mid] <= queryAddress)
             {
                 lo = mid + 1;
             }
@@ -5701,30 +5919,65 @@ public static partial class KernelMemoryCompatExports
             }
         }
 
-        // Regions do not overlap, so only the one with the greatest base address
-        // <= queryAddress can contain it — index lo when it starts exactly at
-        // queryAddress, otherwise lo - 1.
-        var floorIndex = (lo < count && keys[lo] == queryAddress) ? lo : lo - 1;
-        if (floorIndex >= 0)
+        if (lo > 0)
         {
-            var candidate = values[floorIndex];
+            var candidate = values[lo - 1];
             if (TryAddU64(candidate.Address, candidate.Length, out var candidateEnd) &&
                 queryAddress >= candidate.Address &&
                 queryAddress < candidateEnd)
             {
-                region = candidate;
+                region = GetMergedRegionExtentLocked(candidate, lo - 1, keys, values, count);
                 return true;
             }
         }
 
-        // findNext: the region with the smallest base address >= queryAddress.
-        if (findNext && lo < count)
+        const ulong directApertureBase = 0x600000000UL;
+        if (queryAddress >= directApertureBase && queryAddress < directApertureBase + DirectMemorySizeBytes)
         {
-            region = values[lo];
-            return true;
+            var physAddr = queryAddress - directApertureBase;
+            if (TryFindDirectAllocationLocked(physAddr, out var alloc))
+            {
+                region = new MappedRegion(
+                    Address: directApertureBase + alloc.Start,
+                    Length: alloc.Length,
+                    Protection: OrbisProtCpuReadWrite,
+                    IsFlexible: false,
+                    IsDirect: true,
+                    DirectStart: alloc.Start,
+                    IsPoolReserved: false,
+                    IsPooled: false,
+                    Name: "direct");
+                return true;
+            }
         }
 
-        return false;
+        if (!findNext)
+        {
+            return false;
+        }
+
+        const ulong defaultUpperLimit = 0x7FFFFFFFF000UL;
+        if (queryAddress >= defaultUpperLimit)
+        {
+            return false;
+        }
+
+        var nextAddress = (lo < count) ? keys[lo] : defaultUpperLimit;
+        var uncommittedLength = nextAddress > queryAddress
+            ? nextAddress - queryAddress
+            : OrbisPageSize;
+
+        region = new MappedRegion(
+            Address: queryAddress,
+            Length: uncommittedLength,
+            Protection: 0,
+            IsFlexible: false,
+            IsDirect: false,
+            DirectStart: 0,
+            IsPoolReserved: false,
+            IsPooled: false,
+            Name: string.Empty);
+        return true;
     }
 
     private static void TraceDirectMemoryCall(
@@ -7276,4 +7529,219 @@ public static partial class KernelMemoryCompatExports
 
     private static byte ToAsciiLower(byte value) =>
         value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
+
+    private static ulong _memoryPoolCommittedBytes;
+    private static ulong _memoryPoolPhysicalSize = 1024UL * 1024 * 1024;
+
+    private static int SetReturnResult(CpuContext ctx, int code)
+    {
+        ctx[CpuRegister.Rax] = (ulong)(long)code;
+        return code;
+    }
+
+    private static ulong AlignUpValue(ulong value, ulong alignment) =>
+        alignment == 0 ? value : (value + alignment - 1) & ~(alignment - 1);
+
+    private static bool IsPowerOfTwoVal(nuint value) =>
+        value != 0 && (value & (value - 1)) == 0;
+
+    [SysAbiExport(Nid = "qCSfqDILlns", ExportName = "sceKernelMemoryPoolExpand", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolExpand(CpuContext ctx)
+    {
+        long searchStart = (long)ctx[CpuRegister.Rdi];
+        long searchEnd = (long)ctx[CpuRegister.Rsi];
+        ulong len = ctx[CpuRegister.Rdx];
+        ulong alignment = ctx[CpuRegister.Rcx];
+        ulong physAddrOutPtr = ctx[CpuRegister.R8];
+
+        const ulong PoolPageSize = 0x10000;
+        if (searchStart < 0 || searchEnd <= searchStart || len == 0 || (len & (PoolPageSize - 1)) != 0 || physAddrOutPtr == 0 ||
+            (alignment != 0 && (!IsPowerOfTwoVal((nuint)alignment) || (alignment & (PoolPageSize - 1)) != 0)))
+        {
+            return SetReturnResult(ctx, -Einval);
+        }
+
+        lock (_memoryGate)
+        {
+            _memoryPoolPhysicalSize += len;
+            ulong physAddr = (ulong)searchStart;
+            Span<byte> buf = stackalloc byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(buf, physAddr);
+            ctx.Memory.TryWrite(physAddrOutPtr, buf);
+        }
+
+        return SetReturnResult(ctx, 0);
+    }
+
+    [SysAbiExport(Nid = "pU-QydtGcGY", ExportName = "sceKernelMemoryPoolReserve", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolReserve(CpuContext ctx)
+    {
+        ulong addrIn = ctx[CpuRegister.Rdi];
+        ulong len = ctx[CpuRegister.Rsi];
+        ulong alignment = ctx[CpuRegister.Rdx];
+        int flags = (int)ctx[CpuRegister.Rcx];
+        ulong addrOutPtr = ctx[CpuRegister.R8];
+
+        const ulong PoolReserveAlignment = 0x200000;
+        if (addrOutPtr == 0 || len == 0 || (len & (PoolReserveAlignment - 1)) != 0) return SetReturnResult(ctx, -Einval);
+        if (alignment != 0 && (!IsPowerOfTwoVal((nuint)alignment) || (alignment & (PoolReserveAlignment - 1)) != 0)) return SetReturnResult(ctx, -Einval);
+
+        lock (_memoryGate)
+        {
+            ulong effectiveAlignment = alignment != 0 ? alignment : PoolReserveAlignment;
+            ulong baseSearch = _nextVirtualAddress == 0 ? 0x00800000UL : _nextVirtualAddress;
+            ulong targetAddr = addrIn != 0 ? addrIn : AlignUpValue(baseSearch, effectiveAlignment);
+
+            foreach (var r in _mappedRegions.Values)
+            {
+                if (targetAddr < r.Address + r.Length && targetAddr + len > r.Address)
+                {
+                    return SetReturnResult(ctx, -Erange);
+                }
+            }
+
+            var region = new MappedRegion(targetAddr, len, 0, false, false, 0, IsPoolReserved: true, IsPooled: false, Name: "pool_reserved");
+            _mappedRegions[targetAddr] = region;
+            _nextVirtualAddress = Math.Max(_nextVirtualAddress, targetAddr + len);
+
+            Span<byte> buf = stackalloc byte[8];
+            BinaryPrimitives.WriteUInt64LittleEndian(buf, targetAddr);
+            ctx.Memory.TryWrite(addrOutPtr, buf);
+        }
+
+        return SetReturnResult(ctx, 0);
+    }
+
+    [SysAbiExport(Nid = "Vzl66WmfLvk", ExportName = "sceKernelMemoryPoolCommit", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolCommit(CpuContext ctx)
+    {
+        ulong addr = ctx[CpuRegister.Rdi];
+        ulong len = ctx[CpuRegister.Rsi];
+        int type = (int)ctx[CpuRegister.Rdx];
+        int prot = (int)ctx[CpuRegister.Rcx];
+        int flags = (int)ctx[CpuRegister.R8];
+
+        const ulong PoolCommitAlignment = 0x10000;
+        if (addr == 0 || len == 0 || (len & (PoolCommitAlignment - 1)) != 0 || (prot & OrbisProtCpuExec) != 0) return SetReturnResult(ctx, -Einval);
+
+        lock (_memoryGate)
+        {
+            if (!TryFindVirtualQueryRegionLocked(addr, findNext: false, out var region) || (!region.IsPoolReserved && !region.IsPooled))
+            {
+                return SetReturnResult(ctx, -Erange);
+            }
+
+            _mappedRegions[addr] = new MappedRegion(addr, len, prot, false, false, 0, IsPoolReserved: false, IsPooled: true, Name: "pooled");
+            _memoryPoolCommittedBytes += len;
+
+            Span<byte> zeroSpan = stackalloc byte[1];
+            ctx.Memory.TryWrite(addr, zeroSpan);
+        }
+
+        return SetReturnResult(ctx, 0);
+    }
+
+    [SysAbiExport(Nid = "LXo1tpFqJGs", ExportName = "sceKernelMemoryPoolDecommit", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolDecommit(CpuContext ctx)
+    {
+        ulong addr = ctx[CpuRegister.Rdi];
+        ulong len = ctx[CpuRegister.Rsi];
+        int flags = (int)ctx[CpuRegister.Rdx];
+
+        const ulong PoolCommitAlignment = 0x10000;
+        if (addr == 0 || len == 0 || (len & (PoolCommitAlignment - 1)) != 0) return SetReturnResult(ctx, -Einval);
+
+        lock (_memoryGate)
+        {
+            if (!TryFindVirtualQueryRegionLocked(addr, findNext: false, out var region) || !region.IsPooled)
+            {
+                return SetReturnResult(ctx, -Erange);
+            }
+
+            _mappedRegions[addr] = new MappedRegion(addr, len, 0, false, false, 0, IsPoolReserved: true, IsPooled: false, Name: "pool_reserved");
+            _memoryPoolCommittedBytes = _memoryPoolCommittedBytes > len ? _memoryPoolCommittedBytes - len : 0;
+        }
+
+        return SetReturnResult(ctx, 0);
+    }
+
+    [SysAbiExport(Nid = "YN878uKRBbE", ExportName = "sceKernelMemoryPoolBatch", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolBatch(CpuContext ctx)
+    {
+        ulong entriesPtr = ctx[CpuRegister.Rdi];
+        int numEntries = (int)ctx[CpuRegister.Rsi];
+        ulong numEntriesOutPtr = ctx[CpuRegister.Rdx];
+        int flags = (int)ctx[CpuRegister.Rcx];
+
+        if (entriesPtr == 0 || numEntries < 0) return SetReturnResult(ctx, -Einval);
+
+        int processed = 0;
+        Span<byte> entryBuf = stackalloc byte[32];
+        for (int i = 0; i < numEntries; i++)
+        {
+            ulong entryAddr = entriesPtr + (ulong)(i * 32);
+            if (!ctx.Memory.TryRead(entryAddr, entryBuf)) break;
+
+            uint op = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[0..4]);
+            uint entryFlags = BinaryPrimitives.ReadUInt32LittleEndian(entryBuf[4..8]);
+
+            if (op == 1)
+            {
+                ulong addr = BinaryPrimitives.ReadUInt64LittleEndian(entryBuf[8..16]);
+                ulong len = BinaryPrimitives.ReadUInt64LittleEndian(entryBuf[16..24]);
+                byte prot = entryBuf[24];
+                byte type = entryBuf[25];
+                ctx[CpuRegister.Rdi] = addr; ctx[CpuRegister.Rsi] = len; ctx[CpuRegister.Rdx] = type; ctx[CpuRegister.Rcx] = prot; ctx[CpuRegister.R8] = (ulong)entryFlags;
+                int res = MemoryPoolCommit(ctx);
+                if (res != 0) break;
+            }
+            else if (op == 2)
+            {
+                ulong addr = BinaryPrimitives.ReadUInt64LittleEndian(entryBuf[8..16]);
+                ulong len = BinaryPrimitives.ReadUInt64LittleEndian(entryBuf[16..24]);
+                ctx[CpuRegister.Rdi] = addr; ctx[CpuRegister.Rsi] = len; ctx[CpuRegister.Rdx] = (ulong)entryFlags;
+                int res = MemoryPoolDecommit(ctx);
+                if (res != 0) break;
+            }
+            processed++;
+        }
+
+        if (numEntriesOutPtr != 0)
+        {
+            Span<byte> outBuf = stackalloc byte[4];
+            BinaryPrimitives.WriteUInt32LittleEndian(outBuf, (uint)processed);
+            ctx.Memory.TryWrite(numEntriesOutPtr, outBuf);
+        }
+        return SetReturnResult(ctx, 0);
+    }
+
+    [SysAbiExport(Nid = "bvD+95Q6asU", ExportName = "sceKernelMemoryPoolGetBlockStats", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int MemoryPoolGetBlockStats(CpuContext ctx)
+    {
+        ulong outPtr = ctx[CpuRegister.Rdi];
+        ulong outSize = ctx[CpuRegister.Rsi];
+
+        if (outPtr == 0 && outSize != 0) return SetReturnResult(ctx, -Efault);
+
+        const ulong BlockSize = 0x10000;
+        lock (_memoryGate)
+        {
+            uint committedBlocks = (uint)(_memoryPoolCommittedBytes / BlockSize);
+            uint availableBlocks = (uint)((_memoryPoolPhysicalSize > _memoryPoolCommittedBytes ? _memoryPoolPhysicalSize - _memoryPoolCommittedBytes : 0) / BlockSize);
+
+            Span<byte> buf = stackalloc byte[16];
+            BinaryPrimitives.WriteUInt32LittleEndian(buf[0..4], availableBlocks);
+            BinaryPrimitives.WriteUInt32LittleEndian(buf[4..8], 0);
+            BinaryPrimitives.WriteUInt32LittleEndian(buf[8..12], committedBlocks);
+            BinaryPrimitives.WriteUInt32LittleEndian(buf[12..16], 0);
+
+            int copyLen = (int)Math.Min(outSize, 16UL);
+            if (copyLen > 0 && outPtr != 0)
+            {
+                ctx.Memory.TryWrite(outPtr, buf.Slice(0, copyLen));
+            }
+        }
+
+        return SetReturnResult(ctx, 0);
+    }
 }

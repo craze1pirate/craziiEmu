@@ -3063,11 +3063,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			$"entry=0x{thread.EntryPoint:X16} arg=0x{thread.Argument:X16} priority={thread.Priority} " +
 			$"host_priority={MapGuestThreadPriority(thread.Priority)} affinity=0x{thread.AffinityMask:X}");
 		Pump(creatorContext, "pthread_create");
-		// Pump is suppressed while another cooperative dispatch is active. The
-		// background dispatcher would eventually observe this thread, but an
-		// immediate authoritative drain avoids making thread creation depend on
-		// the approximate ready-count polling hint.
-		DispatchReadyGuestThreads();
 		return true;
 	}
 
@@ -5131,7 +5126,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			ptr2[offset++] = 93;
 			ptr2[offset++] = 91;
 			ptr2[offset++] = 195;
-			ulong sentinel = (ulong)ptr + (ulong)sentinelOffset;
+			ulong sentinel = (ulong)_guestReturnStub;
 			ActiveEntryReturnSentinelRip = (ulong)_guestReturnStub;
 			_activeGuestReturnSlotAddress = context[CpuRegister.Rsp] - 16uL;
 			if (!context.TryWriteUInt64(context[CpuRegister.Rsp], sentinel))

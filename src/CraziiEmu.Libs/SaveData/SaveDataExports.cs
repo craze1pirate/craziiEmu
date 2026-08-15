@@ -729,19 +729,14 @@ public static class SaveDataExports
             var create = (mountMode & MountModeCreate) != 0;
             var createIfMissing = (mountMode & MountModeCreate2) != 0;
 
-            if (!existed && !create && !createIfMissing)
-            {
-                return SetReturn(ctx, OrbisSaveDataErrorNotFound);
-            }
-
-            if (existed && create)
-            {
-                return SetReturn(ctx, OrbisSaveDataErrorExists);
-            }
-
             if (!existed)
             {
                 Directory.CreateDirectory(savePath);
+            }
+
+            if (existed && create && !createIfMissing)
+            {
+                return SetReturn(ctx, OrbisSaveDataErrorExists);
             }
 
             const string mountPoint = "/savedata0";

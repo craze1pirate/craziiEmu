@@ -23,6 +23,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
   <ItemGroup>
     <InternalsVisibleTo Include="CraziiEmu.Libs.Tests" />
+    <InternalsVisibleTo Include="CraziiEmu.TestRunner" />
   </ItemGroup>
 
   <ItemGroup>

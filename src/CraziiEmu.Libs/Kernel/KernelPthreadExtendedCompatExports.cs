@@ -1295,6 +1295,12 @@ public static class KernelPthreadExtendedCompatExports
             values.TryRemove(key, out _);
         }
 
+        if (ctx.FsBase != 0 && (uint)key < 256)
+        {
+            var guestTlsSlotAddress = ctx.FsBase + 0x400 + ((ulong)key * sizeof(ulong));
+            _ = ctx.TryWriteUInt64(guestTlsSlotAddress, 0UL);
+        }
+
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -1322,6 +1328,13 @@ public static class KernelPthreadExtendedCompatExports
             currentThreadHandle,
             static _ => new ConcurrentDictionary<int, ulong>());
         values[key] = value;
+
+        if (ctx.FsBase != 0 && (uint)key < 256)
+        {
+            var guestTlsSlotAddress = ctx.FsBase + 0x400 + ((ulong)key * sizeof(ulong));
+            _ = ctx.TryWriteUInt64(guestTlsSlotAddress, value);
+        }
+
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -1344,7 +1357,16 @@ public static class KernelPthreadExtendedCompatExports
         var currentThreadHandle = KernelPthreadState.GetCurrentThreadHandle();
         ulong value = 0;
 
-        if (_threadLocalSpecific.TryGetValue(currentThreadHandle, out var values) &&
+        if (ctx.FsBase != 0 && (uint)key < 256)
+        {
+            var guestTlsSlotAddress = ctx.FsBase + 0x400 + ((ulong)key * sizeof(ulong));
+            if (ctx.TryReadUInt64(guestTlsSlotAddress, out var guestVal) && guestVal != 0)
+            {
+                value = guestVal;
+            }
+        }
+
+        if (value == 0 && _threadLocalSpecific.TryGetValue(currentThreadHandle, out var values) &&
             values.TryGetValue(key, out var storedValue))
         {
             value = storedValue;

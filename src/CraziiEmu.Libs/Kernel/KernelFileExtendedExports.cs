@@ -542,6 +542,7 @@ public static partial class KernelMemoryCompatExports
             var buf = BinaryPrimitives.ReadUInt64LittleEndian(request[16..]);
             var resultPtr = BinaryPrimitives.ReadUInt64LittleEndian(request[24..]);
             var fd = BinaryPrimitives.ReadInt32LittleEndian(request[32..]);
+            var semaId = unchecked((uint)BinaryPrimitives.ReadInt32LittleEndian(request[36..]));
 
             long transferred = KernelAioTransfer(ctx, fd, offset, nbyte, buf, write);
             if (resultPtr != 0)
@@ -549,6 +550,11 @@ public static partial class KernelMemoryCompatExports
                 BinaryPrimitives.WriteInt64LittleEndian(result[0..], transferred);
                 BinaryPrimitives.WriteUInt32LittleEndian(result[8..], AioStateCompleted);
                 _ = ctx.Memory.TryWrite(resultPtr, result);
+            }
+
+            if (semaId != 0)
+            {
+                KernelSemaphoreCompatExports.TrySignalSemaInternal(semaId, 1);
             }
         }
 

@@ -815,6 +815,33 @@ public static partial class AgcExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
+    [SysAbiExport(
+        Nid = "dbOlWdppb4o",
+        ExportName = "sceAgcAddPrimStateRegisters",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int AddPrimStateRegisters(CpuContext ctx)
+    {
+        var ucRegistersAddress = ctx[CpuRegister.Rdi];
+        if (ucRegistersAddress == 0)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        const int prefilledPairBytes = 3 * 8; // sceAgcCreatePrimState's 3 (offset,value) pairs
+        const int scannedTableBytes = 0x20 * 8; // caller's hardcoded probe-window size
+        Span<byte> zero = stackalloc byte[scannedTableBytes - prefilledPairBytes];
+        zero.Clear();
+        if (!ctx.Memory.TryWrite(ucRegistersAddress + prefilledPairBytes, zero))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAgc($"agc.add_prim_state_registers uc=0x{ucRegistersAddress:X16}");
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     // NID captured from shipped titles; the friendly name collides with a real catalog symbol of a different NID. Rename pending AGC API confirmation.
     #pragma warning disable SHEM004
     [SysAbiExport(
@@ -952,6 +979,17 @@ public static partial class AgcExports
         }
 
         return ReturnPointer(ctx, commandAddress);
+    }
+
+    [SysAbiExport(
+        Nid = "t7PlZ9nt5Lc",
+        ExportName = "sceAgcCbNopGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int CbNopGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 2u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
     }
 
     [SysAbiExport(
@@ -1149,6 +1187,17 @@ public static partial class AgcExports
         }
 
         return ReturnPointer(ctx, commandAddress);
+    }
+
+    [SysAbiExport(
+        Nid = "ewobAQeMo5k",
+        ExportName = "sceAgcAcbAcquireMemGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int AcbAcquireMemGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 8u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
     }
 
     [SysAbiExport(
@@ -1723,6 +1772,17 @@ public static partial class AgcExports
             $"agc.dcb_acquire_mem buf=0x{commandBufferAddress:X16} cmd=0x{commandAddress:X16} " +
             $"engine={engine} cbdb=0x{cbDbOp:X8} gcr=0x{gcrControl:X8} base=0x{baseAddress:X16} size=0x{sizeBytes:X16}");
         return ReturnPointer(ctx, commandAddress);
+    }
+
+    [SysAbiExport(
+        Nid = "-vnlTPPXPrw",
+        ExportName = "sceAgcDcbAcquireMemGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbAcquireMemGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 8u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
     }
 
     [SysAbiExport(
@@ -2386,6 +2446,17 @@ public static partial class AgcExports
                              (op == ItNop && register is RWaitMem32 or RWaitMem64)
                 ? OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT
                 : OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+    }
+
+    [SysAbiExport(
+        Nid = "hL7C0IRpWZI",
+        ExportName = "sceAgcCbQueueEndOfPipeActionGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int CbQueueEndOfPipeActionGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 8u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
     }
 
     [SysAbiExport(
@@ -11200,6 +11271,95 @@ public static partial class AgcExports
             $"[LOADER][TRACE] agc.create_shader dst=0x{destinationAddress:X16} header=0x{headerAddress:X16} code=0x{codeAddress:X16} {detail}");
     }
 
+    private const uint ItRewind = 0x3C;
+    private const uint RewindValidBit = 1u << 31;
+    private const uint RewindOffloadEnableBit = 1u << 24;
+
+    [SysAbiExport(
+        Nid = "QIXCsbipds0",
+        ExportName = "sceAgcDcbRewindGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbRewindGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 2u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
+    }
+
+    [SysAbiExport(
+        Nid = "zfcxg-ewMK8",
+        ExportName = "sceAgcDcbRewind",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbRewind(CpuContext ctx)
+    {
+        var dcb = ctx[CpuRegister.Rdi];
+        var flags = ctx[CpuRegister.Rsi];
+        var valid = (flags & 1UL) != 0;
+        var offloadEnable = (flags & 2UL) != 0;
+        if (dcb == 0)
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        var body = (valid ? RewindValidBit : 0u) |
+                   (offloadEnable ? RewindOffloadEnableBit : 0u);
+        if (!TryAllocateCommandDwords(ctx, dcb, 2, out var cmd) ||
+            !ctx.TryWriteUInt32(cmd, Pm4(2, ItRewind, RZero)) ||
+            !ctx.TryWriteUInt32(cmd + 4, body))
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        TraceAgc($"agc.dcb_rewind buf=0x{dcb:X16} cmd=0x{cmd:X16} valid={valid} offload={offloadEnable}");
+        return ReturnPointer(ctx, cmd);
+    }
+
+    [SysAbiExport(
+        Nid = "ziVA3whp3p4",
+        ExportName = "sceAgcRewindPatchSetRewindState",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int RewindPatchSetRewindState(CpuContext ctx)
+    {
+        var packetAddress = ctx[CpuRegister.Rdi];
+        var valid = (ctx[CpuRegister.Rsi] & 1UL) != 0;
+        if (packetAddress == 0 || (long)packetAddress < 0)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        var bodyAddress = packetAddress;
+        if (TryReadUInt32(ctx, packetAddress, out var header) &&
+            ((header >> 8) & 0xFFu) == ItRewind)
+        {
+            bodyAddress = packetAddress + sizeof(uint);
+        }
+
+        if (!TryReadUInt32(ctx, bodyAddress, out var body) ||
+            !TryWriteUInt32(
+                ctx,
+                bodyAddress,
+                valid ? (body | RewindValidBit) : (body & ~RewindValidBit)))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        TraceAgc($"agc.rewind_patch_state packet=0x{packetAddress:X16} body=0x{bodyAddress:X16} valid={valid}");
+        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+        Nid = "VEGu4dixjUg",
+        ExportName = "sceAgcDcbJumpGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbJumpGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 4u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
+    }
+
     [SysAbiExport(
         Nid = "xSAR0LTcRKM",
         ExportName = "sceAgcDcbJump",
@@ -11436,7 +11596,7 @@ public static partial class AgcExports
         uint owner;
         lock (state.Gate)
         {
-            if (!state.ResourceRegistrationInitialized ||
+            if (state.ResourceRegistrationInitialized &&
                 state.ResourceRegistrationMaxOwners != 0 &&
                 state.ResourceOwners.Count >= state.ResourceRegistrationMaxOwners)
             {
