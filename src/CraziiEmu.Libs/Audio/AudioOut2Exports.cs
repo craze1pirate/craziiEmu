@@ -320,9 +320,18 @@ public static class AudioOut2Exports
     {
         var handle = ctx[CpuRegister.Rdi];
         var stateAddress = ResolveGuestOutBuffer(ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx]);
-        if (handle == 0 || stateAddress == 0)
+        if (stateAddress == 0)
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        // Stack out-buffers with garbage handles were writing 0x20 bytes over
+        // caller frames / canaries (state=0x7FFFDE1FF688 right before fail).
+        if (IsGuestStackAddress(stateAddress) && handle < 0x2000_0000UL)
+        {
+            TraceAudioOut2(
+                $"port-get-state skip-stack handle=0x{handle:X} state=0x{stateAddress:X}");
+            return SetReturn(ctx, 0);
         }
 
         var type = (int)((handle >> 16) & 0xFF);

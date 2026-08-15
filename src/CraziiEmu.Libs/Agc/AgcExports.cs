@@ -79,12 +79,29 @@ public static partial class AgcExports
     private const uint RIndexCount = 0x1C;
     private const uint SpiShaderPgmLoPs = 0x8;
     private const uint SpiShaderPgmHiPs = 0x9;
+    private const uint SpiShaderPgmLoVs = 0x48;
+    private const uint SpiShaderPgmHiVs = 0x49;
     private const uint SpiShaderPgmLoEs = 0xC8;
     private const uint SpiShaderPgmHiEs = 0xC9;
     private const uint SpiShaderPgmLoLs = 0x148;
     private const uint SpiShaderPgmHiLs = 0x149;
-    private const uint SpiShaderPgmLoGs = 0x8A;
-    private const uint SpiShaderPgmHiGs = 0x8B;
+    private const uint SpiShaderPgmLoHs = 0x108;
+    private const uint SpiShaderPgmHiHs = 0x109;
+    private const uint SpiShaderPgmRsrc1Hs = 0x10A;
+    private const uint SpiShaderPgmRsrc2Hs = 0x10B;
+    private const uint SpiShaderPgmLoGs = 0x88;
+    private const uint SpiShaderPgmHiGs = 0x89;
+    private const uint SpiShaderPgmRsrc1Gs = 0x8A;
+    private const uint SpiShaderPgmChksumGs = 0x80;
+
+    private const byte ComputeShaderType = 0;
+    private const byte PsShaderType = 1;
+    private const byte GsShaderType = 2;
+    private const byte HsShaderType = 3;
+    private const byte GsFrontShaderType = 4;
+    private const byte HsFrontShaderType = 5;
+    private const byte GsBackShaderType = 6;
+    private const byte HsBackShaderType = 7;
     private const uint SpiPsInputEna = 0x1B3;
     private const uint SpiPsInputAddr = 0x1B4;
     private const uint ComputePgmLo = 0x20C;
@@ -1441,6 +1458,70 @@ public static partial class AgcExports
         LibraryName = "libSceAgc")]
     public static int DcbSetUcRegistersIndirect(CpuContext ctx) =>
         DcbSetRegistersIndirect(ctx, RUcRegsIndirect, "uc");
+
+    [SysAbiExport(
+        Nid = "w4-d0n60hdo",
+        ExportName = "sceAgcDcbSetUcRegisterDirect",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbSetUcRegisterDirect(CpuContext ctx) =>
+        DcbSetRegisterDirect(ctx, ItSetUconfigReg, "uc");
+
+    [SysAbiExport(
+        Nid = "aP1Ki9G3++4",
+        ExportName = "sceAgcDcbSetUcRegisterDirectGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbSetUcRegisterDirectGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 3u * sizeof(uint);
+        return (int)ctx[CpuRegister.Rax];
+    }
+
+    #pragma warning disable SHEM004
+    [SysAbiExport(
+        Nid = "8pP4ZcR+x0w",
+        ExportName = "sceAgcDcbSetCxRegisterDirect",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbSetCxRegisterDirect(CpuContext ctx) =>
+        DcbSetRegisterDirect(ctx, ItSetContextReg, "cx");
+
+    [SysAbiExport(
+        Nid = "4L+vW8X7k1M",
+        ExportName = "sceAgcDcbSetShRegisterDirect",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int DcbSetShRegisterDirect(CpuContext ctx) =>
+        DcbSetRegisterDirect(ctx, ItSetShReg, "sh");
+    #pragma warning restore SHEM004
+
+    private static int DcbSetRegisterDirect(CpuContext ctx, uint op, string registerSpace)
+    {
+        var commandBufferAddress = ctx[CpuRegister.Rdi];
+        // Uc/Cx/Sh register is passed by value as {u32 offset, u32 value} in RSI.
+        var packedRegister = ctx[CpuRegister.Rsi];
+        var registerOffset = (uint)(packedRegister & 0xFFFF_FFFFUL);
+        var registerValue = (uint)(packedRegister >> 32);
+        if (commandBufferAddress == 0)
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        const uint packetDwords = 3;
+        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
+            !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, op, 0)) ||
+            !TryWriteUInt32(ctx, commandAddress + 4, registerOffset & 0xFFFFu) ||
+            !TryWriteUInt32(ctx, commandAddress + 8, registerValue))
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
+        TraceAgc(
+            $"agc.dcb_set_{registerSpace}_direct buf=0x{commandBufferAddress:X16} " +
+            $"cmd=0x{commandAddress:X16} offset=0x{registerOffset:X4} value=0x{registerValue:X8}");
+        return ReturnPointer(ctx, commandAddress);
+    }
 
     [SysAbiExport(
         Nid = "GIIW2J37e70",
@@ -10423,40 +10504,208 @@ public static partial class AgcExports
             return false;
         }
 
-        if (!TryReadUInt32(ctx, shRegistersAddress, out var loRegister) ||
-            !TryReadUInt32(ctx, shRegistersAddress + 8, out var hiRegister))
-        {
-            return false;
-        }
-
+        // Type bytes follow the Prospero half/fused enum used by fuse-shader.
+        // Type 3 still patches VS PGM registers on this tree; type 5 is the HS front half / hull path.
         var expectedLo = shaderType switch
         {
-            0 => ComputePgmLo,
-            1 => SpiShaderPgmLoPs,
-            2 or 6 => SpiShaderPgmLoEs,
-            4 => SpiShaderPgmLoGs,
-            7 => SpiShaderPgmLoLs,
+            ComputeShaderType => ComputePgmLo,
+            PsShaderType => SpiShaderPgmLoPs,
+            GsShaderType or GsBackShaderType => SpiShaderPgmLoEs,
+            HsShaderType => SpiShaderPgmLoVs,
+            GsFrontShaderType => SpiShaderPgmLoGs,
+            HsFrontShaderType => SpiShaderPgmLoHs,
+            HsBackShaderType => SpiShaderPgmLoLs,
             _ => 0u,
         };
         var expectedHi = shaderType switch
         {
-            0 => ComputePgmHi,
-            1 => SpiShaderPgmHiPs,
-            2 or 6 => SpiShaderPgmHiEs,
-            4 => SpiShaderPgmHiGs,
-            7 => SpiShaderPgmHiLs,
+            ComputeShaderType => ComputePgmHi,
+            PsShaderType => SpiShaderPgmHiPs,
+            GsShaderType or GsBackShaderType => SpiShaderPgmHiEs,
+            HsShaderType => SpiShaderPgmHiVs,
+            GsFrontShaderType => SpiShaderPgmHiGs,
+            HsFrontShaderType => SpiShaderPgmHiHs,
+            HsBackShaderType => SpiShaderPgmHiLs,
             _ => 0u,
         };
-        if (expectedLo == 0 || loRegister != expectedLo || hiRegister != expectedHi)
+
+        // GTA V Enhanced hull shaders (type 5) put RSRC1/RSRC2 (0x10A/0x10B) at
+        // the front of the SH default table; PGM_LO/HI sit elsewhere (or are
+        // filled later via SetShRegisterDirect).
+        if (!TryFindShaderProgramRegisterPair(
+                ctx,
+                shRegistersAddress,
+                registerCount,
+                expectedLo,
+                expectedHi,
+                out var loEntryAddress,
+                out var hiEntryAddress,
+                out var foundLo,
+                out var foundHi))
         {
-            TraceCreateShader(0, headerAddress, codeAddress, $"unexpected-registers type={shaderType} lo=0x{loRegister:X8} hi=0x{hiRegister:X8}");
+            TryReadUInt32(ctx, shRegistersAddress, out var firstLo);
+            // GTA V Enhanced HS headers start at RSRC1/RSRC2 (0x10A/0x10B) and
+            // omit PGM_LO/HI from the default table. Still succeed: the code VA
+            // lives at ShaderCodeOffset and later binder paths republish it.
+            // GS front headers can likewise start at RSRC1_GS (0x8A) instead of
+            // PGM_LO_GS (0x88) - same deal, skip the patch here.
+            if ((shaderType == HsFrontShaderType && firstLo is SpiShaderPgmRsrc1Hs or SpiShaderPgmLoHs) ||
+                (shaderType == GsFrontShaderType && firstLo is SpiShaderPgmRsrc1Gs or SpiShaderPgmLoGs))
+            {
+                TraceCreateShader(
+                    0,
+                    headerAddress,
+                    codeAddress,
+                    $"skip-pgm-patch type={shaderType} first_lo=0x{firstLo:X8}");
+                return true;
+            }
+
+            TraceCreateShader(
+                0,
+                headerAddress,
+                codeAddress,
+                $"unexpected-registers type={shaderType} expected_lo=0x{expectedLo:X8} first_lo=0x{firstLo:X8}");
             return false;
         }
 
         var loValue = (uint)((codeAddress >> 8) & 0xFFFF_FFFFUL);
         var hiValue = (uint)((codeAddress >> 40) & 0xFFUL);
-        return TryWriteUInt32(ctx, shRegistersAddress + sizeof(uint), loValue) &&
-               TryWriteUInt32(ctx, shRegistersAddress + 8 + sizeof(uint), hiValue);
+        if (!TryWriteUInt32(ctx, loEntryAddress + sizeof(uint), loValue) ||
+            !TryWriteUInt32(ctx, hiEntryAddress + sizeof(uint), hiValue))
+        {
+            return false;
+        }
+
+        if (foundLo != expectedLo || foundHi != expectedHi)
+        {
+            TraceCreateShader(
+                0,
+                headerAddress,
+                codeAddress,
+                $"patched-alt-registers type={shaderType} lo=0x{foundLo:X8} hi=0x{foundHi:X8}");
+        }
+
+        return true;
+    }
+
+    private static readonly (uint Lo, uint Hi)[] ShaderProgramRegisterPairs =
+    [
+        (ComputePgmLo, ComputePgmHi),
+        (SpiShaderPgmLoPs, SpiShaderPgmHiPs),
+        (SpiShaderPgmLoVs, SpiShaderPgmHiVs),
+        (SpiShaderPgmLoEs, SpiShaderPgmHiEs),
+        (SpiShaderPgmLoGs, SpiShaderPgmHiGs),
+        (SpiShaderPgmLoHs, SpiShaderPgmHiHs),
+        (SpiShaderPgmLoLs, SpiShaderPgmHiLs),
+    ];
+
+    private static bool TryFindShaderProgramRegisterPair(
+        CpuContext ctx,
+        ulong shRegistersAddress,
+        byte registerCount,
+        uint preferredLo,
+        uint preferredHi,
+        out ulong loEntryAddress,
+        out ulong hiEntryAddress,
+        out uint foundLo,
+        out uint foundHi)
+    {
+        loEntryAddress = 0;
+        hiEntryAddress = 0;
+        foundLo = 0;
+        foundHi = 0;
+
+        ulong preferredLoAddress = 0;
+        ulong preferredHiAddress = 0;
+        ulong fallbackLoAddress = 0;
+        ulong fallbackHiAddress = 0;
+        uint fallbackLo = 0;
+        uint fallbackHi = 0;
+
+        for (uint index = 0; index < registerCount; index++)
+        {
+            var entryAddress = shRegistersAddress + ((ulong)index * 8);
+            if (!TryReadUInt32(ctx, entryAddress, out var offset))
+            {
+                return false;
+            }
+
+            if (preferredLo != 0 && offset == preferredLo)
+            {
+                preferredLoAddress = entryAddress;
+            }
+            else if (preferredHi != 0 && offset == preferredHi)
+            {
+                preferredHiAddress = entryAddress;
+            }
+
+            if (fallbackLoAddress != 0)
+            {
+                continue;
+            }
+
+            foreach (var pair in ShaderProgramRegisterPairs)
+            {
+                if (offset != pair.Lo)
+                {
+                    continue;
+                }
+
+                // Prefer a contiguous LO/HI pair when present.
+                if (index + 1 < registerCount &&
+                    TryReadUInt32(ctx, entryAddress + 8, out var nextOffset) &&
+                    nextOffset == pair.Hi)
+                {
+                    fallbackLoAddress = entryAddress;
+                    fallbackHiAddress = entryAddress + 8;
+                    fallbackLo = pair.Lo;
+                    fallbackHi = pair.Hi;
+                    break;
+                }
+
+                for (uint hiIndex = 0; hiIndex < registerCount; hiIndex++)
+                {
+                    if (hiIndex == index)
+                    {
+                        continue;
+                    }
+
+                    var hiAddress = shRegistersAddress + ((ulong)hiIndex * 8);
+                    if (!TryReadUInt32(ctx, hiAddress, out var hiOffset) || hiOffset != pair.Hi)
+                    {
+                        continue;
+                    }
+
+                    fallbackLoAddress = entryAddress;
+                    fallbackHiAddress = hiAddress;
+                    fallbackLo = pair.Lo;
+                    fallbackHi = pair.Hi;
+                    break;
+                }
+
+                break;
+            }
+        }
+
+        if (preferredLoAddress != 0 && preferredHiAddress != 0)
+        {
+            loEntryAddress = preferredLoAddress;
+            hiEntryAddress = preferredHiAddress;
+            foundLo = preferredLo;
+            foundHi = preferredHi;
+            return true;
+        }
+
+        if (fallbackLoAddress != 0 && fallbackHiAddress != 0)
+        {
+            loEntryAddress = fallbackLoAddress;
+            hiEntryAddress = fallbackHiAddress;
+            foundLo = fallbackLo;
+            foundHi = fallbackHi;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsEsGeometryShaderType(byte shaderType) =>
