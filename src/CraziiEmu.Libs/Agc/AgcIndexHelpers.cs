@@ -1,8 +1,7 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
-using System;
 using System.Buffers.Binary;
 
 namespace CraziiEmu.Libs.Agc;

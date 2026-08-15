@@ -2,8 +2,7 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace CraziiEmu.Libs.Agc;
 
@@ -53,13 +52,6 @@ internal static class GpuWaitRegistry
         public long RetryDeadlineTicks;
     }
 
-    public readonly record struct OutstandingSnapshot(
-        int TotalWaiters,
-        int DistinctWaitAddresses,
-        ulong FirstWaitAddress,
-        ulong FirstReferenceValue,
-        uint FirstCompareFunction);
-
     private static readonly object _gate = new();
     private static readonly Dictionary<ulong, List<WaitingDcb>> _waiters = new();
     // The last value each label producer wrote. Used only by the deadlock
@@ -69,6 +61,7 @@ internal static class GpuWaitRegistry
     // address) so distinct guest processes never alias.
     private static readonly Dictionary<(object, ulong), ulong> _lastProduced = new();
 
+  
     private static object? Canonicalize(object? memory)
     {
         while (memory is CraziiEmu.HLE.ICpuMemoryWrapper wrapper)
@@ -114,9 +107,15 @@ internal static class GpuWaitRegistry
         }
     }
 
+    public readonly record struct OutstandingSnapshot(
+        int Outstanding,
+        int Latched,
+        long OldestAgeMs,
+        ulong SampleWaitAddress,
+        string? SampleQueueName);
+
     /// <summary>
-    /// Captures a lightweight snapshot of outstanding waiters without allocating.
-    /// Used by the AGC stall detector to classify a stuck queue.
+    /// Diagnostics snapshot of suspended WAIT_REG_MEM / dims waiters.
     /// </summary>
     public static OutstandingSnapshot SnapshotOutstanding(object? memory = null)
     {
@@ -124,47 +123,46 @@ internal static class GpuWaitRegistry
         lock (_gate)
         {
             var outstanding = 0;
-            var distinctAddresses = 0;
-            var firstAddress = 0UL;
-            var firstRef = 0UL;
-            var firstCmp = 0u;
-            var hasFirst = false;
-
-            foreach (var (address, list) in _waiters)
+            var latched = 0;
+            var oldestTicks = long.MaxValue;
+            ulong sampleAddress = 0;
+            string? sampleQueue = null;
+            var now = Stopwatch.GetTimestamp();
+            foreach (var (_, list) in _waiters)
             {
-                var addressMatches = 0;
-                for (var i = 0; i < list.Count; i++)
+                foreach (var waiter in list)
                 {
-                    var waiter = list[i];
-                    if (memory is not null && !ReferenceEquals(waiter.Memory, memory))
+                    if (memory is not null &&
+                        !ReferenceEquals(waiter.Memory, memory))
                     {
                         continue;
                     }
 
-                    if (!hasFirst)
+                    outstanding++;
+                    if (waiter.Latched)
                     {
-                        firstAddress = address;
-                        firstRef = waiter.ReferenceValue;
-                        firstCmp = waiter.CompareFunction;
-                        hasFirst = true;
+                        latched++;
                     }
 
-                    addressMatches++;
-                    outstanding++;
-                }
-
-                if (addressMatches > 0)
-                {
-                    distinctAddresses++;
+                    if (waiter.RegisteredTicks != 0 &&
+                        waiter.RegisteredTicks < oldestTicks)
+                    {
+                        oldestTicks = waiter.RegisteredTicks;
+                        sampleAddress = waiter.WaitAddress;
+                        sampleQueue = waiter.QueueName;
+                    }
                 }
             }
 
+            var oldestAgeMs = oldestTicks == long.MaxValue || oldestTicks == 0
+                ? 0L
+                : (now - oldestTicks) * 1000L / Stopwatch.Frequency;
             return new OutstandingSnapshot(
                 outstanding,
-                distinctAddresses,
-                firstAddress,
-                firstRef,
-                firstCmp);
+                latched,
+                oldestAgeMs,
+                sampleAddress,
+                sampleQueue);
         }
     }
 
@@ -374,6 +372,56 @@ internal static class GpuWaitRegistry
         }
 
         return latchedAny;
+    }
+
+    /// <summary>
+    /// Every registered waiter, for the flip-stall watchdog. Not filtered by
+    /// memory identity — the watchdog wants a whole-process view.
+    /// </summary>
+    public static List<WaitingDcb> SnapshotAll()
+    {
+        var snapshot = new List<WaitingDcb>();
+        lock (_gate)
+        {
+            foreach (var (_, list) in _waiters)
+            {
+                snapshot.AddRange(list);
+            }
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Removes the waiter at <paramref name="address"/> whose State is
+    /// <paramref name="state"/> — used when a new submission supersedes a
+    /// ring-tail park that would otherwise pin the queue forever.
+    /// </summary>
+    public static bool TryRemoveByState(object state, ulong address)
+    {
+        lock (_gate)
+        {
+            if (!_waiters.TryGetValue(address, out var list))
+            {
+                return false;
+            }
+
+            for (var i = list.Count - 1; i >= 0; i--)
+            {
+                if (ReferenceEquals(list[i].State, state))
+                {
+                    list.RemoveAt(i);
+                    if (list.Count == 0)
+                    {
+                        _waiters.Remove(address);
+                    }
+
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     /// <summary>
@@ -592,15 +640,15 @@ internal static class GpuWaitRegistry
     // Under orphan force-submit, producers can run ahead of waiter
     // registration and pass an equal-compare value before it's ever seen.
     // Treat == as "reached or passed" only in that mode, so other titles
-    // keep exact hardware semantics. CRAZIIEMU_GPU_WAIT_EQ_EXACT=1 restores
+    // keep exact hardware semantics. SHARPEMU_GPU_WAIT_EQ_EXACT=1 restores
     // strict equality for A/B.
     private static readonly bool _equalCompareExact =
         string.Equals(
-            Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_EQ_EXACT") ?? Environment.GetEnvironmentVariable("SHARPEMU_GPU_WAIT_EQ_EXACT"),
+            Environment.GetEnvironmentVariable("SHARPEMU_GPU_WAIT_EQ_EXACT"),
             "1",
             StringComparison.Ordinal) ||
         !string.Equals(
-            Environment.GetEnvironmentVariable("CRAZIIEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES") ?? Environment.GetEnvironmentVariable("SHARPEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES"),
+            Environment.GetEnvironmentVariable("SHARPEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES"),
             "1",
             StringComparison.Ordinal);
 

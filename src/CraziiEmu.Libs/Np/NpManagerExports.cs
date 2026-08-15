@@ -44,6 +44,16 @@ public static class NpManagerExports
     }
 
     [SysAbiExport(
+        Nid = "+yqjab2fUJA",
+        ExportName = "sceNpRegisterPremiumEventCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpManager")]
+    public static int NpRegisterPremiumEventCallback(CpuContext ctx)
+    {
+        return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
         Nid = "KfGZg2y73oM",
         ExportName = "sceNpCheckNpReachability",
         Target = Generation.Gen4 | Generation.Gen5,

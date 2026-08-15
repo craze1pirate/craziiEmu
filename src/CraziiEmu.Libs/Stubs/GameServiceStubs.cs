@@ -114,6 +114,32 @@ public static class GameServiceStubs
         Target = Generation.Gen5, LibraryName = "libSceVoice")]
     public static int VoiceEnd(CpuContext ctx) => Ok(ctx);
 
+    [SysAbiExport(Nid = "54phPH2LZls", ExportName = "sceVoiceStart",
+        Target = Generation.Gen5, LibraryName = "libSceVoice")]
+    public static int VoiceStart(CpuContext ctx) => Ok(ctx);
+
+    [SysAbiExport(Nid = "CrLqDwWLoXM", ExportName = "sceVoiceGetPortInfo",
+        Target = Generation.Gen5, LibraryName = "libSceVoice")]
+    public static int VoiceGetPortInfo(CpuContext ctx)
+    {
+        var infoAddress = ctx[CpuRegister.Rsi];
+        if (infoAddress != 0)
+        {
+            Span<byte> zero = stackalloc byte[0x80];
+            zero.Clear();
+            ctx.Memory.TryWrite(infoAddress, zero);
+        }
+        return Ok(ctx);
+    }
+
+    [SysAbiExport(Nid = "Ao2YNSA7-Qo", ExportName = "sceVoiceStop",
+        Target = Generation.Gen5, LibraryName = "libSceVoice")]
+    public static int VoiceStop(CpuContext ctx) => Ok(ctx);
+
+    [SysAbiExport(Nid = "cJLufzou6bc", ExportName = "sceVoiceGetBitRate",
+        Target = Generation.Gen5, LibraryName = "libSceVoice")]
+    public static int VoiceGetBitRate(CpuContext ctx) => Ok(ctx);
+
     [SysAbiExport(Nid = "dPj4ZtRcIWk", ExportName = "sceContentSearchInit",
         Target = Generation.Gen5, LibraryName = "libSceContentSearch")]
     public static int ContentSearchInit(CpuContext ctx) => Ok(ctx);
