@@ -129,32 +129,7 @@ public static class KernelSemaphoreCompatExports
                 return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
             }
 
-            // If it's a polling wait (timeout == 0), don't go through the cooperative block,
-            // because the cooperative block would return instantly and the guest would spin 100% CPU.
-            // Instead, we delay for up to 1 real second to trigger the virtual clock clamp!
-            if (timeoutAddress != 0 && timeoutUsec == 0)
-            {
-                // Drop the lock during the delay
-            }
-            else
-            {
-                semaphore.WaitingThreads++;
-            }
-        }
-
-        if (timeoutAddress != 0 && timeoutUsec == 0)
-        {
-            lock (semaphore.Gate)
-            {
-                if (semaphore.Count >= needCount)
-                {
-                    semaphore.Count -= needCount;
-                    _ = TryWriteUInt32(ctx, timeoutAddress, 0);
-                    return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
-                }
-            }
-
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
+            semaphore.WaitingThreads++;
         }
 
         // Block cooperatively: the wake predicate atomically acquires the
@@ -217,6 +192,27 @@ public static class KernelSemaphoreCompatExports
                 WakePredicate,
                 deadline))
         {
+            // A signal may have arrived between releasing the semaphore gate
+            // (after incrementing WaitingThreads) and the scheduler registering
+            // this block.  When that happens WakeBlockedThreads cannot find the
+            // waiter yet and the exit-handler re-check runs later; a re-check
+            // here keeps the thread from yielding to the scheduler at all when
+            // the count is already sufficient.
+            lock (semaphore.Gate)
+            {
+                if (semaphore.Count >= needCount)
+                {
+                    semaphore.Count -= needCount;
+                    semaphore.WaitingThreads = Math.Max(0, semaphore.WaitingThreads - 1);
+                    GuestThreadExecution.TryConsumeCurrentThreadBlock(out _);
+                    if (_traceSema)
+                    {
+                        TraceSemaphore($"wait-recheck handle=0x{handle:X8} name='{semaphore.Name}' need={needCount} count={semaphore.Count} {FormatCallSite(ctx)}");
+                    }
+                    return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+                }
+            }
+
             if (_traceSema)
             {
                 TraceSemaphore($"wait-block handle=0x{handle:X8} name='{semaphore.Name}' need={needCount} count={semaphore.Count} timeout={(timeoutAddress == 0 ? "infinite" : timeoutUsec)} waiters={semaphore.WaitingThreads} {FormatCallSite(ctx)}");
@@ -335,14 +331,12 @@ public static class KernelSemaphoreCompatExports
 
         lock (semaphore.Gate)
         {
-            if (semaphore.MaxCount > 0 && semaphore.Count > semaphore.MaxCount - signalCount)
+            if (semaphore.Count > semaphore.MaxCount - signalCount)
             {
                 return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
             }
 
-            semaphore.Count = semaphore.MaxCount > 0
-                ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
-                : semaphore.Count + signalCount;
+            semaphore.Count += signalCount;
             // Wake host-thread waiters parked in the fallback path.
             Monitor.PulseAll(semaphore.Gate);
             if (_traceSema)
@@ -355,52 +349,6 @@ public static class KernelSemaphoreCompatExports
         // acquires the tokens atomically, so this respects the new count.
         _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
         return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
-    }
-
-    public static bool TrySignalSemaInternal(uint handle, int signalCount = 1)
-    {
-        if (!_semaphores.TryGetValue(handle, out var semaphore) || signalCount <= 0)
-        {
-            return false;
-        }
-
-        lock (semaphore.Gate)
-        {
-            if (semaphore.MaxCount > 0 && semaphore.Count > semaphore.MaxCount - signalCount)
-            {
-                return false;
-            }
-
-            semaphore.Count = semaphore.MaxCount > 0
-                ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
-                : semaphore.Count + signalCount;
-            Monitor.PulseAll(semaphore.Gate);
-            if (_traceSema)
-            {
-                TraceSemaphore($"signal_internal handle=0x{handle:X8} name='{semaphore.Name}' signal={signalCount} count={semaphore.Count} waiters={semaphore.WaitingThreads}");
-            }
-        }
-
-        _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
-        return true;
-    }
-
-    public static void SignalAllSemaphores(int signalCount = 1)
-    {
-        foreach (var (handle, semaphore) in _semaphores)
-        {
-            lock (semaphore.Gate)
-            {
-                if (semaphore.WaitingThreads > 0)
-                {
-                    semaphore.Count = semaphore.MaxCount > 0
-                        ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
-                        : semaphore.Count + signalCount;
-                    Monitor.PulseAll(semaphore.Gate);
-                }
-            }
-            _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
-        }
     }
 
     [SysAbiExport(
@@ -503,6 +451,22 @@ public static class KernelSemaphoreCompatExports
     }
 
     [SysAbiExport(
+        Nid = "GEnUkDZoUwY",
+        ExportName = "scePthreadSemInit",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadSemInit(CpuContext ctx)
+    {
+        // scePthreadSemInit(sem, flag, value, name) seems to only support private semaphores
+        if (ctx[CpuRegister.Rsi] != 0)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        return PosixSemInit(ctx);
+    }
+
+    [SysAbiExport(
         Nid = "YCV5dGGBcCo",
         ExportName = "sem_wait",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -521,6 +485,13 @@ public static class KernelSemaphoreCompatExports
     }
 
     [SysAbiExport(
+        Nid = "C36iRE0F5sE",
+        ExportName = "scePthreadSemWait",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadSemWait(CpuContext ctx) => PosixSemWait(ctx);
+
+    [SysAbiExport(
         Nid = "WBWzsRifCEA",
         ExportName = "sem_trywait",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -535,6 +506,19 @@ public static class KernelSemaphoreCompatExports
         ctx[CpuRegister.Rdi] = handle;
         ctx[CpuRegister.Rsi] = 1;
         return KernelPollSema(ctx, handle, 1);
+    }
+
+    [SysAbiExport(
+        Nid = "H2a+IN9TP0E",
+        ExportName = "scePthreadSemTrywait",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadSemTryWait(CpuContext ctx)
+    {
+        var result = PosixSemTryWait(ctx);
+        return result == (int)OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY
+            ? SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN)
+            : result;
     }
 
     [SysAbiExport(
@@ -572,6 +556,13 @@ public static class KernelSemaphoreCompatExports
         ctx[CpuRegister.Rsi] = 1;
         return KernelSignalSema(ctx, handle, 1);
     }
+
+    [SysAbiExport(
+        Nid = "aishVAiFaYM",
+        ExportName = "scePthreadSemPost",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadSemPost(CpuContext ctx) => PosixSemPost(ctx);
 
     [SysAbiExport(
         Nid = "Bq+LRV-N6Hk",
@@ -622,6 +613,13 @@ public static class KernelSemaphoreCompatExports
 
         return result;
     }
+
+    [SysAbiExport(
+        Nid = "Vwc+L05e6oE",
+        ExportName = "scePthreadSemDestroy",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int PthreadSemDestroy(CpuContext ctx) => PosixSemDestroy(ctx);
 
     private static bool TryGetPosixSemaphoreHandle(CpuContext ctx, ulong semaphoreAddress, out uint handle)
     {
@@ -708,4 +706,33 @@ public static class KernelSemaphoreCompatExports
         _ = ctx.TryReadUInt64(ctx[CpuRegister.Rsp], out var returnAddress);
         return $"guest=0x{GuestThreadExecution.CurrentGuestThreadHandle:X16} ret=0x{returnAddress:X16}";
     }
+
+    
+    public static bool TrySignalSemaInternal(int handle, int signalCount = 1) =>
+        TrySignalSemaInternal(unchecked((uint)handle), signalCount);
+
+    public static bool TrySignalSemaInternal(uint handle, int signalCount = 1)
+    {
+        if (!_semaphores.TryGetValue(handle, out var semaphore) || signalCount <= 0)
+        {
+            return false;
+        }
+
+        lock (semaphore.Gate)
+        {
+            if (semaphore.MaxCount > 0 && semaphore.Count > semaphore.MaxCount - signalCount)
+            {
+                return false;
+            }
+
+            semaphore.Count = semaphore.MaxCount > 0
+                ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
+                : semaphore.Count + signalCount;
+            Monitor.PulseAll(semaphore.Gate);
+        }
+
+        _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
+        return true;
+    }
+
 }

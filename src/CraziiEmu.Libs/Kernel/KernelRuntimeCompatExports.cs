@@ -2409,11 +2409,6 @@ public static class KernelRuntimeCompatExports
         }
     }
 
-    [SysAbiExport(
-        Nid = "Hc4CaR6JBL0",
-        ExportName = "_sync_on_address_v1_alias1",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
     public static int KernelSyncOnAddressV1(CpuContext ctx)
     {
         var waitAddress = ctx[CpuRegister.Rdi];         // uaddr
@@ -2474,11 +2469,6 @@ public static class KernelRuntimeCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    [SysAbiExport(
-        Nid = "q2y-wDIVWZA",
-        ExportName = "_sync_on_address_v1_alias2",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
     public static int KernelSyncOnAddressV1Alias2(CpuContext ctx)
     {
         var wakeAddress = ctx[CpuRegister.Rdi];

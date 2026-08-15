@@ -11,4 +11,6 @@ public interface ICpuMemory
     bool TryWrite(ulong virtualAddress, ReadOnlySpan<byte> source);
 
     bool TryCompare(ulong virtualAddress, ReadOnlySpan<byte> expected) => false;
+
+    bool TryCopy(ulong destinationAddress, ulong sourceAddress, ulong length) => false;
 }

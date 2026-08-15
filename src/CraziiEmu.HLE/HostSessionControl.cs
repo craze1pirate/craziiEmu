@@ -13,6 +13,7 @@ public static class HostSessionControl
     private static Action<string>? _shutdownHandler;
     private static string? _pendingShutdownReason;
     private static int _shutdownRequested;
+
     private static long _embeddedHostWindow;
     private static long _embeddedHostDisplay;
 
@@ -23,19 +24,14 @@ public static class HostSessionControl
     /// </summary>
     public static bool IsShutdownRequested => Volatile.Read(ref _shutdownRequested) != 0;
 
-    /// <summary>
-    /// Native GUI surface used by an isolated emulator child. Input backends
-    /// use it to treat the launcher window as the active game window.
-    /// </summary>
     public static nint EmbeddedHostWindow => unchecked((nint)Interlocked.Read(ref _embeddedHostWindow));
 
-    /// <summary>X11 Display* paired with <see cref="EmbeddedHostWindow"/> when available.</summary>
     public static nint EmbeddedHostDisplay => unchecked((nint)Interlocked.Read(ref _embeddedHostDisplay));
 
     public static void SetEmbeddedHostSurface(nint window, nint display = 0)
     {
-        Interlocked.Exchange(ref _embeddedHostDisplay, unchecked((long)display));
-        Interlocked.Exchange(ref _embeddedHostWindow, unchecked((long)window));
+        Interlocked.Exchange(ref _embeddedHostWindow, window);
+        Interlocked.Exchange(ref _embeddedHostDisplay, display);
     }
 
     /// <summary>

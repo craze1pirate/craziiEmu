@@ -67,7 +67,7 @@ internal sealed partial class WindowsWaveOutAudio : IHostAudioOutput
                 while (_queuedPcmBytes != 0 &&
                        _queuedPcmBytes + stereoPcm16.Length > _maximumQueuedPcmBytes)
                 {
-                    if (HostSessionControl.IsShutdownRequested || !_completion.WaitOne(TimeSpan.FromSeconds(1)))
+                    if (!_completion.WaitOne(TimeSpan.FromSeconds(1)))
                     {
                         return false;
                     }

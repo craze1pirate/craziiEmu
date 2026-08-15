@@ -28,4 +28,3 @@ public interface IHostAudioOutput
     /// </param>
     IHostAudioStream OpenStereoPcm16Stream(uint sampleRate, int maxQueuedPcmBytes = 32 * 1024);
 }
-

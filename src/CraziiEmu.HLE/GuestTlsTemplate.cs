@@ -18,7 +18,7 @@ public static class GuestTlsTemplate
     // Must match CpuDispatcher/DirectExecutionBackend's mapped prefix. PS5
     // modules can require more than one host page of Variant II static TLS;
     // Dreaming Sarah's startup image, for example, reaches 0x1870 bytes.
-    public const ulong StartupStaticTlsReservation = 0x20000UL;     // Was 0x10000UL, doubled for GTA V
+    public const ulong StartupStaticTlsReservation = 0x20000UL;     // Was 0x10000UL, but thats too small for GTA V
     private static readonly object _gate = new();
     private static readonly SortedDictionary<ulong, ModuleTemplate> _modules = new();
     private static readonly Dictionary<ulong, ThreadDtv> _threadDtvs = new();

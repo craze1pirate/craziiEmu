@@ -28,7 +28,7 @@ internal static class AgcShaderCompilerHooks
     internal static void Install()
     {
         Gen5ShaderScalarEvaluator.FallbackMemoryReader =
-            KernelMemoryCompatExports.TryReadTrackedLibcHeap;
+            KernelMemoryCompatExports.TryReadShaderGuestMemory;
         Gen5ShaderScalarEvaluator.GlobalMemoryPool =
             GuestDataPool.Shared;
     }

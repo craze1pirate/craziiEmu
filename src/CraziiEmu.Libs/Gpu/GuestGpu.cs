@@ -2,6 +2,7 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using CraziiEmu.Libs.Gpu.Metal;
 using CraziiEmu.Libs.Gpu.Vulkan;
 
 namespace CraziiEmu.Libs.Gpu;
@@ -21,6 +22,27 @@ internal static class GuestGpu
 
     private static IGuestGpuBackend Create()
     {
+        var requested = Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_BACKEND");
+        if (string.IsNullOrEmpty(requested) || requested.Equals("vulkan", StringComparison.OrdinalIgnoreCase))
+        {
+            return new VulkanGuestGpuBackend();
+        }
+
+        if (requested.Equals("metal", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!OperatingSystem.IsMacOS())
+            {
+                Console.Error.WriteLine(
+                    "[LOADER][WARN] CRAZIIEMU_GPU_BACKEND=metal is only available on macOS; using Vulkan.");
+                return new VulkanGuestGpuBackend();
+            }
+
+            Console.Error.WriteLine("[LOADER][INFO] GPU backend: Metal (CRAZIIEMU_GPU_BACKEND).");
+            return new MetalGuestGpuBackend();
+        }
+
+        Console.Error.WriteLine(
+            $"[LOADER][WARN] Unknown CRAZIIEMU_GPU_BACKEND value '{requested}'; using Vulkan.");
         return new VulkanGuestGpuBackend();
     }
 }

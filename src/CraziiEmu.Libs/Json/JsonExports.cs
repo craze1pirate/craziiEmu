@@ -82,6 +82,18 @@ public static class JsonExports
     }
 
     [SysAbiExport(
+        Nid = "PR5k1penBLM",
+        ExportName = "_ZN3sce4Json11Initializer9terminateEv",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceJson")]
+    public static int InitializerTerminate(CpuContext ctx)
+    {
+        TraceJson("Initializer.terminate", ctx[CpuRegister.Rdi], 0);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
         Nid = "Cxwy7wHq4J0",
         ExportName = "_ZN3sce4Json11Initializer10initializeEPKNS0_13InitParameterE",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -119,6 +131,17 @@ public static class JsonExports
         TraceJson("Initializer.setGlobalNullAccessCallback", thisAddress, ctx[CpuRegister.Rsi]);
         return SetReturn(ctx, 0);
     }
+
+    // Catalog alias NID for the same callback setter.
+    #pragma warning disable SHEM004
+    [SysAbiExport(
+        Nid = "00oCq0RwSAY",
+        ExportName = "_ZN3sce4Json11Initializer27setGlobalNullAccessCallbackEPFRKNS0_5ValueENS0_9ValueTypeEPS3_PvES7_",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceJson")]
+    public static int InitializerSetGlobalNullAccessCallbackAlt(CpuContext ctx) =>
+        InitializerSetGlobalNullAccessCallback(ctx);
+    #pragma warning restore SHEM004
 
     [SysAbiExport(
         Nid = "WSOuge5IsCg",
@@ -302,6 +325,37 @@ public static class JsonExports
     }
 
     [SysAbiExport(
+        Nid = "wLsJlmgEIaI",
+        ExportName = "_ZN3sce4Json5Value10referValueERKNS0_6StringE",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceJson")]
+    public static int ValueReferValue(CpuContext ctx)
+    {
+        var thisAddress = ctx[CpuRegister.Rdi];
+        var keyStringAddress = ctx[CpuRegister.Rsi];
+
+        if (thisAddress == 0 ||
+            !_strings.TryGetValue(keyStringAddress, out var keyState) ||
+            !TryAllocateGuestObject(ctx, ValueObjectSize, out var childAddress))
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return 0;
+        }
+
+        var parent = GetValue(thisAddress);
+
+        var child = parent.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                    parent.TryGetProperty(keyState.Value, out var property)
+                    ? property.Clone() : _nullElement;
+
+        StoreValue(ctx, childAddress, child);
+
+        ctx[CpuRegister.Rax] = childAddress;
+        TraceJsonText("Value.referValue", thisAddress, keyState.Value);
+        return 0;
+    }
+
+    [SysAbiExport(
         Nid = "zTwZdI8AZ5Y",
         ExportName = "_ZNK3sce4Json5Value10getBooleanEv",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -353,37 +407,6 @@ public static class JsonExports
         StoreValue(ctx, childAddress, child);
         ctx[CpuRegister.Rax] = childAddress;
         TraceJsonText("Value.index", valueAddress, key);
-        return 0;
-    }
-
-    [SysAbiExport(
-        Nid = "wLsJlmgEIaI",
-        ExportName = "_ZN3sce4Json5Value10referValueERKNS0_6StringE",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceJson")]
-    public static int ValueReferValue(CpuContext ctx)
-    {
-        var thisAddress = ctx[CpuRegister.Rdi];
-        var keyStringAddress = ctx[CpuRegister.Rsi];
-
-        if (thisAddress == 0 ||
-            !_strings.TryGetValue(keyStringAddress, out var keyState) ||
-            !TryAllocateGuestObject(ctx, ValueObjectSize, out var childAddress))
-        {
-            ctx[CpuRegister.Rax] = 0;
-            return 0;
-        }
-
-        var parent = GetValue(thisAddress);
-
-        var child = parent.ValueKind == System.Text.Json.JsonValueKind.Object &&
-                    parent.TryGetProperty(keyState.Value, out var property)
-                    ? property.Clone() : _nullElement;
-
-        StoreValue(ctx, childAddress, child);
-
-        ctx[CpuRegister.Rax] = childAddress;
-        TraceJsonText("Value.referValue", thisAddress, keyState.Value);
         return 0;
     }
 

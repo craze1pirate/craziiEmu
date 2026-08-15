@@ -233,7 +233,7 @@ public static class NpEntitlementAccessExports
 
     private static void TraceNpEntitlementAccess(string message)
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_NP"), "1", StringComparison.Ordinal))
+        if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_NP"), "1", StringComparison.Ordinal))
         {
             return;
         }

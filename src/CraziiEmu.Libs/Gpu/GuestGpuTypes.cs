@@ -2,6 +2,8 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using CraziiEmu.Libs.Agc;
+
 namespace CraziiEmu.Libs.Gpu;
 
 // The types that cross the guest-GPU backend seam. Every field is either a neutral
@@ -11,7 +13,8 @@ namespace CraziiEmu.Libs.Gpu;
 // translation for its API.
 
 /// <summary>A guest texture referenced by a draw or dispatch. Format/NumberType/
-/// TileMode/DstSelect are raw guest descriptor codes.</summary>
+/// TileMode/DstSelect/Type are raw guest descriptor codes. Depth is the
+/// normalized volume depth (one for non-3D resources).</summary>
 internal sealed record GuestDrawTexture(
     ulong Address,
     uint Width,
@@ -28,7 +31,20 @@ internal sealed record GuestDrawTexture(
     uint Pitch = 0,
     uint TileMode = 0,
     uint DstSelect = 0xFAC,
-    GuestSampler Sampler = default);
+    GuestSampler Sampler = default,
+    // Guest CPU write-tracker generation of the memory RgbaPixels was read
+    // from; -1 when the range is untracked or the pixels were not read here.
+    long WriteGeneration = -1,
+    bool ArrayedView = false,
+    uint ArrayLayers = 1,
+    uint Type = 9,
+    uint Depth = 1,
+    // GPU-detile opt-in (CRAZIIEMU_GPU_DETILE): when Detile is non-null the AGC
+    // layer skipped the CPU deswizzle and shipped the raw TILED bytes here in
+    // TiledSource; the Vulkan backend detiles them on the GPU. RgbaPixels is
+    // empty in that case. Both are neutral (no host graphics-API values).
+    byte[]? TiledSource = null,
+    DetileParams? Detile = null);
 
 /// <summary>Raw guest sampler descriptor dwords, copied verbatim from guest memory.</summary>
 internal readonly record struct GuestSampler(
@@ -49,7 +65,11 @@ internal readonly record struct TextureContentIdentity(
     uint DstSelect,
     uint TileMode,
     uint Pitch,
-    GuestSampler Sampler);
+    GuestSampler Sampler,
+    bool Arrayed = false,
+    uint ArrayLayers = 1,
+    uint Type = 9,
+    uint Depth = 1);
 
 internal sealed record GuestMemoryBuffer(
     ulong BaseAddress,
@@ -70,7 +90,8 @@ internal sealed record GuestVertexBuffer(
     uint OffsetBytes,
     byte[] Data,
     int Length,
-    bool Pooled);
+    bool Pooled,
+    bool PerInstance = false);
 
 internal sealed record GuestIndexBuffer(
     byte[] Data,

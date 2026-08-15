@@ -119,7 +119,7 @@ public static class UserServiceExports
         var userId = unchecked((int)ctx[CpuRegister.Rdi]);
         var nameAddress = ctx[CpuRegister.Rsi];
         var capacity = ctx[CpuRegister.Rdx];
-        if (userId != PrimaryUserId)
+        if (userId != PrimaryUserId && userId != 1)
         {
             return SetReturn(ctx, OrbisUserServiceErrorInvalidParameter);
         }

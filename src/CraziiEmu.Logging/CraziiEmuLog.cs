@@ -111,7 +111,8 @@ public static class CraziiEmuLog
         }
 
         var normalized = text.Trim();
-        if (Enum.TryParse<LogLevel>(normalized, ignoreCase: true, out level))
+        if (Enum.TryParse<LogLevel>(normalized, ignoreCase: true, out level) &&
+            Enum.IsDefined(level))
         {
             return true;
         }
@@ -128,6 +129,7 @@ public static class CraziiEmuLog
             return true;
         }
 
+        level = default;
         return false;
     }
 

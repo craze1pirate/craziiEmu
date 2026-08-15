@@ -224,7 +224,7 @@ public static class SystemTelemetrySampler
 
         // Apply dynamic real-time frequency scaling based on host CPU load & thermal jitter
         float baseCpuFreq = queriedCpuMhz > 0 ? queriedCpuMhz : 3600f;
-        float dynamicCpuFreq = baseCpuFreq * (0.85f + (float)(MetricsManager.CpuUsagePercent / 100.0) * 0.30f) + (float)(Random.Shared.NextDouble() * 36.0 - 18.0);
+        float dynamicCpuFreq = baseCpuFreq * (0.85f + (float)(MetricsManager.CpuUsagePercent / 100.0) * 0.30f) + (float)(global::System.Random.Shared.NextDouble() * 36.0 - 18.0);
         MetricsManager.CpuFreqMHz = (float)Math.Round(dynamicCpuFreq);
 
         long now = Stopwatch.GetTimestamp();
@@ -315,7 +315,7 @@ public static class SystemTelemetrySampler
         {
             float loadPct = MetricsManager.GpuLoadPercent > 0 ? MetricsManager.GpuLoadPercent : (float)MetricsManager.CpuUsagePercent;
             float rawClock = 1200f + (loadPct / 100f) * 700f;
-            MetricsManager.GpuClockMHz = (float)Math.Round(rawClock + (float)(Random.Shared.NextDouble() * 25.0 - 12.5));
+            MetricsManager.GpuClockMHz = (float)Math.Round(rawClock + (float)(global::System.Random.Shared.NextDouble() * 25.0 - 12.5));
         }
 
         // 7. Guest Thread Worker & Blocked Telemetry
@@ -380,7 +380,7 @@ public static class SystemTelemetrySampler
             if (rawClock > 0)
             {
                 float loadPct = MetricsManager.GpuLoadPercent > 0 ? MetricsManager.GpuLoadPercent : 50f;
-                float dynamicGpuClock = rawClock * (0.80f + (loadPct / 100f) * 0.22f) + (float)(Random.Shared.NextDouble() * 30.0 - 15.0);
+                float dynamicGpuClock = rawClock * (0.80f + (loadPct / 100f) * 0.22f) + (float)(global::System.Random.Shared.NextDouble() * 30.0 - 15.0);
                 MetricsManager.GpuClockMHz = (float)Math.Round(dynamicGpuClock);
             }
 

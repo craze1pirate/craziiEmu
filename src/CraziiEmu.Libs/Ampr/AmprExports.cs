@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
+using CraziiEmu.Libs.Agc;
 using CraziiEmu.Libs.Kernel;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using Microsoft.Win32.SafeHandles;
 
 namespace CraziiEmu.Libs.Ampr;
 
@@ -25,7 +27,6 @@ public static class AmprExports
     private const uint KernelEventQueueRecordType = 2;
     private const uint WriteAddressRecordType = 3;
     private static readonly ConcurrentDictionary<ulong, CommandBufferState> _commandBuffers = new();
-    private static readonly ConcurrentDictionary<string, Lazy<CachedHostFile>> _hostFileCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly bool _traceAmpr =
         string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AMPR"), "1", StringComparison.Ordinal);
     private static readonly bool _traceAmprReads =
@@ -40,22 +41,40 @@ public static class AmprExports
         public ulong CommandCount;
     }
 
-    private sealed class CachedHostFile
+    private sealed class CachedHostFile : IDisposable
     {
         public CachedHostFile(string path)
         {
-            Stream = new FileStream(
+            Handle = File.OpenHandle(
                 path,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete,
-                bufferSize: 1024 * 1024,
                 FileOptions.RandomAccess);
+            Length = RandomAccess.GetLength(Handle);
         }
 
-        public object Gate { get; } = new();
-        public FileStream Stream { get; }
+        public SafeFileHandle Handle { get; }
+        public long Length { get; }
+
+        public void Dispose() => Handle.Dispose();
     }
+
+    private sealed class CachedHostFileEntry
+    {
+        public required string Path { get; init; }
+        public required CachedHostFile File { get; init; }
+    }
+
+    // Keep a bounded LRU of open host files. An unbounded cache exhausts the
+    // process FD limit (~10k on macOS) during large asset storms, after
+    // which every new open throws IOException and surfaces as NOT_FOUND — the
+    // guest then reports InvalidFileFourCC on empty buffers.
+    private const int MaxCachedHostFiles = 1536;
+    private static readonly object _hostFileCacheGate = new();
+    private static readonly Dictionary<string, LinkedListNode<CachedHostFileEntry>> _hostFileByPath =
+        new(HostFsPath.Comparer);
+    private static readonly LinkedList<CachedHostFileEntry> _hostFileLru = new();
 
     [SysAbiExport(
         Nid = "8aI7R7WaOlc",
@@ -80,6 +99,7 @@ public static class AmprExports
         }
 
         TraceAmpr(ctx, "ctor", commandBuffer, buffer, size);
+        TryPreindexApp0();
         ctx[CpuRegister.Rax] = commandBuffer;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -107,6 +127,7 @@ public static class AmprExports
         }
 
         TraceAmpr(ctx, "apr_ctor", commandBuffer, aux0, aux1);
+        TryPreindexApp0();
         ctx[CpuRegister.Rax] = commandBuffer;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -271,8 +292,32 @@ public static class AmprExports
 
         if (!AmprFileRegistry.TryGetHostPath(fileId, out var hostPath))
         {
-            TraceAmprRead(ctx, commandBuffer, fileId, destination, size, fileOffset, bytesRead: 0, hostPath, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            // Cooked Insomniac content ids are FNV("/app0/...") and may never
+            // pass through APR resolve. Index app0 once, then retry the lookup.
+            var app0Root = KernelMemoryCompatExports.ResolveGuestPath("$/");
+            if (!string.IsNullOrEmpty(app0Root))
+            {
+                AmprFileRegistry.EnsureApp0Indexed(app0Root);
+            }
+
+            if (!AmprFileRegistry.TryGetHostPath(fileId, out hostPath))
+            {
+                TraceAmprRead(ctx, commandBuffer, fileId, destination, size, fileOffset, bytesRead: 0, hostPath, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+            }
+        }
+
+        // Offset -1 means "continue after the previous read of this file id".
+        // #216 dropped this wiring; without it sequential pack/streamer reads
+        // fail as INVALID_ARGUMENT and RAGE load jobs never complete while the
+        // North Yankton UI keeps flipping.
+        if (fileOffset == unchecked((ulong)(long)-1))
+        {
+            fileOffset = PakDirectoryTracker.ResolveSequentialOffset(fileId, size);
+        }
+        else if (fileOffset > long.MaxValue)
+        {
+            fileOffset = 0;
         }
 
         var result = TryReadFileToGuestMemory(ctx, hostPath, fileOffset, destination, size, out var bytesRead);
@@ -281,6 +326,8 @@ public static class AmprExports
             TraceAmprRead(ctx, commandBuffer, fileId, destination, size, fileOffset, bytesRead, hostPath, result);
             return result;
         }
+
+        PakDirectoryTracker.OnReadCompleted(ctx, fileId, destination, fileOffset, bytesRead);
 
         if (!AppendReadFileRecord(ctx, commandBuffer, fileId, destination, size, fileOffset, bytesRead))
         {
@@ -336,6 +383,18 @@ public static class AmprExports
     public static int MeasureCommandSizeWriteAddressOnCompletion(CpuContext ctx)
     {
         TraceAmpr(ctx, "measure_write_address_complete", 0, WriteAddressRecordSize, 0);
+        ctx[CpuRegister.Rax] = WriteAddressRecordSize;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "4fgtGfXDrFc",
+        ExportName = "sceAmprMeasureCommandSizeWriteAddress_04_00",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAmpr")]
+    public static int MeasureCommandSizeWriteAddress0400(CpuContext ctx)
+    {
+        TraceAmpr(ctx, "measure_write_address", 0, WriteAddressRecordSize, 0);
         ctx[CpuRegister.Rax] = WriteAddressRecordSize;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -505,6 +564,32 @@ public static class AmprExports
         }
 
         TraceAmpr(ctx, "write_address_complete", commandBuffer, address, value);
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+        Nid = "j0+3uJMxYJY",
+        ExportName = "sceAmprCommandBufferWriteAddress_04_00",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAmpr")]
+    public static int CommandBufferWriteAddress0400(CpuContext ctx)
+    {
+        var commandBuffer = ctx[CpuRegister.Rdi];
+        var address = ctx[CpuRegister.Rsi];
+        var value = ctx[CpuRegister.Rdx];
+
+        if (commandBuffer == 0 || address == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!AppendWriteAddressRecord(ctx, commandBuffer, address, value))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        TraceAmpr(ctx, "write_address", commandBuffer, address, value);
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -726,7 +811,9 @@ public static class AmprExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        const int ChunkSize = 1024 * 1024;
+        // 4 MiB chunks cut syscall/Rosetta round-trips on DeS' large sequential
+        // APR reads without blowing the ArrayPool for small probes.
+        const int ChunkSize = 4 * 1024 * 1024;
         var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min((ulong)ChunkSize, size));
 
         try
@@ -736,13 +823,7 @@ public static class AmprExports
                 return openResult;
             }
 
-            long fileLength;
-            lock (cachedFile.Gate)
-            {
-                fileLength = cachedFile.Stream.Length;
-            }
-
-            if (fileOffset >= (ulong)fileLength)
+            if (fileOffset >= (ulong)cachedFile.Length)
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
@@ -761,12 +842,10 @@ public static class AmprExports
                 }
 
                 var request = (int)Math.Min((ulong)buffer.Length, size - bytesRead);
-                int read;
-                lock (cachedFile.Gate)
-                {
-                    cachedFile.Stream.Position = unchecked((long)absoluteOffset);
-                    read = cachedFile.Stream.Read(buffer, 0, request);
-                }
+                var read = RandomAccess.Read(
+                    cachedFile.Handle,
+                    buffer.AsSpan(0, request),
+                    unchecked((long)absoluteOffset));
 
                 if (read <= 0)
                 {
@@ -812,27 +891,100 @@ public static class AmprExports
             cachePath = hostPath;
         }
 
-        var lazy = _hostFileCache.GetOrAdd(
-            cachePath,
-            static path => new Lazy<CachedHostFile>(() => new CachedHostFile(path), isThreadSafe: true));
+        lock (_hostFileCacheGate)
+        {
+            if (_hostFileByPath.TryGetValue(cachePath, out var existing))
+            {
+                _hostFileLru.Remove(existing);
+                _hostFileLru.AddFirst(existing);
+                file = existing.Value.File;
+                return true;
+            }
+        }
 
+        CachedHostFile opened;
         try
         {
-            file = lazy.Value;
-            return true;
+            opened = new CachedHostFile(cachePath);
         }
         catch (UnauthorizedAccessException)
         {
-            _hostFileCache.TryRemove(cachePath, out _);
             result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
             return false;
         }
         catch (IOException)
         {
-            _hostFileCache.TryRemove(cachePath, out _);
-            result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
-            return false;
+            // Likely EMFILE from a prior unbounded cache, or a transient miss.
+            // Evict everything we hold and retry once so a full FD table can
+            // recover without restarting the process.
+            EvictAllCachedHostFiles();
+            try
+            {
+                opened = new CachedHostFile(cachePath);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+                return false;
+            }
+            catch (IOException)
+            {
+                result = (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+                return false;
+            }
         }
+
+        lock (_hostFileCacheGate)
+        {
+            if (_hostFileByPath.TryGetValue(cachePath, out var raced))
+            {
+                opened.Dispose();
+                _hostFileLru.Remove(raced);
+                _hostFileLru.AddFirst(raced);
+                file = raced.Value.File;
+                return true;
+            }
+
+            while (_hostFileByPath.Count >= MaxCachedHostFiles)
+            {
+                EvictLeastRecentlyUsedHostFileLocked();
+            }
+
+            var entry = new CachedHostFileEntry { Path = cachePath, File = opened };
+            var node = _hostFileLru.AddFirst(entry);
+            _hostFileByPath[cachePath] = node;
+            file = opened;
+            return true;
+        }
+    }
+
+    private static void EvictAllCachedHostFiles()
+    {
+        List<CachedHostFile> doomed;
+        lock (_hostFileCacheGate)
+        {
+            doomed = _hostFileLru.Select(entry => entry.File).ToList();
+            _hostFileLru.Clear();
+            _hostFileByPath.Clear();
+        }
+
+        foreach (var cached in doomed)
+        {
+            cached.Dispose();
+        }
+    }
+
+    private static void EvictLeastRecentlyUsedHostFileLocked()
+    {
+        var last = _hostFileLru.Last;
+        if (last is null)
+        {
+            return;
+        }
+
+        _hostFileLru.RemoveLast();
+        _hostFileByPath.Remove(last.Value.Path);
+        last.Value.File.Dispose();
     }
 
     private static bool AppendReadFileRecord(
@@ -959,6 +1111,19 @@ public static class AmprExports
             return false;
         }
 
+        // GPU WAIT_REG_MEM often watches these APR completion labels
+        // (e.g. 0x20505xxx DEADBEEF/counter fences). Without
+        // RecordProduced the wait sits producerless after the guest recycles
+        // the dword, and CollectDeadlockBroken cannot replay the wake.
+        _ = GpuWaitRegistry.RecordProduced(ctx.Memory, address, value);
+        if ((address & 4ul) == 0)
+        {
+            // 32-bit GPU waits use the low dword; also latch that view when the
+            // address is dword-aligned so a u32 compare against ref sees it.
+            _ = GpuWaitRegistry.RecordProduced(
+                ctx.Memory, address, unchecked((uint)value));
+        }
+
         TraceAmpr(ctx, "complete_write_address", address, value, 0);
         return true;
     }
@@ -974,6 +1139,15 @@ public static class AmprExports
 
         value = BinaryPrimitives.ReadUInt32LittleEndian(buffer);
         return true;
+    }
+
+    private static void TryPreindexApp0()
+    {
+        var app0Root = KernelMemoryCompatExports.ResolveGuestPath("$/");
+        if (!string.IsNullOrEmpty(app0Root))
+        {
+            AmprFileRegistry.EnsureApp0Indexed(app0Root);
+        }
     }
 
     private static void TraceAmpr(CpuContext ctx, string operation, ulong commandBuffer, ulong arg0, ulong arg1)

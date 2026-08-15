@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
-using CraziiEmu.HLE.Configuration;
 using CraziiEmu.HLE.Host;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -39,6 +38,7 @@ public static class PadExports
     private static PadState _cachedInputState;
 
     private static bool _initialized;
+    private static int _motionSensorEnabled;
     private static int _controlsAnnouncementLogged;
 
     [SysAbiExport(
@@ -114,9 +114,8 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorDeviceNoHandle);
         }
 
-        var typeAccepted = type is 0 or 1 or 2 or 16;
-        var validUser = userId == PrimaryUserId || userId == 0x01000000 || userId > 0;
-        if (!validUser || !typeAccepted || index != 0)
+        var typeAccepted = extended ? type is 0 or 1 or 2 : type == StandardPortType;
+        if (userId != PrimaryUserId || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
@@ -125,10 +124,9 @@ public static class PadExports
         input.EnsureStarted();
         if (Interlocked.Exchange(ref _controlsAnnouncementLogged, 1) == 0)
         {
-            var config = CraziiEmuConfig.Instance.Input;
             Console.Error.WriteLine(input.DescribeConnectedGamepad() is { } gamepadName
-                ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback active)."
-                : $"[LOADER][INFO] Active controls: Cross={VkName(config.Cross)}, Circle={VkName(config.Circle)}, Square={VkName(config.Square)}, Triangle={VkName(config.Triangle)}, L1={VkName(config.L1)}, R1={VkName(config.R1)}, L2={VkName(config.L2)}, R2={VkName(config.R2)}, Options={VkName(config.Options)}.");
+                ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback also active)."
+                : "[LOADER][INFO] Keyboard controls: Arrow keys = D-pad, WASD = left stick, IJKL = right stick, Z/Enter = Cross, X/Esc = Circle, C = Square, V = Triangle, Q = L1, E = R1, R = L2, F = R2, Tab/Backspace = Options. A DualSense or Xbox controller will be used automatically when plugged in.");
         }
 
         return ctx.SetReturn(PrimaryPadHandle);
@@ -155,22 +153,13 @@ public static class PadExports
     public static int PadSetMotionSensorState(CpuContext ctx)
     {
         var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        return IsPrimaryPadHandle(handle)
-            ? ctx.SetReturn(0)
-            : ctx.SetReturn(OrbisPadErrorInvalidHandle);
-    }
+        if (!IsPrimaryPadHandle(handle))
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidHandle);
+        }
 
-    [SysAbiExport(
-        Nid = "rIZnR6eSpvk",
-        ExportName = "scePadResetOrientation",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libScePad")]
-    public static int PadResetOrientation(CpuContext ctx)
-    {
-        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        return IsPrimaryPadHandle(handle)
-            ? ctx.SetReturn(0)
-            : ctx.SetReturn(OrbisPadErrorInvalidHandle);
+        Volatile.Write(ref _motionSensorEnabled, ctx[CpuRegister.Rsi] != 0 ? 1 : 0);
+        return ctx.SetReturn(0);
     }
 
     [SysAbiExport(
@@ -379,23 +368,205 @@ public static class PadExports
         }
 
         var triggerMask = parameter[0];
-        HostPlatform.Current.Input.SetTriggerRumble(
-            (triggerMask & 0x01) != 0 ? DecodeTriggerVibration(parameter[8..64]) : null,
-            (triggerMask & 0x02) != 0 ? DecodeTriggerVibration(parameter[64..120]) : null);
+        HostPlatform.Current.Input.SetAdaptiveTriggerEffect(
+            (triggerMask & 0x01) != 0 ? DecodeTriggerEffect(parameter[8..64]) : null,
+            (triggerMask & 0x02) != 0 ? DecodeTriggerEffect(parameter[64..120]) : null);
         return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
-    private static byte DecodeTriggerVibration(ReadOnlySpan<byte> command)
+    // Size taken from the caller's own frame rather than assumed: the guest
+    // reserves 0x10 bytes, points the out-param at rbp-0x30, and stores its
+    // stack cookie at rbp-0x28, so only eight bytes belong to the state. A
+    // sixteen-byte write would land on the cookie and fail the stack check.
+    private const int TriggerEffectStateSize = 8;
+
+    [SysAbiExport(
+        Nid = "znaWI0gpuo8",
+        ExportName = "scePadGetTriggerEffectState",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadGetTriggerEffectState(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var stateAddress = ctx[CpuRegister.Rsi];
+        if (!IsPrimaryPadHandle(handle))
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidHandle);
+        }
+
+        if (stateAddress == 0)
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        // No host pad exposes DualSense adaptive-trigger feedback, so every
+        // trigger reports the neutral "no effect engaged" state. Reporting it
+        // as success is what lets the caller take its normal path instead of
+        // falling back to a cached button bitmask every poll.
+        Span<byte> state = stackalloc byte[TriggerEffectStateSize];
+        state.Clear();
+        return ctx.Memory.TryWrite(stateAddress, state)
+            ? ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_OK)
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
+
+    private static HostAdaptiveTriggerEffect DecodeTriggerEffect(ReadOnlySpan<byte> command)
     {
         var mode = BinaryPrimitives.ReadUInt32LittleEndian(command);
-        var amplitude = mode switch
+        var parameters = command[8..];
+        Span<byte> native = stackalloc byte[11];
+        native.Clear();
+        byte fallbackStrength = 0;
+        switch (mode)
         {
-            3 when command[10] != 0 => command[9],
-            6 when command[8] != 0 => command[9..19].ToArray().Max(),
-            _ => (byte)0,
-        };
-        return (byte)(Math.Min(amplitude, (byte)8) * 255 / 8);
+            case 1:
+                EncodeFeedback(native, parameters[0], parameters[1]);
+                fallbackStrength = ScaleTriggerStrength(parameters[1]);
+                break;
+            case 2:
+                EncodeWeapon(native, parameters[0], parameters[1], parameters[2]);
+                fallbackStrength = ScaleTriggerStrength(parameters[2]);
+                break;
+            case 3:
+                EncodeZonedEffect(native, 0x26, parameters[0], parameters[1], parameters[2]);
+                fallbackStrength = ScaleTriggerStrength(parameters[1]);
+                break;
+            case 4:
+                EncodeZonedStrengths(native, 0x21, parameters[..10], 0);
+                fallbackStrength = ScaleTriggerStrength(Max(parameters[..10]));
+                break;
+            case 5:
+                EncodeSlope(native, parameters[0], parameters[1], parameters[2], parameters[3]);
+                fallbackStrength = ScaleTriggerStrength(Math.Max(parameters[2], parameters[3]));
+                break;
+            case 6:
+                EncodeZonedStrengths(native, 0x26, parameters[1..11], parameters[0]);
+                fallbackStrength = parameters[0] == 0 ? (byte)0 : ScaleTriggerStrength(Max(parameters[1..11]));
+                break;
+            default:
+                native[0] = 0x05;
+                break;
+        }
+
+        return HostAdaptiveTriggerEffect.FromBytes(native, fallbackStrength);
     }
+
+    private static void EncodeFeedback(Span<byte> destination, byte position, byte strength)
+    {
+        if (position > 9 || strength is 0 or > 8)
+        {
+            destination[0] = 0x05;
+            return;
+        }
+
+        Span<byte> strengths = stackalloc byte[10];
+        strengths[position..].Fill(strength);
+        EncodeZonedStrengths(destination, 0x21, strengths, 0);
+    }
+
+    private static void EncodeWeapon(Span<byte> destination, byte start, byte end, byte strength)
+    {
+        if (start is < 2 or > 7 || end <= start || end > 8 || strength is 0 or > 8)
+        {
+            destination[0] = 0x05;
+            return;
+        }
+
+        var zones = (ushort)((1 << start) | (1 << end));
+        destination[0] = 0x25;
+        BinaryPrimitives.WriteUInt16LittleEndian(destination[1..], zones);
+        destination[3] = (byte)(strength - 1);
+    }
+
+    private static void EncodeZonedEffect(
+        Span<byte> destination,
+        byte nativeMode,
+        byte position,
+        byte strength,
+        byte frequency)
+    {
+        if (position > 9 || strength is 0 or > 8 || frequency == 0)
+        {
+            destination[0] = 0x05;
+            return;
+        }
+
+        Span<byte> strengths = stackalloc byte[10];
+        strengths[position..].Fill(strength);
+        EncodeZonedStrengths(destination, nativeMode, strengths, frequency);
+    }
+
+    private static void EncodeSlope(
+        Span<byte> destination,
+        byte startPosition,
+        byte endPosition,
+        byte startStrength,
+        byte endStrength)
+    {
+        if (startPosition > 8 || endPosition <= startPosition || endPosition > 9 ||
+            startStrength is 0 or > 8 || endStrength is 0 or > 8)
+        {
+            destination[0] = 0x05;
+            return;
+        }
+
+        Span<byte> strengths = stackalloc byte[10];
+        var distance = endPosition - startPosition;
+        for (var index = startPosition; index < strengths.Length; index++)
+        {
+            strengths[index] = index <= endPosition
+                ? (byte)Math.Round(startStrength + ((endStrength - startStrength) * (index - startPosition) / (double)distance))
+                : endStrength;
+        }
+
+        EncodeZonedStrengths(destination, 0x21, strengths, 0);
+    }
+
+    private static void EncodeZonedStrengths(
+        Span<byte> destination,
+        byte nativeMode,
+        ReadOnlySpan<byte> strengths,
+        byte frequency)
+    {
+        ushort activeZones = 0;
+        uint packedStrengths = 0;
+        for (var index = 0; index < Math.Min(strengths.Length, 10); index++)
+        {
+            var strength = strengths[index];
+            if (strength is 0 or > 8)
+            {
+                continue;
+            }
+
+            activeZones |= (ushort)(1 << index);
+            packedStrengths |= (uint)(strength - 1) << (index * 3);
+        }
+
+        if (activeZones == 0 || (nativeMode == 0x26 && frequency == 0))
+        {
+            destination[0] = 0x05;
+            return;
+        }
+
+        destination[0] = nativeMode;
+        BinaryPrimitives.WriteUInt16LittleEndian(destination[1..], activeZones);
+        BinaryPrimitives.WriteUInt32LittleEndian(destination[3..], packedStrengths);
+        destination[9] = frequency;
+    }
+
+    private static byte Max(ReadOnlySpan<byte> values)
+    {
+        byte result = 0;
+        foreach (var value in values)
+        {
+            result = Math.Max(result, value);
+        }
+
+        return result;
+    }
+
+    private static byte ScaleTriggerStrength(byte strength) =>
+        (byte)(Math.Min(strength, (byte)8) * 255 / 8);
 
     [SysAbiExport(
         Nid = "yFVnOdGxvZY",
@@ -495,6 +666,17 @@ public static class PadExports
         data[0x08] = l2;
         data[0x09] = r2;
         BinaryPrimitives.WriteSingleLittleEndian(data[0x18..], 1.0f);
+        if (Volatile.Read(ref _motionSensorEnabled) != 0 && input.Motion.Available)
+        {
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x1C..], input.Motion.AccelerationX);
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x20..], input.Motion.AccelerationY);
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x24..], input.Motion.AccelerationZ);
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x28..], input.Motion.AngularVelocityX);
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x2C..], input.Motion.AngularVelocityY);
+            BinaryPrimitives.WriteSingleLittleEndian(data[0x30..], input.Motion.AngularVelocityZ);
+        }
+
+        WriteTouchData(data, input.Touch);
         data[0x4C] = 1;
         var timestampTicks = Stopwatch.GetTimestamp();
         var timestampMicroseconds =
@@ -517,15 +699,20 @@ public static class PadExports
         }
 
         var input = HostPlatform.Current.Input;
-        var buttons = 0u;
-        var leftX = (byte)128;
-        var leftY = (byte)128;
-        var rightX = (byte)128;
-        var rightY = (byte)128;
-        var l2 = (byte)0;
-        var r2 = (byte)0;
+        var acceptsKeyboardInput = input.IsHostWindowFocused();
+        var buttons = acceptsKeyboardInput ? ReadKeyboardButtons(input) : 0;
+        var leftX = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x41), input.IsKeyDown(0x44)) : (byte)128;
+        var leftY = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x57), input.IsKeyDown(0x53)) : (byte)128;
+        var rightX = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x4A), input.IsKeyDown(0x4C)) : (byte)128;
+        var rightY = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(0x49), input.IsKeyDown(0x4B)) : (byte)128;
+        var l2 = acceptsKeyboardInput && input.IsKeyDown(0x52) ? (byte)255 : (byte)0;
+        var r2 = acceptsKeyboardInput && input.IsKeyDown(0x46) ? (byte)255 : (byte)0;
+        var gamepadType = HostGamepadType.Generic;
+        var connection = HostGamepadConnection.Unknown;
+        var motion = default(HostMotionState);
+        var touch = default(HostTouchState);
 
-        Span<HostGamepadState> gamepads = stackalloc HostGamepadState[4];
+        Span<HostGamepadState> gamepads = stackalloc HostGamepadState[2];
         var gamepadCount = input.GetGamepadStates(gamepads);
         for (var index = 0; index < gamepadCount; index++)
         {
@@ -539,6 +726,13 @@ public static class PadExports
             rightY = MergeAxis(pad.RightY, rightY);
             l2 = Math.Max(l2, pad.LeftTrigger);
             r2 = Math.Max(r2, pad.RightTrigger);
+            if (index == 0)
+            {
+                gamepadType = pad.Type;
+                connection = pad.Connection;
+                motion = pad.Motion;
+                touch = pad.Touch;
+            }
         }
 
         if (IsAutoCrossActive())
@@ -554,7 +748,11 @@ public static class PadExports
             RightX: rightX,
             RightY: rightY,
             L2: l2,
-            R2: r2);
+            R2: r2,
+            Type: gamepadType,
+            Connection: connection,
+            Motion: motion,
+            Touch: touch);
         _lastInputSampleTicks = now;
         return _cachedInputState;
     }
@@ -608,6 +806,7 @@ public static class PadExports
     private static uint ToOrbisButtons(HostGamepadButtons buttons)
     {
         uint result = 0;
+        if ((buttons & HostGamepadButtons.Create) != 0) result |= OrbisPadButton.Share;
         if ((buttons & HostGamepadButtons.Up) != 0) result |= OrbisPadButton.Up;
         if ((buttons & HostGamepadButtons.Down) != 0) result |= OrbisPadButton.Down;
         if ((buttons & HostGamepadButtons.Left) != 0) result |= OrbisPadButton.Left;
@@ -627,26 +826,67 @@ public static class PadExports
         return result;
     }
 
-    // Removed hardcoded keyboard and analog mapping functions
+    private static void WriteTouchData(Span<byte> data, HostTouchState touch)
+    {
+        Span<HostTouchPoint> active = stackalloc HostTouchPoint[2];
+        var count = 0;
+        if (touch.First.Active)
+        {
+            active[count++] = touch.First;
+        }
+        if (touch.Second.Active)
+        {
+            active[count++] = touch.Second;
+        }
+
+        data[0x34] = (byte)count;
+        for (var index = 0; index < count; index++)
+        {
+            var offset = 0x3C + (index * 8);
+            var point = active[index];
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                data[offset..],
+                (ushort)Math.Round(Math.Clamp(point.X, 0, 1) * 1919));
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                data[(offset + 2)..],
+                (ushort)Math.Round(Math.Clamp(point.Y, 0, 1) * 942));
+            data[offset + 4] = point.Id;
+        }
+    }
+
+    private static uint ReadKeyboardButtons(IHostInput input)
+    {
+        uint buttons = 0;
+        // D-pad
+        if (input.IsKeyDown(0x25)) buttons |= OrbisPadButton.Left;
+        if (input.IsKeyDown(0x27)) buttons |= OrbisPadButton.Right;
+        if (input.IsKeyDown(0x26)) buttons |= OrbisPadButton.Up;
+        if (input.IsKeyDown(0x28)) buttons |= OrbisPadButton.Down;
+        // Face buttons
+        if (input.IsKeyDown(0x5A) || input.IsKeyDown(0x0D)) buttons |= OrbisPadButton.Cross;    // Z / Enter
+        if (input.IsKeyDown(0x58) || input.IsKeyDown(0x1B)) buttons |= OrbisPadButton.Circle;   // X / Escape
+        if (input.IsKeyDown(0x43)) buttons |= OrbisPadButton.Square;                            // C
+        if (input.IsKeyDown(0x56)) buttons |= OrbisPadButton.Triangle;                          // V
+        // Shoulder buttons
+        if (input.IsKeyDown(0x51)) buttons |= OrbisPadButton.L1;                                // Q
+        if (input.IsKeyDown(0x45)) buttons |= OrbisPadButton.R1;                                // E
+        if (input.IsKeyDown(0x52)) buttons |= OrbisPadButton.L2;                                // R (digital)
+        if (input.IsKeyDown(0x46)) buttons |= OrbisPadButton.R2;                                // F (digital)
+        // Options (Start)
+        if (input.IsKeyDown(0x09) || input.IsKeyDown(0x08)) buttons |= OrbisPadButton.Options;  // Tab / Backspace
+        return buttons;
+    }
+
+    private static byte ReadAnalogStick(bool negative, bool positive)
+    {
+        if (negative && !positive) return 0;
+        if (positive && !negative) return 255;
+        return 128;
+    }
 
     private static byte MergeAxis(byte controller, byte keyboard)
     {
         const int Deadzone = 10;
         return Math.Abs(controller - 128) > Deadzone ? controller : keyboard;
     }
-
-    private static string VkName(int vk) => vk switch
-    {
-        InputMap.MouseLeft => "MouseLeft",
-        InputMap.MouseRight => "MouseRight",
-        InputMap.MouseMiddle => "MouseMiddle",
-        0x0D => "Enter",
-        0x1B => "Esc",
-        0x20 => "Space",
-        0x09 => "Tab",
-        0x08 => "Backspace",
-        _ when vk >= 0x41 && vk <= 0x5A => ((char)vk).ToString(),
-        _ when vk >= 0x30 && vk <= 0x39 => ((char)vk).ToString(),
-        _ => $"0x{vk:X2}"
-    };
 }

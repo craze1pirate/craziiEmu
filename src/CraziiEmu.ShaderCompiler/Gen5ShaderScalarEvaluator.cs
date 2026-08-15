@@ -5,8 +5,10 @@
 using CraziiEmu.HLE;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace CraziiEmu.ShaderCompiler;
 
@@ -22,7 +24,7 @@ public static class Gen5ShaderScalarEvaluator
     // unresolved resource missing rather than not at all. STRICT reverts.
     private static readonly bool _strictScalarLoad =
         string.Equals(
-            Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_SCALAR_LOAD"),
+            Environment.GetEnvironmentVariable("SHARPEMU_STRICT_SCALAR_LOAD"),
             "1",
             StringComparison.Ordinal);
 
@@ -31,21 +33,136 @@ public static class Gen5ShaderScalarEvaluator
     // strict diagnostics can restore the old failure behaviour explicitly.
     private static readonly bool _strictBufferLoad =
         string.Equals(
-            Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_BUFFER_LOAD"),
+            Environment.GetEnvironmentVariable("SHARPEMU_STRICT_BUFFER_LOAD"),
             "1",
             StringComparison.Ordinal);
     private static readonly object _scalarFallbackTraceGate = new();
     private static readonly HashSet<(ulong Shader, uint Pc)> _tracedScalarFallbacks = [];
+    private static readonly HashSet<(ulong Shader, uint Pc)> _tracedDivergentDescriptors = [];
+
+    private static readonly ConditionalWeakTable<Gen5ShaderProgram, Ir.Gen5ScalarSsa> _scalarSsaCache = [];
+
+    private static readonly bool _divergentDescriptorGuard = !string.Equals(
+        Environment.GetEnvironmentVariable("SHARPEMU_IR_DESCRIPTOR_GUARD"),
+        "0",
+        StringComparison.Ordinal);
+
+    private static Ir.Gen5ScalarSsa GetScalarSsa(Gen5ShaderState state) =>
+        _scalarSsaCache.GetValue(
+            state.Program,
+            program => Ir.Gen5ScalarSsa.Build(program.Instructions, state.UserData));
+
+    /// <summary>
+    /// The byte offset comes from an SGPR. When the instruction that produced that
+    /// register is one the scalar evaluator cannot reproduce — a vector compare
+    /// writing VCC, say, whose value depends on per-lane data — the register still
+    /// holds whatever the linear walk left in it. Adding that to an otherwise valid
+    /// base address is how descriptors turned into addresses far out of range.
+    /// </summary>
+    private static bool IsOffsetFromUnmodelledWriter(
+        Gen5ShaderState state,
+        Gen5ShaderInstruction instruction,
+        Gen5ScalarMemoryControl control)
+    {
+        if (!_divergentDescriptorGuard || control.DynamicOffsetRegister is not { } offsetRegister)
+        {
+            return false;
+        }
+
+        var ssa = GetScalarSsa(state);
+        var reaching = ssa.GetReachingDefinitionAt(instruction.Pc, offsetRegister);
+        if (reaching.State == Ir.IrReachingState.Multiple)
+        {
+            return true;
+        }
+
+        if (reaching.State != Ir.IrReachingState.Single ||
+            reaching.DefinitionPc == uint.MaxValue)
+        {
+            return false;
+        }
+
+        var writer = state.Program.Instructions
+            .FirstOrDefault(candidate => candidate.Pc == reaching.DefinitionPc);
+        return writer is not null && Ir.Gen5ScalarSsa.WritesVccImplicitly(writer);
+    }
+
+    /// <summary>
+    /// A descriptor assembled from registers that differ per incoming path is not a
+    /// descriptor, it is whichever path the linear walk happened to take last.
+    /// </summary>
+    private static bool IsDescriptorFromDivergentMerge(
+        Gen5ShaderState state,
+        uint pc,
+        uint scalarBase,
+        uint registerCount)
+    {
+        if (!_divergentDescriptorGuard)
+        {
+            return false;
+        }
+
+        var ssa = GetScalarSsa(state);
+        if (!ssa.Graph.HasControlFlow)
+        {
+            return false;
+        }
+
+        for (var offset = 0u; offset < registerCount; offset++)
+        {
+            var reaching = ssa.GetReachingDefinitionAt(pc, scalarBase + offset);
+            if (reaching.State == Ir.IrReachingState.Multiple)
+            {
+                return true;
+            }
+
+            if (ssa.GetScalarAt(pc, scalarBase + offset).State == Ir.IrScalarState.Merged)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void TraceDivergentDescriptor(
+        Gen5ShaderState state,
+        Gen5ShaderInstruction instruction,
+        uint scalarBase,
+        ulong baseAddress)
+    {
+        lock (_scalarFallbackTraceGate)
+        {
+            if (!_tracedDivergentDescriptors.Add((state.Program.Address, instruction.Pc)))
+            {
+                return;
+            }
+        }
+
+        Console.Error.WriteLine(
+            $"[LOADER][WARN] agc.descriptor_divergent " +
+            $"shader=0x{state.Program.Address:X16} pc=0x{instruction.Pc:X} " +
+            $"op={instruction.Opcode} base=s{scalarBase} " +
+            $"linear_base_addr=0x{baseAddress:X16} (unbound instead of dereferenced)");
+    }
+    // Shaders whose empty SRT/EUD caused a null-base scalar pointer load.
+    // Host submit of those translations has lost the Vulkan device; Agc skips
+    // them before QueueSubmit.
+    private static readonly ConcurrentDictionary<ulong, byte> _emptySrtScalarPointerFallbacks =
+        new();
+
+    public static bool WasEmptySrtScalarPointerFallback(ulong shaderAddress) =>
+        _emptySrtScalarPointerFallbacks.ContainsKey(shaderAddress);
 
     // Uniform forward branches select material/resource bodies that remain
     // statically present in the translated shader. Discover the skipped body's
-    // descriptors by default; CRAZIIEMU_CFG_RESOURCE_DISCOVERY=0 is a diagnostic
+    // descriptors by default; SHARPEMU_CFG_RESOURCE_DISCOVERY=0 is a diagnostic
     // opt-out. Conditional branches are deliberately not forked because their
     // fall-through is already scanned and forking vector-mask conditions grows
     // exponentially without adding descriptor coverage.
     private static readonly bool _cfgResourceDiscovery =
         !string.Equals(
-            Environment.GetEnvironmentVariable("CRAZIIEMU_CFG_RESOURCE_DISCOVERY"),
+            Environment.GetEnvironmentVariable("SHARPEMU_CFG_RESOURCE_DISCOVERY"),
             "0",
             StringComparison.Ordinal);
 
@@ -165,6 +282,13 @@ public static class Gen5ShaderScalarEvaluator
         var globalMemoryBindings = new List<Gen5GlobalMemoryBinding>();
         var globalMemoryByAddress = new Dictionary<(uint ScalarAddress, ulong BaseAddress), Gen5GlobalMemoryBinding>();
         var vertexInputBindings = new List<Gen5VertexInputBinding>();
+        // Absolute element address plus record layout identifies the guest
+        // stream view an attribute reads, so every fetch that resolves to it
+        // shares one location instead of claiming a new one.
+        var vertexInputByView =
+            new Dictionary<(ulong Address, uint Stride, uint DataFormat,
+                uint NumberFormat, uint ComponentCount), int>();
+        var vertexInputAliasPcs = new List<List<uint>>();
         // Shared, cached, read-only: computed once per decoded program. The
         // set already includes every instruction's destination registers, so
         // the per-load additions the loop used to make are redundant.
@@ -350,7 +474,10 @@ public static class Gen5ShaderScalarEvaluator
                 if (globalMemory.ScalarAddress >= ScalarRegisterCount - 1)
                 {
                     error =
-                        $"global-address-register-range pc=0x{instruction.Pc:X} " +
+                        $"{(globalMemory.UsesFlatAddress
+                            ? "flat-address-base-unresolved"
+                            : "global-address-register-range")} " +
+                        $"pc=0x{instruction.Pc:X} " +
                         $"s{globalMemory.ScalarAddress}";
                     return false;
                 }
@@ -365,11 +492,18 @@ public static class Gen5ShaderScalarEvaluator
                 }
 
                 var key = (globalMemory.ScalarAddress, baseAddress);
-                var writable = instruction.Opcode.StartsWith(
+                var writable =
+                    instruction.Opcode.StartsWith(
                         "GlobalStore",
                         StringComparison.Ordinal) ||
                     instruction.Opcode.StartsWith(
                         "GlobalAtomic",
+                        StringComparison.Ordinal) ||
+                    instruction.Opcode.StartsWith(
+                        "FlatStore",
+                        StringComparison.Ordinal) ||
+                    instruction.Opcode.StartsWith(
+                        "FlatAtomic",
                         StringComparison.Ordinal);
                 if (globalMemoryByAddress.TryGetValue(key, out var existingBinding))
                 {
@@ -527,6 +661,41 @@ public static class Gen5ShaderScalarEvaluator
                         return false;
                     }
 
+                    var vertexInputView = (
+                        SaturatingAdd(
+                            vertexInputBinding.BaseAddress,
+                            vertexInputBinding.OffsetBytes),
+                        vertexInputBinding.Stride,
+                        vertexInputBinding.DataFormat,
+                        vertexInputBinding.NumberFormat,
+                        vertexInputBinding.ComponentCount);
+                    if (vertexInputByView.TryGetValue(
+                            vertexInputView,
+                            out var existingVertexInput))
+                    {
+                        var aliasPcs = vertexInputAliasPcs[existingVertexInput];
+                        if (!aliasPcs.Contains(instruction.Pc))
+                        {
+                            aliasPcs.Add(instruction.Pc);
+                        }
+
+                        // Descriptors for one view agree on size, but a path
+                        // that resolved a larger reachable range still has to
+                        // win so the capture covers every fetch.
+                        var aliasedBinding = vertexInputBindings[existingVertexInput];
+                        if (aliasedBinding.DataLength < vertexInputBinding.DataLength)
+                        {
+                            vertexInputBindings[existingVertexInput] = aliasedBinding with
+                            {
+                                DataLength = vertexInputBinding.DataLength,
+                            };
+                        }
+
+                        continue;
+                    }
+
+                    vertexInputByView[vertexInputView] = vertexInputBindings.Count;
+                    vertexInputAliasPcs.Add([]);
                     vertexInputBindings.Add(vertexInputBinding);
                     continue;
                 }
@@ -677,6 +846,18 @@ public static class Gen5ShaderScalarEvaluator
 
         if (vertexInputBindings.Count != 0)
         {
+            for (var index = 0; index < vertexInputBindings.Count; index++)
+            {
+                if (vertexInputAliasPcs[index].Count != 0)
+                {
+                    vertexInputBindings[index] = vertexInputBindings[index] with
+                    {
+                        AliasPcs = vertexInputAliasPcs[index],
+                    };
+                }
+            }
+
+            TraceVertexInputShape(vertexInputBindings);
             if (!TryCaptureVertexInputData(
                     ctx,
                     vertexInputBindings,
@@ -825,10 +1006,47 @@ public static class Gen5ShaderScalarEvaluator
         return true;
     }
 
+    private static readonly bool _traceVertexInputShape =
+        string.Equals(
+            Environment.GetEnvironmentVariable("SHARPEMU_TRACE_VERTEX_SHAPE"),
+            "1",
+            StringComparison.Ordinal);
+
+    private static readonly HashSet<string> _tracedVertexInputShapes = [];
+
+    private static void TraceVertexInputShape(
+        IReadOnlyList<Gen5VertexInputBinding> bindings)
+    {
+        if (!_traceVertexInputShape)
+        {
+            return;
+        }
+
+        var distinctPcs = bindings.Select(static binding => binding.Pc).Distinct().Count();
+        var identities = bindings
+            .Select(static binding =>
+                $"{binding.BaseAddress:X}/{binding.Stride}/{binding.OffsetBytes}/" +
+                $"{binding.DataFormat}/{binding.NumberFormat}/{binding.ComponentCount}")
+            .ToArray();
+        var shape =
+            $"count={bindings.Count} distinct_pc={distinctPcs} " +
+            $"distinct_view={identities.Distinct().Count()} " +
+            $"views={string.Join(',', identities)}";
+        lock (_tracedVertexInputShapes)
+        {
+            if (!_tracedVertexInputShapes.Add(shape))
+            {
+                return;
+            }
+        }
+
+        Console.Error.WriteLine($"[VERTEX-SHAPE] {shape}");
+    }
+
     private static void TraceTitleVertexInputs(IReadOnlyList<Gen5VertexInputBinding> bindings)
     {
         if (!string.Equals(
-                Environment.GetEnvironmentVariable("CRAZIIEMU_TRACE_VERTEX_RAW"),
+                Environment.GetEnvironmentVariable("SHARPEMU_TRACE_VERTEX_RAW"),
                 "1",
                 StringComparison.Ordinal) ||
             bindings.Count != 3 ||
@@ -875,8 +1093,11 @@ public static class Gen5ShaderScalarEvaluator
         Gen5ShaderInstruction instruction,
         Gen5BufferMemoryControl control,
         BufferDescriptor descriptor) =>
+        // AGC embedded fetch is BufferLoadFormat/TBufferLoadFormat with idxen.
+        // offen is allowed: the constant/scalar offset folds into OffsetBytes
+        // (UI glyph shaders use this shape). Rejecting offen left those loads
+        // as live SSBOs and dropped vertex attributes.
         control.IndexEnabled &&
-        !control.OffsetEnabled &&
         control.DwordCount is >= 1 and <= 4 &&
         descriptor.BaseAddress != 0 &&
         descriptor.Stride != 0 &&
@@ -1877,19 +2098,32 @@ public static class Gen5ShaderScalarEvaluator
         var address = unchecked(
             baseAddress +
             byteOffset) & ~3UL;
+        var descriptorDiverged = IsDescriptorFromDivergentMerge(
+            state,
+            instruction.Pc,
+            scalarBase.Value,
+            isBufferLoad ? 4u : 2u) ||
+            IsOffsetFromUnmodelledWriter(state, instruction, control);
+        if (descriptorDiverged)
+        {
+            TraceDivergentDescriptor(state, instruction, scalarBase.Value, baseAddress);
+        }
+
         var bufferUnbound =
             isBufferLoad &&
-            (!hasBufferDescriptor ||
+            (descriptorDiverged ||
+             !hasBufferDescriptor ||
              bufferDescriptor.SizeBytes == 0 ||
              (scalarRegisters[scalarBase.Value] == 0 &&
               scalarRegisters[scalarBase.Value + 1] == 0 &&
               scalarBase.Value + 3 < ScalarRegisterCount &&
               scalarRegisters[scalarBase.Value + 2] == 0 &&
               scalarRegisters[scalarBase.Value + 3] == 0));
-        var scalarPointerUnbound = ShouldTreatScalarPointerAsUnbound(
-            isBufferLoad,
-            address,
-            _strictScalarLoad);
+        var scalarPointerUnbound = descriptorDiverged && !isBufferLoad ||
+            ShouldTreatScalarPointerAsUnbound(
+                isBufferLoad,
+                address,
+                _strictScalarLoad);
         if (scalarPointerUnbound)
         {
             TraceScalarPointerFallback(
@@ -2102,6 +2336,15 @@ public static class Gen5ShaderScalarEvaluator
             $"dynamic={dynamicOffset} definitions=[{string.Join(';', definitions)}] " +
             $"user_data=[{userData}] metadata=" +
             $"{(state.Metadata is null ? "missing" : $"srt={state.Metadata.ShaderResourceTableSizeDwords},eud={state.Metadata.ExtendedUserDataSizeDwords}")}");
+        if (baseAddress == 0 &&
+            state.Metadata is
+            {
+                ShaderResourceTableSizeDwords: 0,
+                ExtendedUserDataSizeDwords: 0,
+            })
+        {
+            _emptySrtScalarPointerFallbacks.TryAdd(state.Program.Address, 0);
+        }
     }
 
     [Conditional("DEBUG")]
@@ -2351,7 +2594,8 @@ public static class Gen5ShaderScalarEvaluator
     private static bool TryReadUInt32(CpuContext ctx, ulong address, out uint value)
     {
         Span<byte> bytes = stackalloc byte[sizeof(uint)];
-        if (!ctx.Memory.TryRead(address, bytes))
+        if (!ctx.Memory.TryRead(address, bytes) &&
+            FallbackMemoryReader?.Invoke(address, bytes) != true)
         {
             value = 0;
             return false;

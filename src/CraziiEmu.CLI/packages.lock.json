@@ -18,6 +18,19 @@
         "resolved": "9.0.9",
         "contentHash": "fNGvKct2De8ghm0Bpfq0iWthtzIWabgOTi+gJhNOPhNJIowXNEUE2eZNW/zNCzrHVA3PXg2yZ+3cWZndC2IqYA=="
       },
+      "Microsoft.NETCore.Platforms": {
+        "type": "Transitive",
+        "resolved": "1.1.0",
+        "contentHash": "kz0PEW2lhqygehI/d6XsPCQzD7ff7gUJaVGPVETX611eadGsA3A877GdSlU0LRVMCTH/+P3o2iDTak+S08V2+A=="
+      },
+      "NETStandard.Library": {
+        "type": "Transitive",
+        "resolved": "1.6.1",
+        "contentHash": "WcSp3+vP+yHNgS8EV5J7pZ9IRpeDuARBPN28by8zqff1wJQXm26PVU8L3/fYLBJVU7BtDyqNVWq2KlCVvSSR4A==",
+        "dependencies": {
+          "Microsoft.NETCore.Platforms": "1.1.0"
+        }
+      },
       "Silk.NET.Core": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -79,9 +92,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.27.0-alpha, )",
-          "CraziiEmu.Libs": "[0.27.0-alpha, )",
-          "CraziiEmu.Logging": "[0.27.0-alpha, )",
+          "CraziiEmu.HLE": "[0.30.0-alpha, )",
+          "CraziiEmu.Libs": "[0.30.0-alpha, )",
+          "CraziiEmu.Logging": "[0.30.0-alpha, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Maths": "[2.23.0, )",
@@ -92,20 +105,30 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.27.0-alpha, )"
+          "CraziiEmu.Logging": "[0.30.0-alpha, )",
+          "ppy.SDL3-CS": "[2026.629.0, )"
         }
+      },
+      "craziiemu.libatrac9": {
+        "type": "Project"
       },
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.27.0-alpha, )",
-          "CraziiEmu.ShaderCompiler": "[0.27.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.27.0-alpha, )",
+          "CraziiEmu.HLE": "[0.30.0-alpha, )",
+          "CraziiEmu.LibAtrac9": "[0.30.0-alpha, )",
+          "CraziiEmu.Logging": "[0.30.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Metal": "[0.30.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.30.0-alpha, )",
+          "FFmpeg.AutoGen": "[7.1.1, )",
+          "NLayer": "[1.14.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
-          "Silk.NET.Windowing": "[2.23.0, )"
+          "Silk.NET.Windowing": "[2.23.0, )",
+          "ppy.SDL3-CS": "[2026.629.0, )"
         }
       },
       "craziiemu.logging": {
@@ -114,20 +137,47 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.27.0-alpha, )"
+          "CraziiEmu.HLE": "[0.30.0-alpha, )"
+        }
+      },
+      "craziiemu.shadercompiler.metal": {
+        "type": "Project",
+        "dependencies": {
+          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.27.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
         }
+      },
+      "FFmpeg.AutoGen": {
+        "type": "CentralTransitive",
+        "requested": "[7.1.1, )",
+        "resolved": "7.1.1",
+        "contentHash": "p4FGdG654zut4Iseg7PeYo7sxFMOTuLTEKl/vX+44UQ6NmezF3wHcR6JzjH8xzK4VDPLJe5Xz563kXamMQj7Jg=="
       },
       "Iced": {
         "type": "CentralTransitive",
         "requested": "[1.21.0, )",
         "resolved": "1.21.0",
         "contentHash": "dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg=="
+      },
+      "NLayer": {
+        "type": "CentralTransitive",
+        "requested": "[1.14.0, )",
+        "resolved": "1.14.0",
+        "contentHash": "brv6M0Z+2zhOndFqGXaUa+r3/ihGrcp4NubRaaNxVRHFoFO+bUwSq3zxYotdBv/vVJrsiwH4wpzPevVz/PNkIw==",
+        "dependencies": {
+          "NETStandard.Library": "1.6.1"
+        }
+      },
+      "ppy.SDL3-CS": {
+        "type": "CentralTransitive",
+        "requested": "[2026.629.0, )",
+        "resolved": "2026.629.0",
+        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
       },
       "Silk.NET.Input": {
         "type": "CentralTransitive",
@@ -200,6 +250,12 @@
         "type": "Transitive",
         "resolved": "3.4.0",
         "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
+      },
+      "ppy.SDL3-CS": {
+        "type": "CentralTransitive",
+        "requested": "[2026.629.0, )",
+        "resolved": "2026.629.0",
+        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
       }
     }
   }

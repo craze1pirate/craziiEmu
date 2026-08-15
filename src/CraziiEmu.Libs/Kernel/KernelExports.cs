@@ -363,7 +363,7 @@ public static class KernelExports
         ExportName = "open",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int Open(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelMemoryCompatExports.KernelOpenUnderscore(ctx));
+    public static int Open(CpuContext ctx) => KernelMemoryCompatExports.PosixOpen(ctx);
 
     [SysAbiExport(
         Nid = "1G3lF1Gg1k8",
@@ -377,7 +377,7 @@ public static class KernelExports
         ExportName = "fstat",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libc")]
-    public static int Fstat(CpuContext ctx) => KernelRuntimeCompatExports.PosixSyscallResult(ctx, KernelMemoryCompatExports.KernelFstat(ctx));
+    public static int Fstat(CpuContext ctx) => KernelMemoryCompatExports.PosixFstat(ctx);
 
     [SysAbiExport(
         Nid = "hcuQgD53UxM",
@@ -465,6 +465,47 @@ public static class KernelExports
         Console.Error.WriteLine("[LOADER][INFO] abort() called by guest - terminating");
         GuestThreadExecution.RequestCurrentEntryExit("abort", -1);
         ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+    Nid = "tU5e3f9gSiU",
+    ExportName = "sceKernelIsTrinityMode",
+    Target = Generation.Gen4 | Generation.Gen5,
+    LibraryName = "libKernel")]
+    public static int KernelIsTrinityMode(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = 0;
+
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(
+    Nid = "DLORcroUqbc",
+    ExportName = "sceKernelGetOpenPsId",
+    Target = Generation.Gen4 | Generation.Gen5,
+    LibraryName = "libKernel")]
+    public static int KernelGetOpenPsId(CpuContext ctx)
+    {
+        ulong bufferPtr = ctx[CpuRegister.Rdi];
+
+        if (bufferPtr == 0)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)(int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        Span<byte> openPsId = stackalloc byte[16];
+
+        if (!ctx.Memory.TryWrite(bufferPtr, openPsId))
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)(int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 }

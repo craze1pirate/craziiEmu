@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Referred from KytyPS5 project
 
-using System;
-
 namespace CraziiEmu.Libs.VideoOut;
+
+using CraziiEmu.Libs.Gpu.Metal;
 
 public enum HostWindowMode
 {
@@ -56,4 +56,14 @@ public sealed record HostVideoOptions
         RefreshRate = Math.Clamp(RefreshRate, 0, 1000),
         HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Auto,
     };
+}
+
+public static class HostVideoHost
+{
+    public static bool TryConfigureVideo(HostVideoOptions options)
+    {
+        var normalized = options.Normalize();
+        return VulkanVideoPresenter.TryConfigureVideo(normalized) &
+               MetalVideoPresenter.TryConfigureVideo(normalized);
+    }
 }

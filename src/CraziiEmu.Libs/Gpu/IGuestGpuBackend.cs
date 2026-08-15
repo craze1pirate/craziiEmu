@@ -55,6 +55,7 @@ internal interface IGuestGpuBackend
         int scalarRegisterBufferIndex = -1,
         uint pixelInputEnable = 0,
         uint pixelInputAddress = 0,
+        IReadOnlyList<uint>? pixelInputCntl = null,
         ulong storageBufferOffsetAlignment = 1);
 
     bool TryCompileComputeShader(
@@ -109,7 +110,8 @@ internal interface IGuestGpuBackend
         GuestIndexBuffer? indexBuffer = null,
         IReadOnlyList<GuestVertexBuffer>? vertexBuffers = null,
         GuestRenderState? renderState = null,
-        ulong shaderAddress = 0);
+        ulong shaderAddress = 0,
+        int baseVertex = 0);
 
     void SubmitOffscreenTranslatedDraw(
         IGuestCompiledShader pixelShader,
@@ -125,7 +127,8 @@ internal interface IGuestGpuBackend
         IReadOnlyList<GuestVertexBuffer>? vertexBuffers = null,
         GuestRenderState? renderState = null,
         GuestDepthTarget? depthTarget = null,
-        ulong shaderAddress = 0);
+        ulong shaderAddress = 0,
+        int baseVertex = 0);
 
     void SubmitStorageTranslatedDraw(
         IGuestCompiledShader pixelShader,
@@ -160,14 +163,11 @@ internal interface IGuestGpuBackend
         ulong address,
         uint width,
         uint height,
-        uint pitchInPixel,
-        int videoOutHandle,
-        long flipArg);
+        uint pitchInPixel);
 
     bool TrySubmitOrderedGuestImageFlip(
         int videoOutHandle,
         int displayBufferIndex,
-        long flipArg,
         ulong address,
         uint width,
         uint height,
@@ -238,7 +238,27 @@ internal interface IGuestGpuBackend
 
     void SubmitGuestImageFill(ulong address, uint fillValue);
 
-    void SubmitGuestImageWrite(ulong address, byte[] pixels);
+    /// <summary>
+    /// Uploads guest-authored pixels into a live guest image. <paramref name="rowOffset"/>
+    /// is the first image row the buffer covers, so a caller that knows only part
+    /// of the surface changed can send that band instead of the whole thing; the
+    /// untouched rows on the host already hold the same bytes.
+    /// </summary>
+    void SubmitGuestImageWrite(ulong address, byte[] pixels, uint rowOffset = 0);
+
+    /// <summary>
+    /// Whether a non-zero <c>rowOffset</c> is honoured. Backends that cannot
+    /// upload a sub-range must report false so callers keep sending the whole
+    /// surface: a dropped band would leave the host copy stale, which is worse
+    /// than an oversized upload.
+    /// </summary>
+    bool SupportsPartialImageWrite => false;
+
+    /// <summary>
+    /// Asks the presenter to refresh CPU-dirty guest images on its render/present
+    /// drain. Must not enqueue retained plane copies on the producer path.
+    /// </summary>
+    void RequestCpuWrittenGuestImageSync(ulong scopeAddress = 0, ulong scopeByteCount = ulong.MaxValue);
 
     bool TryGetGuestImageExtent(ulong address, out uint width, out uint height, out ulong byteCount);
 

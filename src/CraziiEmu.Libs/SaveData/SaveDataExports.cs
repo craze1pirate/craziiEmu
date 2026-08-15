@@ -29,6 +29,7 @@ public static class SaveDataExports
     private const ulong ResultInfosOffset = 0x20;
     private const uint SortKeyFreeBlocks = 5;
     private const uint SortOrderDescent = 1;
+    private const uint MountModeReadOnly = 1u << 0;
     private const uint MountModeCreate = 1u << 2;
     private const uint MountModeCreate2 = 1u << 5;
     private const int MountResultSize = 0x40;
@@ -38,6 +39,7 @@ public static class SaveDataExports
     private static readonly object _memoryGate = new();
     private static readonly HashSet<int> _preparedTransactionResources = [];
     private static string? _titleId;
+    private static int _legacySaveMigrationChecked;
 
     public static void ConfigureApplicationInfo(string? titleId)
     {
@@ -714,29 +716,61 @@ public static class SaveDataExports
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
-        if (userId < 0 || string.IsNullOrWhiteSpace(dirName))
+        return MountSaveData(
+            ctx,
+            "mount3",
+            userId,
+            ResolveConfiguredTitleId(),
+            dirName,
+            blocks,
+            systemBlocks,
+            mountMode,
+            resource,
+            mode,
+            resultAddress);
+    }
+
+    private static int MountSaveData(
+        CpuContext ctx,
+        string operation,
+        int userId,
+        string titleId,
+        string dirName,
+        ulong blocks,
+        ulong systemBlocks,
+        uint mountMode,
+        uint resource,
+        uint mode,
+        ulong resultAddress)
+    {
+        if (userId < 0 || string.IsNullOrWhiteSpace(titleId) || string.IsNullOrWhiteSpace(dirName))
         {
             return SetReturn(ctx, OrbisSaveDataErrorParameter);
         }
 
         try
         {
-            var titleId = ResolveConfiguredTitleId();
+            var sanitizedTitleId = SanitizePathSegment(titleId.Trim());
             var savePath = Path.Combine(
-                ResolveTitleSaveRoot(userId, titleId),
+                ResolveTitleSaveRoot(userId, sanitizedTitleId),
                 SanitizePathSegment(dirName));
             var existed = Directory.Exists(savePath);
             var create = (mountMode & MountModeCreate) != 0;
             var createIfMissing = (mountMode & MountModeCreate2) != 0;
 
+            if (!existed && !create && !createIfMissing)
+            {
+                return SetReturn(ctx, OrbisSaveDataErrorNotFound);
+            }
+
+            if (existed && create)
+            {
+                return SetReturn(ctx, OrbisSaveDataErrorExists);
+            }
+
             if (!existed)
             {
                 Directory.CreateDirectory(savePath);
-            }
-
-            if (existed && create && !createIfMissing)
-            {
-                return SetReturn(ctx, OrbisSaveDataErrorExists);
             }
 
             const string mountPoint = "/savedata0";
@@ -756,7 +790,7 @@ public static class SaveDataExports
             }
 
             TraceSaveData(
-                $"mount3 user={userId} title={titleId} dir={dirName} blocks={blocks} " +
+                $"{operation} user={userId} title={sanitizedTitleId} dir={dirName} blocks={blocks} " +
                 $"system_blocks={systemBlocks} mount_mode=0x{mountMode:X} resource={resource} mode={mode} " +
                 $"mount_point={mountPoint} created={!existed} root='{savePath}'");
             return SetReturn(ctx, 0);
@@ -775,6 +809,52 @@ public static class SaveDataExports
         }
     }
 
+    [SysAbiExport(
+        Nid = "WAzWTZm1H+I",
+        ExportName = "sceSaveDataTransferringMount",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSaveData")]
+    public static int SaveDataTransferringMount(CpuContext ctx)
+    {
+        var mountAddress = ctx[CpuRegister.Rdi];
+        var resultAddress = ctx[CpuRegister.Rsi];
+        if (mountAddress == 0 || resultAddress == 0)
+        {
+            return SetReturn(ctx, OrbisSaveDataErrorParameter);
+        }
+
+        if (!TryReadInt32(ctx, mountAddress, out var userId) ||
+            !ctx.TryReadUInt64(mountAddress + 0x08, out var titleIdAddress) ||
+            !ctx.TryReadUInt64(mountAddress + 0x10, out var dirNameAddress) ||
+            titleIdAddress == 0 ||
+            dirNameAddress == 0 ||
+            !TryReadFixedAscii(ctx, titleIdAddress, SaveDataTitleIdSize, out var titleId) ||
+            !TryReadFixedAscii(ctx, dirNameAddress, SaveDataDirNameSize, out var dirName))
+        {
+            return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        return MountSaveData(
+            ctx,
+            "transferring_mount",
+            userId,
+            titleId,
+            dirName,
+            0,
+            0,
+            MountModeReadOnly,
+            0,
+            0,
+            resultAddress);
+    }
+
+    [SysAbiExport(
+        Nid = "RjMlsR8EXrw",
+        ExportName = "sceSaveDataTransferringMountPs4",
+        Target = Generation.Gen5,
+        LibraryName = "libSceSaveData")]
+    public static int SaveDataTransferringMountPs4(CpuContext ctx) => SaveDataTransferringMount(ctx);
+
     private static int _nextTransactionResource;
     [SysAbiExport(
         Nid = "gjRZNnw0JPE",
@@ -783,39 +863,64 @@ public static class SaveDataExports
         LibraryName = "libSceSaveData")]
     public static int SaveDataCreateTransactionResource(CpuContext ctx)
     {
+        // Demon's Souls first-run call:
+        // RDI = 0xC0000, RSI = RDX + 8, RDX = resource output.
+        // Writing integer handle 1 makes the title dereference [1 + 8],
+        // causing the repeatable access violation at guest address 0x9.
+        var desWorkSize = ctx[CpuRegister.Rdi];
+        var desWorkAddress = ctx[CpuRegister.Rsi];
+        var desResourceAddress = ctx[CpuRegister.Rdx];
+
+        if (desWorkSize == 0xC0000 &&
+            desResourceAddress != 0 &&
+            desResourceAddress <= ulong.MaxValue - sizeof(ulong) &&
+            desWorkAddress == desResourceAddress + sizeof(ulong))
+        {
+            if (!ctx.TryWriteUInt64(desResourceAddress, 0))
+            {
+                return SetReturn(
+                    ctx,
+                    (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            TraceSaveData(
+                $"create_transaction_resource_des_guard " +
+                $"work_size=0x{desWorkSize:X} " +
+                $"work=0x{desWorkAddress:X} " +
+                $"resource_addr=0x{desResourceAddress:X} resource=0x0");
+
+            return SetReturn(ctx, 0);
+        }
         var userId = unchecked((int)ctx[CpuRegister.Rdi]);
         var reserved = ctx[CpuRegister.Rsi];
 
         var id = (uint)Interlocked.Increment(ref _nextTransactionResource);
 
-        // The resource-out pointer's argument slot varies by SDK revision: some
-        // callers pass it in rdx, others in rcx (a 4-arg form where rdx holds a
-        // count/flag). Void Terrarium passes rdx=0x1 (not a pointer) and the
-        // real out-pointer in rcx. Probe the plausible candidates and write the
-        // handle to the first writable one instead of faulting on a bad rdx.
-        // This is a stub-level create (matches shadPS4's return-OK semantics);
-        // never return MEMORY_FAULT for it, or the guest treats savedata init as
-        // failed and never advances.
+        // A small RDX value is a flag, and RCX contains the output address.
+        // A larger RDX value is the output address for the older ABI.
         var resourceAddress = 0UL;
-        foreach (var candidate in new[]
-                 {
-                     ctx[CpuRegister.Rdx],
-                     ctx[CpuRegister.Rcx],
-                     ctx[CpuRegister.R8],
-                     ctx[CpuRegister.R9],
-                 })
+        var selectedAddress = SelectTransactionResourceAddress(
+            ctx[CpuRegister.Rdx],
+            ctx[CpuRegister.Rcx]);
+        if (selectedAddress != 0 && TryWriteUInt32(ctx, selectedAddress, id))
         {
-            if (candidate != 0 && TryWriteUInt32(ctx, candidate, id))
-            {
-                resourceAddress = candidate;
-                break;
-            }
+            resourceAddress = selectedAddress;
         }
 
         TraceSaveData(
             $"create_transaction_resource user={userId} reserved=0x{reserved:X} resource_addr=0x{resourceAddress:X} id={id}");
 
         return SetReturn(ctx, 0);
+    }
+
+    internal static ulong SelectTransactionResourceAddress(ulong rdx, ulong rcx)
+    {
+        if (rdx == 0)
+        {
+            return 0;
+        }
+
+        return rdx <= ushort.MaxValue ? rcx : rdx;
     }
 
     [SysAbiExport(
@@ -1012,7 +1117,7 @@ public static class SaveDataExports
     }
 
     // Saves are keyed by title id only (single-user emulation) under
-    // ~/CraziiEmu/Saves/<titleId>/; userId is accepted for API fidelity but not
+    // user/savedata/<titleId>/; userId is accepted for API fidelity but not
     // part of the host path.
     private static string ResolveTitleSaveRoot(int userId, string titleId) =>
         SaveDataStorage.TitleRoot(ResolveSaveDataRoot(), titleId);
@@ -1030,7 +1135,24 @@ public static class SaveDataExports
             ctx.TryReadUInt64(address + 0x10, out offset);
     }
 
-    private static string ResolveSaveDataRoot() => SaveDataStorage.Root();
+    private static string ResolveSaveDataRoot()
+    {
+        var root = SaveDataStorage.Root();
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CRAZIIEMU_SAVEDATA_DIR")) &&
+            Interlocked.Exchange(ref _legacySaveMigrationChecked, 1) == 0)
+        {
+            try
+            {
+                SaveDataStorage.MigrateLegacyLayout(root);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                TraceSaveData($"migration_failed root='{root}' error='{exception.Message}'");
+            }
+        }
+
+        return root;
+    }
 
     private static string ResolveConfiguredTitleId()
     {

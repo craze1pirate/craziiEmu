@@ -63,6 +63,12 @@ internal sealed partial class WindowsHostInput : IHostInput
     public void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger) =>
         WindowsXInputReader.SetTriggerRumble(leftTrigger, rightTrigger);
 
+    public void SetAdaptiveTriggerEffect(
+        HostAdaptiveTriggerEffect? leftTrigger,
+        HostAdaptiveTriggerEffect? rightTrigger)
+    {
+    }
+
     public void SetLightbar(byte red, byte green, byte blue) =>
         WindowsDualSenseReader.SetLightbar(red, green, blue);
 

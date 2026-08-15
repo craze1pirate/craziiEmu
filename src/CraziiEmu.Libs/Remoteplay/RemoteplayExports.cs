@@ -1,7 +1,6 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Remoteplay;

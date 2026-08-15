@@ -1,66 +1,56 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
-using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
-using System.Threading;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Acm;
 
 public static class AcmExports
 {
-    private const int AcmBatchErrorBytes = 64;
-
+    private const int AcmBatchErrorBytes = 32;
     private static readonly ConcurrentDictionary<uint, byte> Contexts = new();
-    private static long _nextContextHandle;
-    private static long _nextBatchHandle;
+    private static int _nextContextHandle;
+    private static int _nextBatchHandle;
 
     [SysAbiExport(
-        Nid = "JIdZ-s+mK0Q",
-        ExportName = "sceAcmInitialize",
+        Nid = "ZIXln2K3XMk",
+        ExportName = "sceAcmContextCreate",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceAcm")]
-    public static int AcmInitialize(CpuContext ctx)
+    public static int AcmContextCreate(CpuContext ctx)
     {
-        var configAddress = ctx[CpuRegister.Rdi];
-        var contextAddress = ctx[CpuRegister.Rsi];
-        if (configAddress == 0 || contextAddress == 0)
+        var outContextAddress = ctx[CpuRegister.Rdi];
+        if (outContextAddress == 0)
         {
             return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         var handle = unchecked((uint)Interlocked.Increment(ref _nextContextHandle));
-        Contexts[handle] = 1;
-
         Span<byte> handleBytes = stackalloc byte[sizeof(uint)];
         BinaryPrimitives.WriteUInt32LittleEndian(handleBytes, handle);
-        if (!ctx.Memory.TryWrite(contextAddress, handleBytes))
+        if (!ctx.Memory.TryWrite(outContextAddress, handleBytes))
         {
-            Contexts.TryRemove(handle, out _);
             return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
-        Trace($"initialize config=0x{configAddress:X} context={handle}");
+        Contexts[handle] = 0;
+        Trace($"context_create context={handle}");
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
-        Nid = "1+g7jJ84n+g",
-        ExportName = "sceAcmFinalize",
+        Nid = "jBgBjAj02R8",
+        ExportName = "sceAcmContextDestroy",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceAcm")]
-    public static int AcmFinalize(CpuContext ctx)
+    public static int AcmContextDestroy(CpuContext ctx)
     {
         var context = unchecked((uint)ctx[CpuRegister.Rdi]);
-        if (!Contexts.TryRemove(context, out _))
-        {
-            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-        }
-
-        Trace($"finalize context={context}");
+        Contexts.TryRemove(context, out _);
+        Trace($"context_destroy context={context}");
         return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
@@ -287,7 +277,7 @@ public static class AcmExports
     private static void Trace(string message)
     {
         if (string.Equals(
-                Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_ACM") ?? Environment.GetEnvironmentVariable("SHARPEMU_LOG_ACM"),
+                Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_ACM"),
                 "1",
                 StringComparison.Ordinal))
         {

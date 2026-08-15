@@ -44,36 +44,6 @@ public static class NetExports
     private sealed record ResolverContext(string Name, int PoolId, int Flags, int LastError);
 
     [SysAbiExport(
-        Nid = "PI7jIZj4pcE",
-        ExportName = "sceRandomGetRandomNumber",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNet")]
-    public static int NetRandomGetRandomNumber(CpuContext ctx)
-    {
-        var buf = ctx[CpuRegister.Rdi];
-        var size = ctx[CpuRegister.Rsi];
-        const int RANDOM_ERROR_INVALID = unchecked((int)0x817C0016);
-        const ulong RANDOM_MAX_SIZE = 64;
-
-        if ((buf == 0 && size != 0) || size > RANDOM_MAX_SIZE)
-        {
-            return ctx.SetReturn(RANDOM_ERROR_INVALID);
-        }
-
-        if (size > 0)
-        {
-            Span<byte> randomBytes = stackalloc byte[(int)size];
-            Random.Shared.NextBytes(randomBytes);
-            if (!ctx.Memory.TryWrite(buf, randomBytes))
-            {
-                return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
-            }
-        }
-
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
         Nid = "Nlev7Lg8k3A",
         ExportName = "sceNetInit",
         Target = Generation.Gen4 | Generation.Gen5,

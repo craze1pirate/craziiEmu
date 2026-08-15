@@ -45,7 +45,7 @@ public static class AudioOut2Exports
     private const int SpeakerInfoSize = 0x20;
 
     private static readonly string _stackOutBufferModes =
-        Environment.GetEnvironmentVariable("SHARPEMU_AUDIO_OUT2_STACK_WRITES") ?? "1";
+        Environment.GetEnvironmentVariable("CRAZIIEMU_AUDIO_OUT2_STACK_WRITES") ?? "1";
 
     private static bool AllowStackOut(string which) =>
         string.Equals(_stackOutBufferModes, "1", StringComparison.Ordinal) ||
@@ -1237,7 +1237,7 @@ public static class AudioOut2Exports
 
     private static void TraceAudioOut2(string message)
     {
-        if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_AUDIO_OUT2"), "1", StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_AUDIO_OUT2"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine($"[LOADER][TRACE] audio_out2.{message}");
         }

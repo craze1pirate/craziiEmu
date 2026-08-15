@@ -20,6 +20,9 @@ public sealed partial class DirectExecutionBackend
 	private static int _lazyCommitTraceCount;
 	private static int _guestAllocatorHoleRecoveries;
 	private static int _auxiliaryThreadExecuteFaultRecoveries;
+	private static int _auxiliaryThreadExecuteFaultSkips;
+	private nint _workerAbortStack;
+	private const uint WorkerAbortStackSize = 0x10000u;
 
 	private unsafe void SetupExceptionHandler()
 	{
@@ -38,6 +41,15 @@ public sealed partial class DirectExecutionBackend
 			}
 			_rawExceptionHandler = (nint)AddVectoredExceptionHandler(1u, _rawExceptionHandlerStub);
 			Console.Error.WriteLine($"[LOADER][INFO] Raw exception handler installed: 0x{_rawExceptionHandler:X16}");
+
+			// The raw handler carries the guest-image write-fault bridge, so the
+			// path must be compiled before the first protected-page store can
+			// reach it. Guest code has not started yet, so warming here cannot
+			// race a real fault.
+			CraziiEmu.HLE.GuestImageWriteTracker.WarmUp();
+			Console.Error.WriteLine(
+				"[LOADER][INFO] Guest image CPU write tracking: " +
+				$"{(CraziiEmu.HLE.GuestImageWriteTracker.Enabled ? "enabled" : "disabled")}");
 		}
 		else
 		{
@@ -53,6 +65,7 @@ public sealed partial class DirectExecutionBackend
 		}
 		_exceptionHandler = (nint)AddVectoredExceptionHandler(1u, _exceptionHandlerStub);
 		Console.Error.WriteLine($"[LOADER][INFO] Exception handler installed: 0x{_exceptionHandler:X16}");
+		CraziiEmu.HLE.GuestImageWriteTracker.WarmUp();
 
 		_unhandledFilterDelegate = UnhandledExceptionFilter;
 		_unhandledFilterHandle = GCHandle.Alloc(_unhandledFilterDelegate);
@@ -115,6 +128,13 @@ public sealed partial class DirectExecutionBackend
 			{
 				return -1;
 			}
+			if (exceptionCode == 3221225477u &&
+				exceptionRecord->NumberParameters >= 2 &&
+				CraziiEmu.HLE.GuestImageWriteTracker.TryHandleWriteFault(
+					exceptionRecord->ExceptionInformation[1]))
+			{
+				return -1;
+			}
 			if (TryRecoverAuxiliaryThreadExecuteFault(exceptionRecord, contextRecord, rip))
 			{
 				return -1;
@@ -131,6 +151,11 @@ public sealed partial class DirectExecutionBackend
 			}
 			if (exceptionCode == StatusIllegalInstruction &&
 				TryRecoverIllegalInstruction(contextRecord, rip))
+			{
+				return -1;
+			}
+			if (exceptionCode == StatusIllegalInstruction &&
+				TryRecoverAmdCompatInstruction(contextRecord, rip))
 			{
 				return -1;
 			}
@@ -418,223 +443,6 @@ public sealed partial class DirectExecutionBackend
 
 			Console.Error.WriteLine("[LOADER][INFO] =========================================");
 			Console.Error.Flush();
-
-			if (exceptionCode == 3221225477u)
-			{
-				var hostExit = ActiveEntryReturnSentinelRip;
-				if (hostExit < 0x10000)
-				{
-					hostExit = unchecked((ulong)_guestReturnStub);
-				}
-				if (hostExit >= 0x10000)
-				{
-					Console.Error.WriteLine("\n[CRASH DIAGNOSTICS] --- Disassembly around crash site ---");
-					ulong startRip = rip - 200;
-					byte[] code = new byte[300];
-					if (TryReadHostBytes(startRip, code))
-					{
-						var reader = new Iced.Intel.ByteArrayCodeReader(code);
-						var decoder = Iced.Intel.Decoder.Create(64, reader);
-						decoder.IP = startRip;
-						var formatter = new Iced.Intel.NasmFormatter();
-						var output = new Iced.Intel.StringOutput();
-						
-						while (decoder.IP < rip + 20)
-						{
-							decoder.Decode(out var instr);
-							if (instr.IsInvalid) continue;
-							
-							formatter.Format(instr, output);
-							string marker = (instr.IP == rip) ? "=> " : "   ";
-							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] {marker}{instr.IP:X16} | {output.ToStringAndReset()}");
-						}
-					}
-					else
-					{
-						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory around RIP>");
-					}
-					Console.Error.WriteLine("[CRASH DIAGNOSTICS] -------------------------------------\n");
-					
-					Console.Error.WriteLine("\n[CRASH DIAGNOSTICS] --- Stack Dump ---");
-					byte[] stackMem = new byte[64];
-					if (TryReadHostBytes(rsp, stackMem))
-					{
-						for (int i = 0; i < 8; i++)
-						{
-							ulong val = BitConverter.ToUInt64(stackMem, i * 8);
-							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RSP+{i * 8:X2}: {val:X16}");
-						}
-					}
-					else
-					{
-						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory at RSP>");
-					}
-					Console.Error.WriteLine("[CRASH DIAGNOSTICS] ----------------------------------\n");
-					
-					if (TryReadHostBytes(rsp, stackMem))
-					{
-						ulong retAddr = BitConverter.ToUInt64(stackMem, 0);
-						Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Disassembly of Caller at {retAddr:X16} ---");
-						ulong callerStart = retAddr - 120;
-						byte[] callerCode = new byte[150];
-						if (TryReadHostBytes(callerStart, callerCode))
-						{
-							var reader = new Iced.Intel.ByteArrayCodeReader(callerCode);
-							var decoder = Iced.Intel.Decoder.Create(64, reader);
-							decoder.IP = callerStart;
-							var formatter = new Iced.Intel.NasmFormatter();
-							var output = new Iced.Intel.StringOutput();
-							
-							while (decoder.IP < retAddr + 10)
-							{
-								decoder.Decode(out var instr);
-								if (instr.IsInvalid) continue;
-								formatter.Format(instr, output);
-								string marker = (instr.IP + (ulong)instr.Length == retAddr) ? "=> " : "   ";
-								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] {marker}{instr.IP:X16} | {output.ToStringAndReset()}");
-							}
-						}
-						Console.Error.WriteLine("[CRASH DIAGNOSTICS] ---------------------------------------------\n");
-					}
-					
-					// Dump key struct contents to trace the source of bad data
-					// Windows x64 CONTEXT offsets: R12=216, R13=224, R14=232, R15=240
-					ulong r15Val = ReadCtxU64(contextRecord, 240); // R15
-					ulong r14Val = ReadCtxU64(contextRecord, 232); // R14
-					ulong r13Val = ReadCtxU64(contextRecord, 224); // R13
-					ulong r12Val = ReadCtxU64(contextRecord, 216); // R12
-					ulong raxVal = ReadCtxU64(contextRecord, 120); // RAX (at crash = 0x580)
-					ulong rsiVal = ReadCtxU64(contextRecord, 168); // RSI (at crash = 0x3F800010)
-					ulong rdiVal = ReadCtxU64(contextRecord, 176); // RDI
-					
-					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Key registers at crash ---");
-					Console.Error.WriteLine($"[CRASH DIAGNOSTICS] RAX=0x{raxVal:X16} RSI=0x{rsiVal:X16} RDI=0x{rdiVal:X16}");
-					Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R12=0x{r12Val:X16} R13=0x{r13Val:X16} R14=0x{r14Val:X16} R15=0x{r15Val:X16}");
-					
-					// Read the GOT slot that the pre-crash call goes through
-					// call qword [rel 802322A38h] at 0x0000000800D15046
-					const ulong PreCrashGotSlot = 0x0000000802322A38UL;
-					byte[] gotSlotMem = new byte[8];
-					if (TryReadHostBytes(PreCrashGotSlot, gotSlotMem))
-					{
-						ulong gotTarget = BitConverter.ToUInt64(gotSlotMem, 0);
-						Console.Error.WriteLine($"[CRASH DIAGNOSTICS] GOT[0x{PreCrashGotSlot:X16}] = 0x{gotTarget:X16} (function called before crash loop)");
-						
-						// Try to reverse-lookup: check if gotTarget is a guest stub address
-						// that maps to an import entry
-						string? matchedNid = null;
-						for (int idx = 0; idx < _importEntries.Length; idx++)
-						{
-							if (_importEntries[idx].Address == gotTarget)
-							{
-								matchedNid = _importEntries[idx].Nid;
-								var exp = _importEntries[idx].Export;
-								Console.Error.WriteLine(
-									$"[CRASH DIAGNOSTICS] GOT target matches import stub #{idx}: " +
-									$"nid={matchedNid} export={exp?.LibraryName}:{exp?.Name}");
-								break;
-							}
-						}
-						
-						// If no direct match, the GOT might contain a patched-stub target.
-						// Read the first 12 bytes at the GOT value to check for mov rax,imm64; jmp rax
-						if (matchedNid == null)
-						{
-							byte[] stubCode = new byte[12];
-							if (TryReadHostBytes(gotTarget, stubCode))
-							{
-								Console.Error.WriteLine(
-									$"[CRASH DIAGNOSTICS] Code at GOT target: " +
-									$"{stubCode[0]:X2} {stubCode[1]:X2} " +
-									$"{BitConverter.ToUInt64(stubCode, 2):X16} " +
-									$"{stubCode[10]:X2} {stubCode[11]:X2}");
-							}
-							else
-							{
-								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] Cannot read code at GOT target 0x{gotTarget:X16}");
-							}
-							
-							// Also scan all import entries to see if GOT target is
-							// the trampoline destination of any stub
-							for (int idx = 0; idx < _importEntries.Length; idx++)
-							{
-								byte[] entryCode = new byte[12];
-								if (TryReadHostBytes(_importEntries[idx].Address, entryCode) &&
-									entryCode[0] == 0x48 && entryCode[1] == 0xB8)
-								{
-									ulong trampolineTarget = BitConverter.ToUInt64(entryCode, 2);
-									if (trampolineTarget == gotTarget)
-									{
-										var exp = _importEntries[idx].Export;
-										Console.Error.WriteLine(
-											$"[CRASH DIAGNOSTICS] GOT target is trampoline of import stub #{idx}: " +
-											$"nid={_importEntries[idx].Nid} " +
-											$"export={exp?.LibraryName}:{exp?.Name} " +
-											$"stubAddr=0x{_importEntries[idx].Address:X16}");
-										break;
-									}
-								}
-							}
-						}
-					}
-					else
-					{
-						Console.Error.WriteLine($"[CRASH DIAGNOSTICS] Could not read GOT slot at 0x{PreCrashGotSlot:X16}");
-					}
-					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Memory at R15=0x{r15Val:X16} (callback struct / original RSI) ---");
-					byte[] r15Mem = new byte[64];
-					if (TryReadHostBytes(r15Val, r15Mem))
-					{
-						for (int i = 0; i < 8; i++)
-						{
-							ulong val = BitConverter.ToUInt64(r15Mem, i * 8);
-							float f1 = BitConverter.ToSingle(r15Mem, i * 8);
-							float f2 = BitConverter.ToSingle(r15Mem, i * 8 + 4);
-							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R15+{i * 8:X2}: {val:X16}  (floats: {f1}, {f2})");
-						}
-					}
-					else
-					{
-						Console.Error.WriteLine("[CRASH DIAGNOSTICS] <Could not read memory at R15>");
-					}
-					
-					Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Memory at R14=0x{r14Val:X16} (iterator struct in caller) ---");
-					byte[] r14Mem = new byte[48];
-					if (TryReadHostBytes(r14Val, r14Mem))
-					{
-						for (int i = 0; i < 6; i++)
-						{
-							ulong val = BitConverter.ToUInt64(r14Mem, i * 8);
-							Console.Error.WriteLine($"[CRASH DIAGNOSTICS] R14+{i * 8:X2}: {val:X16}");
-						}
-						// Also dump the element that was being iterated (the prior element, since [r14+8] was advanced by 0x88)
-						ulong elemPtr = BitConverter.ToUInt64(r14Mem, 8); // [r14+8] = current iterator ptr
-						// The crash was inside the function called via [rax+8] where rax was the
-						// element pointer BEFORE the advance. The caller did [r14+8] = rax + 0x88,
-						// so the element that caused the crash = elemPtr - 0x88
-						ulong crashElem = elemPtr >= 0x88 ? elemPtr - 0x88 : elemPtr;
-						Console.Error.WriteLine($"\n[CRASH DIAGNOSTICS] --- Crash element at 0x{crashElem:X16} (elemPtr - 0x88) ---");
-						byte[] elemMem = new byte[160];
-						if (TryReadHostBytes(crashElem, elemMem))
-						{
-							for (int i = 0; i < 20; i++)
-							{
-								ulong val = BitConverter.ToUInt64(elemMem, i * 8);
-								Console.Error.WriteLine($"[CRASH DIAGNOSTICS] ELEM+{i * 8:X2}: {val:X16}");
-							}
-						}
-					}
-					Console.Error.WriteLine("[CRASH DIAGNOSTICS] =============================================\n");
-					
-					Console.Error.WriteLine("[LOADER][WARN] Forcing graceful abort of guest execution to prevent process crash...");
-					_ = TryPatchActiveGuestReturnSlot(hostExit);
-					WriteCtxU64(contextRecord, 120, 0);
-					WriteCtxU64(contextRecord, 248, hostExit);
-					Console.Error.Flush();
-					return -1;
-				}
-			}
-
 			return 0;
 		}
 		finally
@@ -648,11 +456,36 @@ public sealed partial class DirectExecutionBackend
 		void* contextRecord,
 		ulong rip)
 	{
-		if (exceptionRecord->ExceptionCode != 3221225477u ||
-			rip >= 0x0000000800000000UL ||
-			_activeGuestThreadState is not { Name: "tbb_thead" } activeThread)
+		if (exceptionRecord->ExceptionCode != 3221225477u)
 		{
 			return false;
+		}
+
+		// Prefer ThreadStatic active state; fall back to host-thread name when
+		// concurrent TBB AVs race logging (tLT61: recover skipped, then Fatal).
+		GuestThreadState? activeThread = _activeGuestThreadState;
+		if (activeThread is null || activeThread.Name != "tbb_thead")
+		{
+			var hostName = Thread.CurrentThread.Name;
+			if (hostName is null ||
+				!hostName.StartsWith("CraziiEmu-tbb_thead", StringComparison.Ordinal))
+			{
+				return false;
+			}
+
+			activeThread = FindGuestThreadStateByHostThreadId(unchecked((int)GetCurrentThreadId()));
+			if (activeThread is null || activeThread.Name != "tbb_thead")
+			{
+				var skip = Interlocked.Increment(ref _auxiliaryThreadExecuteFaultSkips);
+				if (skip <= 8 || skip % 64 == 0)
+				{
+					Console.Error.WriteLine(
+						$"[LOADER][WARN] tbb_recover skip #{skip}: rip=0x{rip:X16} " +
+						$"host='{hostName}' active={(activeThread?.Name ?? "null")}");
+					Console.Error.Flush();
+				}
+				return false;
+			}
 		}
 
 		var hostExit = ActiveEntryReturnSentinelRip;
@@ -660,6 +493,54 @@ public sealed partial class DirectExecutionBackend
 		{
 			hostExit = unchecked((ulong)_guestReturnStub);
 		}
+
+			// Prefer worker-abort (SetEvent + ExitThread) over host_exit→RunEpilogue:
+		// the latter FailFasts the process after TBB recover (tLT28/30 silent die).
+		// Do NOT abandon mutexes here — managed HLE from inside VEH can re-enter
+		// and Fatal (tLT73). NativeGuestExecutor.Run abandons after detecting abort.
+		var abortRip = unchecked((ulong)_workerAbortStub);
+		if (abortRip >= 0x10000)
+		{
+			// Do NOT SetEvent from managed VEH: that wakes the renter which may
+			// TerminateThread while this thread is still inside VEH return
+			// (tLTA2: recover logged, no respawning, process die). Abort stub
+			// SetEvent's only after CONTINUE_EXECUTION resumes at park.
+
+			// Prefer the entry-stub-saved host RSP (real CreateThread stack).
+			// Do not treat mid-range host stacks as guest — Astro worker stacks
+			// often sit in 0x02xxxxxx_xxxx and were wrongly replaced with a
+			// shared VirtualAlloc abort stack (concurrent TBB AV → die).
+			var hostRspSlot = TlsGetValue(_hostRspSlotTlsIndex);
+			ulong hostRsp = 0;
+			if (hostRspSlot != 0)
+			{
+				hostRsp = *(ulong*)hostRspSlot;
+			}
+
+			if (hostRsp < 0x10000)
+			{
+				hostRsp = EnsureWorkerAbortStackRsp();
+			}
+
+			if (hostRsp >= 0x10000)
+			{
+				WriteCtxU64(contextRecord, 152, hostRsp & ~0xFUL);
+			}
+
+			WriteCtxU64(contextRecord, 120, 0);
+			WriteCtxU64(contextRecord, 248, abortRip);
+			var recovery = Interlocked.Increment(ref _auxiliaryThreadExecuteFaultRecoveries);
+			Console.Error.WriteLine(
+				$"[LOADER][WARN] Recovered auxiliary TBB execute fault #{recovery}: " +
+				$"thread=0x{activeThread.ThreadHandle:X16} target=0x{rip:X16} " +
+				$"host_rsp=0x{hostRsp:X16} -> worker_abort=0x{abortRip:X16}");
+			Console.Error.WriteLine(
+				"[LOADER][INFO] tbb_recover: parking native worker (SetEvent+park); " +
+				"renter will TerminateThread+respawn — avoids ExitThread after VEH");
+			Console.Error.Flush();
+			return true;
+		}
+
 		if (hostExit < 0x10000)
 		{
 			Console.Error.WriteLine(
@@ -671,11 +552,55 @@ public sealed partial class DirectExecutionBackend
 		_ = TryPatchActiveGuestReturnSlot(hostExit);
 		WriteCtxU64(contextRecord, 120, 0);
 		WriteCtxU64(contextRecord, 248, hostExit);
-		var recovery = Interlocked.Increment(ref _auxiliaryThreadExecuteFaultRecoveries);
+		var recoveryFallback = Interlocked.Increment(ref _auxiliaryThreadExecuteFaultRecoveries);
 		Console.Error.WriteLine(
-			$"[LOADER][WARN] Recovered auxiliary TBB execute fault #{recovery}: " +
+			$"[LOADER][WARN] Recovered auxiliary TBB execute fault #{recoveryFallback}: " +
 			$"thread=0x{activeThread.ThreadHandle:X16} target=0x{rip:X16} -> host_exit=0x{hostExit:X16}");
+		Console.Error.WriteLine(
+			"[LOADER][INFO] tbb_recover: resumed at host_exit (abort stub unavailable); " +
+			"subsequent FastFail/CLR must not re-enter managed VEH " +
+			"(live trampoline pre-filters 0xC0000409 / 0xE0434352)");
+		Console.Error.Flush();
 		return true;
+	}
+
+	private GuestThreadState? FindGuestThreadStateByHostThreadId(int hostThreadId)
+	{
+		if (hostThreadId == 0)
+		{
+			return null;
+		}
+
+		try
+		{
+			foreach (var thread in SnapshotGuestThreads())
+			{
+				if (Volatile.Read(ref thread.HostThreadId) == hostThreadId)
+				{
+					return thread;
+				}
+			}
+		}
+		catch
+		{
+		}
+
+		return null;
+	}
+
+	private unsafe ulong EnsureWorkerAbortStackRsp()
+	{
+		if (_workerAbortStack == 0)
+		{
+			_workerAbortStack = (nint)VirtualAlloc(null, WorkerAbortStackSize, 12288u, 4u);
+			if (_workerAbortStack == 0)
+			{
+				return 0;
+			}
+		}
+
+		// Grow-down stack: hand out near the top with alignment headroom.
+		return (ulong)(_workerAbortStack + (nint)WorkerAbortStackSize - 0x100) & ~0xFUL;
 	}
 
 	private unsafe bool TryRecoverGuestInt41(uint exceptionCode, void* contextRecord, ulong rip)
@@ -696,7 +621,7 @@ public sealed partial class DirectExecutionBackend
 		if (count <= 16 || count % 65536 == 0)
 		{
 			Console.Error.WriteLine(
-				$"[LOADER][WARN] Ignored guest int 0x41 trap #{count} at 0x{rip:X16} (CRAZIIEMU_IGNORE_INT41=1)");
+				$"[LOADER][WARN] Ignored guest int 0x41 trap #{count} at 0x{rip:X16} (default-on; set CRAZIIEMU_IGNORE_INT41=0 to disable)");
 			Console.Error.Flush();
 		}
 		return true;
@@ -1311,7 +1236,24 @@ public sealed partial class DirectExecutionBackend
 
 	private static bool TryReadHostQword(ulong address, out ulong value)
 	{
-		return TryReadStackU64(address, out value);
+		if (!OperatingSystem.IsWindows())
+		{
+			// A stray read inside the signal handler would raise a nested
+			// SIGSEGV and kill the process before diagnostics finish, so
+			// probe the region table instead of relying on try/catch.
+			return TryReadStackU64(address, out value);
+		}
+
+		value = 0;
+		try
+		{
+			value = (ulong)Marshal.ReadInt64((nint)address);
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	private unsafe static bool TryReadHostBytes(ulong address, byte[] buffer)
@@ -1321,18 +1263,18 @@ public sealed partial class DirectExecutionBackend
 			return false;
 		}
 
-		// Probe every touched page before reading.
-		// A stray read inside the VEH would raise a nested exception
-		// and kill the process with 'Invalid Program' before diagnostics finish,
-		// so probe the region table instead of relying on try/catch.
-		ulong end = address + (ulong)buffer.Length;
-		for (ulong page = address & 0xFFFFFFFFFFFFF000uL; page < end; page += 4096)
+		if (!OperatingSystem.IsWindows())
 		{
-			if (VirtualQuery((void*)page, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) == 0 ||
-				mbi.State != MEM_COMMIT ||
-				!IsReadableProtection(mbi.Protect))
+			// See TryReadHostQword: probe every touched page before reading.
+			ulong end = address + (ulong)buffer.Length;
+			for (ulong page = address & 0xFFFFFFFFFFFFF000uL; page < end; page += 4096)
 			{
-				return false;
+				if (VirtualQuery((void*)page, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) == 0 ||
+					mbi.State != MEM_COMMIT ||
+					!IsReadableProtection(mbi.Protect))
+				{
+					return false;
+				}
 			}
 		}
 

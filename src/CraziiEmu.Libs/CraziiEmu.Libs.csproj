@@ -6,9 +6,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <ProjectReference Include="..\CraziiEmu.LibAtrac9\CraziiEmu.LibAtrac9.csproj" />
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
+    <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler\CraziiEmu.ShaderCompiler.csproj" />
-    
+    <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Metal\CraziiEmu.ShaderCompiler.Metal.csproj" />
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Vulkan\CraziiEmu.ShaderCompiler.Vulkan.csproj" />
     <!-- SysAbi export generator + analyzers (compile-time registry, NID validation). -->
     <ProjectReference Include="..\CraziiEmu.SourceGenerators\CraziiEmu.SourceGenerators.csproj"
@@ -27,6 +29,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="FFmpeg.AutoGen" />
+    <PackageReference Include="NLayer" />
+    <PackageReference Include="ppy.SDL3-CS" />
     <PackageReference Include="Silk.NET.Input" />
     <PackageReference Include="Silk.NET.Vulkan" />
     <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" />

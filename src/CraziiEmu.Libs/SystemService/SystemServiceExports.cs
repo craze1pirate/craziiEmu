@@ -19,6 +19,7 @@ public static class SystemServiceExports
     private const int TitleIdFieldSize = 0x10;
 
     private static string? _mainAppTitleId;
+    private static int _noticeScreenSkipFlag;
 
     public static void ConfigureApplicationInfo(string? titleId)
     {
@@ -38,9 +39,11 @@ public static class SystemServiceExports
             return ctx.SetReturn(OrbisSystemServiceErrorParameter);
         }
 
-        // No system notice screen to skip in the emulator; report "do not skip".
+        // Keep the flag state even though the emulator does not display the
+        // system notice screen. Titles use this service as a normal preference
+        // store and expect a later get to observe the value they set.
         Span<byte> flagBytes = stackalloc byte[1];
-        flagBytes[0] = 0;
+        flagBytes[0] = unchecked((byte)Volatile.Read(ref _noticeScreenSkipFlag));
         return ctx.Memory.TryWrite(flagAddress, flagBytes)
             ? ctx.SetReturn(0)
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
@@ -54,13 +57,21 @@ public static class SystemServiceExports
     public static int SystemServiceDisableNoticeScreenSkipFlagAutoSet(CpuContext ctx) =>
         ctx.SetReturn(0);
 
+    // Settings entry calls this immediately before spawning SaveModTime/Load
+    // threads. An unresolved stub returns NOT_FOUND and the title can stall in
+    // that path; accept the write and report success.
     [SysAbiExport(
         Nid = "Q3utJvma4Mo",
         ExportName = "sceSystemServiceSetNoticeScreenSkipFlag",
         Target = Generation.Gen5,
         LibraryName = "libSceSystemService")]
-    public static int SystemServiceSetNoticeScreenSkipFlag(CpuContext ctx) =>
-        ctx.SetReturn(0);
+    public static int SystemServiceSetNoticeScreenSkipFlag(CpuContext ctx)
+    {
+        // The native API takes the flag value in the first argument. Treat any
+        // non-zero value as true, matching the bool-like PS5 ABI.
+        Volatile.Write(ref _noticeScreenSkipFlag, ctx[CpuRegister.Rdi] != 0 ? 1 : 0);
+        return ctx.SetReturn(0);
+    }
 
     [SysAbiExport(
         Nid = "4veE0XiIugA",
@@ -229,4 +240,7 @@ public static class SystemServiceExports
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceSystemService")]
     public static int SystemServiceReportAbnormalTermination(CpuContext ctx) => ctx.SetReturn(0);
+
+    internal static void ResetForTests() =>
+        Volatile.Write(ref _noticeScreenSkipFlag, 0);
 }

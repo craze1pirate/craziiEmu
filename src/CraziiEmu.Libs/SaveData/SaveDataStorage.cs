@@ -9,7 +9,7 @@ namespace CraziiEmu.Libs.SaveData;
 
 /// <summary>
 /// Host-side layout and metadata for PS5 save data. Saves live under
-/// <c>~/CraziiEmu/Saves/&lt;titleId&gt;/&lt;dirName&gt;/</c> (overridable via
+/// <c>user/savedata/&lt;titleId&gt;/&lt;dirName&gt;/</c> next to the executable (overridable via
 /// <c>CRAZIIEMU_SAVEDATA_DIR</c>); the game's files are written directly inside a
 /// slot through the mounted <c>/savedata0</c> filesystem, and the PS5 UI
 /// metadata (title/subtitle/detail/userParam) plus icon live under
@@ -18,17 +18,72 @@ namespace CraziiEmu.Libs.SaveData;
 /// </summary>
 public static class SaveDataStorage
 {
-    /// <summary>Root of all saves: the env override, else <c>~/CraziiEmu/Saves</c>.</summary>
+    /// <summary>Root of all saves: the env override, else the portable <c>user/savedata</c> directory.</summary>
     public static string Root(string? overrideDir = null)
     {
         var configured = overrideDir ?? Environment.GetEnvironmentVariable("CRAZIIEMU_SAVEDATA_DIR");
         var root = string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "CraziiEmu",
-                "Saves")
+            ? Path.Combine(AppContext.BaseDirectory, "user", "savedata")
             : configured;
         return Path.GetFullPath(root);
+    }
+
+    /// <summary>
+    /// Imports saves written by the short-lived profile layout and by the old
+    /// numeric-user layout. Newer destination files are never overwritten.
+    /// </summary>
+    public static void MigrateLegacyLayout(string destinationRoot, string? profileRoot = null)
+    {
+        destinationRoot = Path.GetFullPath(destinationRoot);
+        profileRoot ??= Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "CraziiEmu",
+            "Saves");
+
+        if (Directory.Exists(profileRoot) &&
+            !string.Equals(Path.GetFullPath(profileRoot), destinationRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            MergeDirectory(profileRoot, destinationRoot);
+        }
+
+        if (!Directory.Exists(destinationRoot))
+        {
+            return;
+        }
+
+        foreach (var userRoot in Directory.EnumerateDirectories(destinationRoot).ToArray())
+        {
+            if (!uint.TryParse(Path.GetFileName(userRoot), out _))
+            {
+                continue;
+            }
+
+            foreach (var titleRoot in Directory.EnumerateDirectories(userRoot))
+            {
+                MergeDirectory(titleRoot, Path.Combine(destinationRoot, Path.GetFileName(titleRoot)));
+            }
+        }
+    }
+
+    private static void MergeDirectory(string sourceRoot, string destinationRoot)
+    {
+        Directory.CreateDirectory(destinationRoot);
+        foreach (var sourceFile in Directory.EnumerateFiles(sourceRoot))
+        {
+            var destinationFile = Path.Combine(destinationRoot, Path.GetFileName(sourceFile));
+            if (!File.Exists(destinationFile) ||
+                File.GetLastWriteTimeUtc(sourceFile) > File.GetLastWriteTimeUtc(destinationFile))
+            {
+                File.Copy(sourceFile, destinationFile, overwrite: true);
+            }
+        }
+
+        foreach (var sourceDirectory in Directory.EnumerateDirectories(sourceRoot))
+        {
+            MergeDirectory(
+                sourceDirectory,
+                Path.Combine(destinationRoot, Path.GetFileName(sourceDirectory)));
+        }
     }
 
     /// <summary>Per-title directory: <c>&lt;root&gt;/&lt;titleId&gt;</c>.</summary>

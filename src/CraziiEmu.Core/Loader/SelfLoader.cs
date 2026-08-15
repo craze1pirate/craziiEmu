@@ -200,9 +200,32 @@ public sealed class SelfLoader : ISelfLoader
             {
                 if (!physicalVm.TryAllocateAtExact(imageBase, totalImageSize, executable: true, out var allocatedBase))
                 {
-                    var reason = physicalVm.DescribeAddressForDiagnostics(imageBase);
-                    throw new InvalidOperationException(
-                        $"Could not allocate main image at required base 0x{imageBase:X16} (size=0x{totalImageSize:X}): {reason}.");
+                    // Exact allocation failed — the host may have already claimed
+                    // part of this range (ASLR, Rosetta 2, or another process).
+                    // Try backing the fixed range page by page to claim whatever
+                    // free gaps exist. If the whole range is occupied the backfill
+                    // returns false and we surface the original failure reason.
+                    Console.Error.WriteLine(
+                        $"[LOADER] Exact allocation at main image base 0x{imageBase:X16} " +
+                        $"(size=0x{totalImageSize:X}) failed; attempting fixed-range backfill.");
+                    if (!physicalVm.TryBackFixedRange(imageBase, totalImageSize, executable: true))
+                    {
+                        // TryBackFixedRange may have partially backed pages before
+                        // failing. The earlier Clear() already reset all regions, so
+                        // this second Clear() is idempotent for everything except the
+                        // partial backfill — it frees only those orphaned pages.
+                        physicalVm.Clear();
+                        var reason = physicalVm.DescribeAddressForDiagnostics(imageBase);
+                        throw new InvalidOperationException(
+                            $"Could not allocate main image at required base 0x{imageBase:X16} " +
+                            $"(size=0x{totalImageSize:X}): {reason}. " +
+                            "Try closing other applications, rebooting, or " +
+                            (OperatingSystem.IsWindows()
+                                ? "setting CRAZIIEMU_DISABLE_MITIGATION_RELAUNCH=1."
+                                : "ensuring no other process maps into this address range."));
+                    }
+
+                    allocatedBase = imageBase;
                 }
 
                 imageBase = allocatedBase;
@@ -715,8 +738,9 @@ public sealed class SelfLoader : ISelfLoader
 
         importedRelocations = BuildImportedRelocations(descriptors);
 
+        var stubEligibleNids = CollectStubEligibleNids(descriptors, moduleManager);
         var stubImportNids = orderedImportNids
-            .Where(nid => ShouldCreateImportStub(nid, descriptors, moduleManager))
+            .Where(stubEligibleNids.Contains)
             .ToArray();
         var stubsByAddress = CreateImportStubMapping(virtualMemory, stubImportNids);
         Console.WriteLine($"[LOADER] Created {stubsByAddress.Count} import stubs");
@@ -748,11 +772,6 @@ public sealed class SelfLoader : ISelfLoader
 
         foreach (var descriptor in descriptors)
         {
-            ulong relOffset = descriptor.TargetAddress >= imageBase ? descriptor.TargetAddress - imageBase : descriptor.TargetAddress;
-            if (relOffset == 0x0DFA0 || relOffset == 0x02322A38UL || (relOffset >= 0x0DF80 && relOffset <= 0x0DFC0))
-            {
-                Console.Error.WriteLine($"[LOADER][TARGET_REL_OFFSET] imageBase=0x{imageBase:X16} relOffset=0x{relOffset:X} ImportNid={descriptor.ImportNid ?? "null"} TargetAddr=0x{descriptor.TargetAddress:X16}");
-            }
             ulong symbolValue;
             if (descriptor.ImportNid is null)
             {
@@ -778,10 +797,6 @@ public sealed class SelfLoader : ISelfLoader
             }
 
             var targetValue = ComputeRelocationValue(descriptor, symbolValue);
-            if (descriptor.TargetAddress >= 0x0000000802322A00UL && descriptor.TargetAddress <= 0x0000000802322A70UL)
-            {
-                Console.Error.WriteLine($"[LOADER][TARGET_GOT_RANGE] TargetAddress=0x{descriptor.TargetAddress:X16} ImportNid={descriptor.ImportNid ?? "null"} SymbolValue=0x{descriptor.SymbolValue:X16} ValueKind={descriptor.ValueKind} TargetValue=0x{targetValue:X16}");
-            }
 
             if (targetValue < 0x1000 && descriptor.ValueKind is
                 RelocationValueKind.TlsOffset or
@@ -1168,6 +1183,35 @@ public sealed class SelfLoader : ISelfLoader
             IsDataImport: GetSymbolType(symbol.Info) == SymbolTypeObject,
             writeKind,
             isWeak);
+    }
+
+    // Collects every NID that needs a trap import stub in a single pass over the
+    // descriptors. This mirrors ShouldCreateImportStub applied per NID, but avoids
+    // the O(nids * descriptors) rescan that filtering each unique NID against the
+    // full descriptor list would incur on large modules. A NID qualifies as soon as
+    // one of its descriptors is non-weak, or is weak but resolvable via the module
+    // manager.
+    private static HashSet<string> CollectStubEligibleNids(
+        IReadOnlyList<RelocationDescriptor> descriptors,
+        IModuleManager? moduleManager)
+    {
+        var eligible = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < descriptors.Count; i++)
+        {
+            var descriptor = descriptors[i];
+            var nid = descriptor.ImportNid;
+            if (nid is null || eligible.Contains(nid))
+            {
+                continue;
+            }
+
+            if (!descriptor.IsWeak || moduleManager?.TryGetExport(nid, out _) == true)
+            {
+                eligible.Add(nid);
+            }
+        }
+
+        return eligible;
     }
 
     private static bool ShouldCreateImportStub(
@@ -2441,6 +2485,19 @@ public sealed class SelfLoader : ISelfLoader
         Debug.Assert(
             !ShouldCreateImportStub("weak", [weak], moduleManager: null),
             "An unresolved weak symbol incorrectly received a trap import stub.");
+
+        var strong = new RelocationDescriptor(
+            TargetAddress: 0x3000,
+            Addend: 0,
+            ImportNid: "strong",
+            SymbolValue: 0,
+            RelocationValueKind.Pointer,
+            IsDataImport: false);
+        var mixed = new List<RelocationDescriptor> { weak, strong };
+        var eligible = CollectStubEligibleNids(mixed, moduleManager: null);
+        Debug.Assert(
+            eligible.Contains("strong") && !eligible.Contains("weak"),
+            "CollectStubEligibleNids disagreed with the per-NID stub eligibility rule.");
     }
 
     private static ulong AlignUp(ulong value, ulong alignment)

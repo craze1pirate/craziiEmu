@@ -5,12 +5,26 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/CraziiEmu.LibAtrac9/CraziiEmu.LibAtrac9.csproj" />
     <Project Path="src/CraziiEmu.CLI/CraziiEmu.CLI.csproj" />
     <Project Path="src/CraziiEmu.Core/CraziiEmu.Core.csproj" />
+    <Project Path="src/CraziiEmu.DebugClient/CraziiEmu.DebugClient.csproj" />
+    <Project Path="src/CraziiEmu.Debugger/CraziiEmu.Debugger.csproj" />
     <Project Path="src/CraziiEmu.HLE/CraziiEmu.HLE.csproj" />
     <Project Path="src/CraziiEmu.Libs/CraziiEmu.Libs.csproj" />
     <Project Path="src/CraziiEmu.Logging/CraziiEmu.Logging.csproj" />
     <Project Path="src/CraziiEmu.Runner/CraziiEmu.Runner.csproj" />
+    <Project Path="src/CraziiEmu.ShaderCompiler/CraziiEmu.ShaderCompiler.csproj" />
+    <Project Path="src/CraziiEmu.ShaderCompiler.Metal/CraziiEmu.ShaderCompiler.Metal.csproj" />
+    <Project Path="src/CraziiEmu.ShaderCompiler.Vulkan/CraziiEmu.ShaderCompiler.Vulkan.csproj" />
+    <Project Path="src/CraziiEmu.SourceGenerators/CraziiEmu.SourceGenerators.csproj" />
+    <Project Path="src/CraziiEmu.TestRunner/CraziiEmu.TestRunner.csproj" />
     <Project Path="src/CraziiEmu.UI/CraziiEmu.UI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CraziiEmu.Libs.Tests/CraziiEmu.Libs.Tests.csproj" />
+    <Project Path="tests/CraziiEmu.ShaderCompiler.Metal.Tests/CraziiEmu.ShaderCompiler.Metal.Tests.csproj" />
+    <Project Path="tests/CraziiEmu.ShaderCompiler.Tests/CraziiEmu.ShaderCompiler.Tests.csproj" />
+    <Project Path="tests/CraziiEmu.SourceGenerators.Tests/CraziiEmu.SourceGenerators.Tests.csproj" />
   </Folder>
 </Solution>

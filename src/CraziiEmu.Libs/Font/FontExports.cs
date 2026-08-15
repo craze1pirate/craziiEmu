@@ -495,13 +495,13 @@ public static class FontExports
     {
         var fontHandle = ctx[CpuRegister.Rdi];
         var layoutAddr = ctx[CpuRegister.Rsi];
-        if (fontHandle == 0 || layoutAddr == 0) return SetReturn(ctx, -1);
+        if (layoutAddr == 0) return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
 
         _fonts.TryGetValue(fontHandle, out var font);
         float h = ScaledFontHeight(font);
-        float baselineY = h * 0.75f;
-        float lineHeight = h;
-        float effectHeight = h;
+        float baselineY = font != null ? h * 0.75f : 12.0f;
+        float lineHeight = font != null ? h : 16.0f;
+        float effectHeight = font != null ? h : 0.0f;
 
         Span<byte> layoutSpan = stackalloc byte[12];
         BitConverter.TryWriteBytes(layoutSpan.Slice(0, 4), baselineY);
@@ -516,12 +516,12 @@ public static class FontExports
     {
         var fontHandle = ctx[CpuRegister.Rdi];
         var layoutAddr = ctx[CpuRegister.Rsi];
-        if (fontHandle == 0 || layoutAddr == 0) return SetReturn(ctx, -1);
+        if (layoutAddr == 0) return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
 
         Span<byte> layoutSpan = stackalloc byte[12];
-        BitConverter.TryWriteBytes(layoutSpan.Slice(0, 4), 0.0f);
+        BitConverter.TryWriteBytes(layoutSpan.Slice(0, 4), 8.0f);
         BitConverter.TryWriteBytes(layoutSpan.Slice(4, 4), 16.0f);
-        BitConverter.TryWriteBytes(layoutSpan.Slice(8, 4), 16.0f);
+        BitConverter.TryWriteBytes(layoutSpan.Slice(8, 4), 0.0f);
 
         return ctx.Memory.TryWrite(layoutAddr, layoutSpan) ? SetReturn(ctx, OK) : SetReturn(ctx, -1);
     }

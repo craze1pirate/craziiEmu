@@ -50,12 +50,6 @@ public interface IGuestThreadScheduler
     /// </summary>
     void RegisterGuestThreadContext(ulong threadHandle, CpuContext context);
 
-    /// <summary>
-    /// Removes a previously registered thread context when an external thread
-    /// (e.g. host audio worker) finishes executing a guest callback.
-    /// </summary>
-    void UnregisterGuestThreadContext(ulong threadHandle);
-
     bool TryStartThread(CpuContext creatorContext, GuestThreadStartRequest request, out string? error);
 
     bool TryJoinThread(
@@ -227,6 +221,29 @@ public static class GuestThreadExecution
     private static ulong _currentImportReturnSlotAddress;
 
     public static IGuestThreadScheduler? Scheduler { get; set; }
+
+    /// <summary>
+    /// Fired when a guest thread is torn down without a clean pthread_exit
+    /// (e.g. TBB execute-AV → worker_abort). Libs use this to abandon mutexes.
+    /// </summary>
+    public static event Func<ulong, string, int>? GuestThreadAbandoned;
+
+    public static int NotifyGuestThreadAbandoned(ulong threadHandle, string reason)
+    {
+        if (threadHandle == 0 || GuestThreadAbandoned is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return GuestThreadAbandoned.Invoke(threadHandle, reason);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
 
     public static bool IsGuestThread => _currentGuestThreadHandle != 0;
 

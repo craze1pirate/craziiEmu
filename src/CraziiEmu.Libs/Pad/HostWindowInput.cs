@@ -11,21 +11,20 @@ using System.Collections.Generic;
 namespace CraziiEmu.Libs.Pad;
 
 /// <summary>
-/// Keyboard and gamepad state sampled from the presenter's window, feeding
-/// the host input seam. Incorporates CraziiEmuConfig bindings.
+/// Keyboard and gamepad state supplied from both Silk.NET window and cross-platform SDL game window,
+/// feeding the host input seam. Incorporates CraziiEmuConfig bindings.
 /// </summary>
 public static class HostWindowInput
 {
     private static readonly object Gate = new();
     private static readonly HashSet<Key> Pressed = new();
+    private static readonly HashSet<int> PressedVirtualKeys = new();
     private static volatile bool _connected;
-    private static WindowInputSource? _source;
+    private static bool _focused = true;
+    private static IHostGamepadOutput? _gamepadOutput;
+    private static readonly WindowInputSource SourceInstance = new();
 
-    /// <summary>
-    /// The window-level input source that maps keyboard/mouse/gamepad state
-    /// into <see cref="HostGamepadState"/> values. Set after <see cref="Attach"/>.
-    /// </summary>
-    internal static WindowInputSource? Source => _source;
+    internal static WindowInputSource Source => SourceInstance;
 
     // Mouse state
     private static bool _mouseLeftDown;
@@ -45,8 +44,42 @@ public static class HostWindowInput
     private static byte _gamepadRightY = 128;
     private static byte _gamepadL2;
     private static byte _gamepadR2;
+    private static HostGamepadState? _explicitGamepadState;
 
     public static bool IsConnected => _connected;
+
+    public static void Connect(IHostGamepadOutput? gamepadOutput = null)
+    {
+        lock (Gate)
+        {
+            _connected = true;
+            _focused = true;
+            _gamepadOutput = gamepadOutput;
+            Pressed.Clear();
+            PressedVirtualKeys.Clear();
+            _explicitGamepadState = null;
+        }
+
+        HostWindowInputSource.Set(SourceInstance);
+    }
+
+    public static void Disconnect()
+    {
+        lock (Gate)
+        {
+            _connected = false;
+            _focused = false;
+            _gamepadConnected = false;
+            _gamepadName = null;
+            _gamepadButtons = HostGamepadButtons.None;
+            _gamepadOutput = null;
+            _explicitGamepadState = null;
+            Pressed.Clear();
+            PressedVirtualKeys.Clear();
+        }
+
+        HostWindowInputSource.Clear(SourceInstance);
+    }
 
     public static void Attach(IInputContext input)
     {
@@ -79,33 +112,17 @@ public static class HostWindowInput
 
         input.ConnectionChanged += (device, connected) =>
         {
-            if (device is IGamepad gamepad)
+            if (device is IGamepad gp)
             {
-                if (connected) AttachGamepad(gamepad);
-                else
-                {
-                    lock (Gate)
-                    {
-                        _gamepadConnected = false;
-                        _gamepadName = null;
-                        _gamepadButtons = HostGamepadButtons.None;
-                        _gamepadLeftX = 128; _gamepadLeftY = 128;
-                        _gamepadRightX = 128; _gamepadRightY = 128;
-                        _gamepadL2 = 0; _gamepadR2 = 0;
-                    }
-                }
-            }
-            else if (device is IMouse mouse)
-            {
-                if (connected) AttachMouse(mouse);
+                if (connected) AttachGamepad(gp);
+                else lock (Gate) { _gamepadConnected = false; _gamepadName = null; }
             }
         };
 
-        _source = new WindowInputSource();
-        CraziiEmu.HLE.Host.WindowInputBridge.SetSource(_source.GetGamepadStates);
+        HostWindowInputSource.Set(SourceInstance);
     }
 
-    private static void AttachMouse(IMouse mouse)
+    public static void AttachMouse(IMouse mouse)
     {
         mouse.MouseDown += (_, button) =>
         {
@@ -131,8 +148,8 @@ public static class HostWindowInput
             {
                 if (_lastMousePos != default)
                 {
-                    _mouseDeltaX += (pos.X - _lastMousePos.X);
-                    _mouseDeltaY += (pos.Y - _lastMousePos.Y);
+                    _mouseDeltaX += pos.X - _lastMousePos.X;
+                    _mouseDeltaY += pos.Y - _lastMousePos.Y;
                 }
                 _lastMousePos = pos;
             }
@@ -147,25 +164,45 @@ public static class HostWindowInput
         }
     }
 
-    internal sealed class WindowInputSource
+    public static void Clear()
     {
-        public bool HasKeyboardFocus => _connected;
+        lock (Gate)
+        {
+            Pressed.Clear();
+            PressedVirtualKeys.Clear();
+            _explicitGamepadState = null;
+        }
+    }
+
+    internal sealed class WindowInputSource : IHostWindowInputSource, IHostGamepadOutput
+    {
+        public bool HasKeyboardFocus => _focused && _connected;
 
         public bool IsKeyDown(int virtualKey)
         {
-            return TryMapVirtualKey(virtualKey, out var key) && HostWindowInput.IsKeyDown(key);
+            lock (Gate)
+            {
+                if (PressedVirtualKeys.Contains(virtualKey)) return true;
+                return TryMapVirtualKey(virtualKey, out var key) && Pressed.Contains(key);
+            }
         }
 
         public int GetGamepadStates(Span<HostGamepadState> destination)
         {
             lock (Gate)
             {
-                if (!_gamepadConnected && !_connected)
+                if (!_gamepadConnected && !_connected && _explicitGamepadState == null)
                 {
                     return 0;
                 }
 
                 if (destination.Length == 0) return 0;
+
+                if (_explicitGamepadState.HasValue)
+                {
+                    destination[0] = _explicitGamepadState.Value;
+                    return 1;
+                }
 
                 var config = CraziiEmuConfig.Instance.Input;
                 HostGamepadButtons buttons = _gamepadButtons;
@@ -182,7 +219,8 @@ public static class HostWindowInput
                         if (vk == InputMap.MouseYNeg) return _mouseDeltaY < -2f;
                         if (vk == InputMap.MouseYPos) return _mouseDeltaY > 2f;
                     }
-                    return TryMapVirtualKey(vk, out var k) && HostWindowInput.IsKeyDown(k);
+                    if (PressedVirtualKeys.Contains(vk)) return true;
+                    return TryMapVirtualKey(vk, out var k) && Pressed.Contains(k);
                 }
 
                 if (IsMappedDown(config.Cross)) buttons |= HostGamepadButtons.Cross;
@@ -242,10 +280,27 @@ public static class HostWindowInput
             lock (Gate)
             {
                 if (_gamepadConnected) return _gamepadName ?? "GLFW gamepad";
-                if (_connected) return "Keyboard / Mouse (Mapped)";
+                if (_connected) return _gamepadName ?? "Keyboard / Mouse (Mapped)";
                 return null;
             }
         }
+
+        public void SetRumble(byte largeMotor, byte smallMotor) =>
+            _gamepadOutput?.SetRumble(largeMotor, smallMotor);
+
+        public void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger) =>
+            _gamepadOutput?.SetTriggerRumble(leftTrigger, rightTrigger);
+
+        public void SetAdaptiveTriggerEffect(
+            HostAdaptiveTriggerEffect? leftTrigger,
+            HostAdaptiveTriggerEffect? rightTrigger) =>
+            _gamepadOutput?.SetAdaptiveTriggerEffect(leftTrigger, rightTrigger);
+
+        public void SetLightbar(byte red, byte green, byte blue) =>
+            _gamepadOutput?.SetLightbar(red, green, blue);
+
+        public void ResetLightbar() =>
+            _gamepadOutput?.ResetLightbar();
     }
 
     private static bool TryMapVirtualKey(int vk, out Key key)
@@ -340,6 +395,12 @@ public static class HostWindowInput
         return (byte)Math.Clamp((int)MathF.Round((value + 1.0f) * 127.5f), 0, 255);
     }
 
+    internal static byte ToStickByte(short value)
+    {
+        var normalized = value + 32768;
+        return (byte)Math.Clamp((normalized * 255 + 32767) / 65535, 0, 255);
+    }
+
     private static HostGamepadButtons MapButton(ButtonName name) => name switch
     {
         ButtonName.A => HostGamepadButtons.Cross,
@@ -348,14 +409,96 @@ public static class HostWindowInput
         ButtonName.Y => HostGamepadButtons.Triangle,
         ButtonName.LeftBumper => HostGamepadButtons.L1,
         ButtonName.RightBumper => HostGamepadButtons.R1,
-        ButtonName.Back => HostGamepadButtons.TouchPad,
-        ButtonName.Start => HostGamepadButtons.Options,
-        ButtonName.LeftStick => HostGamepadButtons.L3,
-        ButtonName.RightStick => HostGamepadButtons.R3,
         ButtonName.DPadUp => HostGamepadButtons.Up,
-        ButtonName.DPadRight => HostGamepadButtons.Right,
         ButtonName.DPadDown => HostGamepadButtons.Down,
         ButtonName.DPadLeft => HostGamepadButtons.Left,
+        ButtonName.DPadRight => HostGamepadButtons.Right,
+        ButtonName.Start => HostGamepadButtons.Options,
+        ButtonName.Back => HostGamepadButtons.TouchPad,
+        ButtonName.LeftStick => HostGamepadButtons.L3,
+        ButtonName.RightStick => HostGamepadButtons.R3,
         _ => HostGamepadButtons.None,
     };
+
+    public static void SetFocused(bool focused)
+    {
+        lock (Gate)
+        {
+            _focused = focused;
+            if (!focused)
+            {
+                Pressed.Clear();
+                PressedVirtualKeys.Clear();
+            }
+        }
+    }
+
+    public static void SetKey(int virtualKey, bool down)
+    {
+        lock (Gate)
+        {
+            if (down)
+            {
+                PressedVirtualKeys.Add(virtualKey);
+                if (TryMapVirtualKey(virtualKey, out var k))
+                {
+                    Pressed.Add(k);
+                }
+            }
+            else
+            {
+                PressedVirtualKeys.Remove(virtualKey);
+                if (TryMapVirtualKey(virtualKey, out var k))
+                {
+                    Pressed.Remove(k);
+                }
+            }
+        }
+    }
+
+    public static void SetGamepad(string? name, HostGamepadState state)
+    {
+        lock (Gate)
+        {
+            _gamepadConnected = state.Connected;
+            _gamepadName = name;
+            _gamepadButtons = state.Buttons;
+            _gamepadLeftX = state.LeftX;
+            _gamepadLeftY = state.LeftY;
+            _gamepadRightX = state.RightX;
+            _gamepadRightY = state.RightY;
+            _gamepadL2 = state.LeftTrigger;
+            _gamepadR2 = state.RightTrigger;
+            _explicitGamepadState = state;
+        }
+    }
+
+    public static void ClearGamepad()
+    {
+        lock (Gate)
+        {
+            _gamepadConnected = false;
+            _gamepadName = null;
+            _gamepadButtons = HostGamepadButtons.None;
+            _explicitGamepadState = null;
+        }
+    }
+
+    internal static byte ToTriggerByte(short value) =>
+        (byte)Math.Clamp(value * 255 / 32767, 0, 255);
+}
+
+public interface IHostGamepadOutput
+{
+    void SetRumble(byte largeMotor, byte smallMotor);
+
+    void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger);
+
+    void SetAdaptiveTriggerEffect(
+        HostAdaptiveTriggerEffect? leftTrigger,
+        HostAdaptiveTriggerEffect? rightTrigger);
+
+    void SetLightbar(byte red, byte green, byte blue);
+
+    void ResetLightbar();
 }

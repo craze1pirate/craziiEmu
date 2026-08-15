@@ -2,15 +2,10 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace CraziiEmu.Libs.Ampr;
 
@@ -65,7 +60,8 @@ public static class AmprFileRegistry
 
     /// <summary>
     /// Kick off <see cref="EnsureApp0Indexed"/> on a background thread as soon as
-    /// the host knows app0.
+    /// the host knows app0. otherwise pays the full tree walk on the
+    /// first cooked-id APR miss mid-boot (~8s under Rosetta for DeS).
     /// </summary>
     public static void BeginApp0IndexPreload(string? app0Root)
     {
@@ -104,190 +100,279 @@ public static class AmprFileRegistry
     /// </summary>
     public static void EnsureApp0Indexed(string app0Root)
     {
-        if (string.IsNullOrWhiteSpace(app0Root))
+        if (string.IsNullOrWhiteSpace(app0Root) || !Directory.Exists(app0Root))
         {
             return;
         }
 
-        string normalizedRoot;
-        try
-        {
-            normalizedRoot = Path.GetFullPath(app0Root);
-        }
-        catch
-        {
-            normalizedRoot = app0Root;
-        }
-
-        if (!Directory.Exists(normalizedRoot))
-        {
-            return;
-        }
+        var normalizedRoot = Path.GetFullPath(app0Root);
+        var stopwatch = Stopwatch.StartNew();
 
         lock (_indexGate)
         {
-            if (string.Equals(_indexedApp0Root, normalizedRoot, HostFsPath.Comparison))
+            while (true)
             {
-                return;
+                if (string.Equals(_indexedApp0Root, normalizedRoot, HostFsPath.Comparison))
+                {
+                    return;
+                }
+
+                if (_indexingApp0Root is not null)
+                {
+                    // Another thread (preload) owns the walk — wait instead of
+                    // stacking a second 8s index on the guest APR miss path.
+                    if (string.Equals(
+                            _indexingApp0Root,
+                            normalizedRoot,
+                            HostFsPath.Comparison))
+                    {
+                        Monitor.Wait(_indexGate);
+                        continue;
+                    }
+
+                    Monitor.Wait(_indexGate, 50);
+                    continue;
+                }
+
+                _indexingApp0Root = normalizedRoot;
+                break;
             }
+        }
 
-            var timer = Stopwatch.StartNew();
-            var cachePath = GetIndexCachePath(normalizedRoot);
-            var reindex = string.Equals(
-                Environment.GetEnvironmentVariable("CRAZIIEMU_AMPR_REINDEX"),
-                "1",
-                StringComparison.Ordinal);
-
-            if (!reindex &&
-                cachePath is not null &&
-                TryLoadIndexCache(normalizedRoot, cachePath, out var cachedCount))
+        try
+        {
+            var cachePathV3 = GetIndexCachePath(normalizedRoot, version: 3);
+            var cachePathV2 = GetIndexCachePath(normalizedRoot, version: 2);
+            if (TryLoadIndexCache(normalizedRoot, cachePathV3, preferV3: true, out var cachedFiles))
             {
-                _indexedApp0Root = normalizedRoot;
-                _indexingApp0Root = null;
+                lock (_indexGate)
+                {
+                    _indexedApp0Root = normalizedRoot;
+                }
+
                 Console.Error.WriteLine(
                     $"[LOADER][INFO] ampr.app0_index_cache_hit root={normalizedRoot} " +
-                    $"files={cachedCount} ids={cachedCount * 4} elapsed_ms={timer.ElapsedMilliseconds}");
+                    $"files={cachedFiles} ids={_hostPathsById.Count} " +
+                    $"elapsed_ms={stopwatch.Elapsed.TotalMilliseconds:F1}");
                 return;
             }
 
-            _indexingApp0Root = normalizedRoot;
-            var indexedFiles = 0;
+            if (TryLoadIndexCache(normalizedRoot, cachePathV2, preferV3: false, out cachedFiles))
+            {
+                lock (_indexGate)
+                {
+                    _indexedApp0Root = normalizedRoot;
+                }
+
+                // Promote v2 (rehash-on-load) to v3 (precomputed ids) so the
+                // next boot skips the Rosetta FNV storm.
+                TrySaveIndexCache(normalizedRoot, cachePathV3, cachedFiles);
+                Console.Error.WriteLine(
+                    $"[LOADER][INFO] ampr.app0_index_cache_hit root={normalizedRoot} " +
+                    $"files={cachedFiles} ids={_hostPathsById.Count} " +
+                    $"elapsed_ms={stopwatch.Elapsed.TotalMilliseconds:F1} upgraded=v3");
+                return;
+            }
+
+            var relatives = new List<string>(256 * 1024);
             try
             {
-                var files = Directory.EnumerateFiles(
-                    normalizedRoot,
-                    "*",
-                    new EnumerationOptions
-                    {
-                        RecurseSubdirectories = true,
-                        MatchCasing = MatchCasing.CaseInsensitive,
-                        IgnoreInaccessible = true,
-                        AttributesToSkip = FileAttributes.ReparsePoint,
-                    });
-
-                var rootLength = normalizedRoot.Length;
-                if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar) &&
-                    !normalizedRoot.EndsWith(Path.AltDirectorySeparatorChar))
+                foreach (var hostPath in Directory.EnumerateFiles(
+                             normalizedRoot,
+                             "*",
+                             SearchOption.AllDirectories))
                 {
-                    rootLength++;
-                }
-
-                foreach (var hostPath in files)
-                {
-                    if (hostPath.Length <= rootLength)
+                    var relative = Path.GetRelativePath(normalizedRoot, hostPath)
+                        .Replace('\\', '/');
+                    if (string.IsNullOrEmpty(relative) ||
+                        relative.StartsWith("..", StringComparison.Ordinal))
                     {
                         continue;
                     }
 
-                    var relative = hostPath[rootLength..].Replace('\\', '/');
-                    if (relative.StartsWith("sce_sys/", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    RegisterApp0Relative(relative, hostPath);
-                    indexedFiles++;
-                }
-
-                _indexedApp0Root = normalizedRoot;
-                Console.Error.WriteLine(
-                    $"[LOADER][INFO] ampr.app0_indexed root={normalizedRoot} " +
-                    $"files={indexedFiles} ids={indexedFiles * 4} elapsed_ms={timer.Elapsed.TotalMilliseconds:F1}");
-
-                if (cachePath is not null && indexedFiles > 0)
-                {
-                    TrySaveIndexCache(normalizedRoot, cachePath, indexedFiles);
+                    relatives.Add(relative);
                 }
             }
-            finally
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // The walk is an opportunistic warm-up reached synchronously from
+                // sceAmprCommandBufferConstructor; a dump that moves or a mount
+                // that hiccups must not fault the guest export. The background
+                // preload already swallows this. Leave the root unindexed so a
+                // later call retries.
+                Console.Error.WriteLine(
+                    $"[LOADER][WARN] ampr.app0_index_walk_failed root={normalizedRoot}: {exception.Message}");
+                return;
+            }
+
+            // Hash + dictionary fill dominates under Rosetta once the walk is
+            // done; parallelize across cores without re-walking the tree.
+            Parallel.ForEach(
+                relatives,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount - 1),
+                },
+                relative =>
+                {
+                    var hostPath = Path.Combine(normalizedRoot, relative.Replace('/', Path.DirectorySeparatorChar));
+                    RegisterApp0Relative(relative, hostPath);
+                });
+
+            lock (_indexGate)
+            {
+                _indexedApp0Root = normalizedRoot;
+            }
+
+            TrySaveIndexCache(normalizedRoot, cachePathV3, relatives.Count);
+            Console.Error.WriteLine(
+                $"[LOADER][INFO] ampr.app0_indexed root={normalizedRoot} " +
+                $"files={relatives.Count} ids={_hostPathsById.Count} " +
+                $"elapsed_ms={stopwatch.Elapsed.TotalMilliseconds:F1}");
+        }
+        finally
+        {
+            lock (_indexGate)
             {
                 _indexingApp0Root = null;
+                Monitor.PulseAll(_indexGate);
             }
         }
     }
 
+    /// <summary>
+    /// Registers the four Insomniac path aliases for one app0-relative file
+    /// without allocating intermediate guest-path strings.
+    /// </summary>
     private static void RegisterApp0Relative(string relative, string hostPath)
     {
-        var dollar = ComputeApp0AliasIds(relative, out var app0Slash, out var app0, out var bare);
-        _hostPathsById[dollar] = hostPath;
-        _hostPathsById[app0Slash] = hostPath;
-        _hostPathsById[app0] = hostPath;
-        _hostPathsById[bare] = hostPath;
+        // "$/" + relative
+        Publish(FnvContinueAscii(FnvContinueAscii(OffsetBasis, (byte)'$'), (byte)'/'), relative, hostPath);
+        // "/app0/" + relative
+        Publish(FnvContinueAsciiPrefix(OffsetBasis, "/app0/"u8), relative, hostPath);
+        // "app0/" + relative
+        Publish(FnvContinueAsciiPrefix(OffsetBasis, "app0/"u8), relative, hostPath);
+        // bare relative
+        Publish(OffsetBasis, relative, hostPath);
     }
 
-    private static bool TryGetApp0Relative(string guestPath, out string relative)
+    private static void Publish(uint hash, string relative, string hostPath)
     {
-        var normalized = guestPath.Replace('\\', '/');
-        if (normalized.StartsWith("$/", StringComparison.Ordinal))
-        {
-            relative = normalized[2..];
-            return true;
-        }
-
-        if (normalized.StartsWith("/app0/", StringComparison.OrdinalIgnoreCase))
-        {
-            relative = normalized[6..];
-            return true;
-        }
-
-        if (normalized.StartsWith("app0/", StringComparison.OrdinalIgnoreCase))
-        {
-            relative = normalized[5..];
-            return true;
-        }
-
-        relative = string.Empty;
-        return false;
+        _hostPathsById[FnvContinueUtf8(hash, relative)] = hostPath;
     }
 
     internal static uint ComputeFileId(string guestPath)
     {
-        return FnvContinueUtf8(OffsetBasis, guestPath.Replace('\\', '/'));
+        return FnvContinueUtf8(OffsetBasis, guestPath);
     }
 
-    private static string? GetIndexCachePath(string normalizedRoot)
+    internal static IEnumerable<string> EnumerateApp0PathAliases(string guestPath)
     {
-        try
+        if (string.IsNullOrEmpty(guestPath))
         {
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (string.IsNullOrEmpty(appData))
-            {
-                return null;
-            }
-
-            var cacheDir = Path.Combine(appData, "CraziiEmu", "ampr-index");
-            Directory.CreateDirectory(cacheDir);
-
-            var rootHash = ComputeFileId(normalizedRoot);
-            return Path.Combine(cacheDir, $"app0-{rootHash:x8}.v3.idx");
+            yield break;
         }
-        catch
+
+        if (!TryGetApp0Relative(guestPath, out var relative) ||
+            string.IsNullOrEmpty(relative))
         {
-            return null;
+            yield break;
         }
+
+        yield return "$/" + relative;
+        yield return "/app0/" + relative;
+        yield return "app0/" + relative;
+        yield return relative;
+    }
+
+    private static bool TryGetApp0Relative(string guestPath, out string relative)
+    {
+        relative = string.Empty;
+        var normalized = guestPath.Replace('\\', '/');
+
+        if (normalized.StartsWith("$/", StringComparison.Ordinal))
+        {
+            relative = normalized[2..].TrimStart('/');
+            return relative.Length != 0;
+        }
+
+        if (normalized.StartsWith("/app0/", StringComparison.OrdinalIgnoreCase))
+        {
+            relative = normalized["/app0/".Length..].TrimStart('/');
+            return relative.Length != 0;
+        }
+
+        if (normalized.StartsWith("app0/", StringComparison.OrdinalIgnoreCase))
+        {
+            relative = normalized["app0/".Length..].TrimStart('/');
+            return relative.Length != 0;
+        }
+
+        // Bare relative paths are treated as app0-relative by ResolveGuestPath.
+        if (!normalized.StartsWith('/') &&
+            !Path.IsPathFullyQualified(guestPath))
+        {
+            relative = normalized.TrimStart('/');
+            return relative.Length != 0;
+        }
+
+        return false;
+    }
+
+    private static string GetIndexCachePath(string normalizedRoot, int version)
+    {
+        var overrideDir = Environment.GetEnvironmentVariable("CRAZIIEMU_AMPR_INDEX_CACHE");
+        var cacheDir = !string.IsNullOrWhiteSpace(overrideDir)
+            ? overrideDir
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CraziiEmu",
+                "ampr-index");
+        Directory.CreateDirectory(cacheDir);
+
+        // Distinct roots must not share a cache file. Folding case is only
+        // correct where the host filesystem folds it too.
+        var rootKey = OperatingSystem.IsWindows() ? normalizedRoot.ToLowerInvariant() : normalizedRoot;
+        var rootHash = ComputeFileId(rootKey);
+        return Path.Combine(cacheDir, $"app0-{rootHash:x8}.v{version}.idx");
     }
 
     private static bool TryLoadIndexCache(
         string normalizedRoot,
         string cachePath,
+        bool preferV3,
         out int fileCount)
     {
         fileCount = 0;
-        if (!File.Exists(cachePath))
-        {
-            return false;
-        }
-
         try
         {
+            if (!File.Exists(cachePath))
+            {
+                return false;
+            }
+
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("CRAZIIEMU_AMPR_REINDEX"),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             using var stream = File.OpenRead(cachePath);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
-
             var magic = reader.ReadUInt32();
             var version = reader.ReadUInt32();
             var isV3 = magic == CacheMagicV3 && version == CacheVersionV3;
             var isV2 = magic == CacheMagicV2 && version == CacheVersionV2;
-            if (!isV3 && !isV2)
+            if (preferV3)
+            {
+                if (!isV3)
+                {
+                    return false;
+                }
+            }
+            else if (!isV2)
             {
                 return false;
             }
@@ -313,6 +398,7 @@ public static class AmprFileRegistry
 
             if (isV3)
             {
+                // Precomputed FNV ids — no Rosetta hash storm on every boot.
                 var entries = new (string Relative, uint Id0, uint Id1, uint Id2, uint Id3)[expectedFiles];
                 for (var i = 0; i < expectedFiles; i++)
                 {
@@ -428,6 +514,7 @@ public static class AmprFileRegistry
                 foreach (var relative in relatives)
                 {
                     writer.Write(relative);
+                    // Mirror RegisterApp0Relative id order: $/ /app0/ app0/ bare.
                     writer.Write(ComputeApp0AliasIds(relative, out var id1, out var id2, out var id3));
                     writer.Write(id1);
                     writer.Write(id2);
@@ -462,6 +549,11 @@ public static class AmprFileRegistry
         return dollar;
     }
 
+    /// <summary>
+    /// Cheap dump fingerprint. Full-tree walks are too expensive for cache
+    /// validation; param.json changes with title updates. Force a rebuild with
+    /// CRAZIIEMU_AMPR_REINDEX=1 after manual dump edits.
+    /// </summary>
     private static long GetParamJsonWriteTicks(string normalizedRoot)
     {
         try
@@ -501,6 +593,8 @@ public static class AmprFileRegistry
 
     private static uint FnvContinueUtf8(uint hash, string text)
     {
+        // Game asset paths are overwhelmingly ASCII; avoid Encoding.GetBytes
+        // allocations on the 223k-file DeS index hot path.
         Span<byte> utf8Scratch = stackalloc byte[4];
         for (var i = 0; i < text.Length; i++)
         {

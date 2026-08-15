@@ -121,9 +121,6 @@ public static class ShareExports
         return ctx.SetReturn(0);
     }
 
-    [SysAbiExport(Nid = "7QZtURYnXG4", ExportName = "sceShareSetContentParam", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libSceShareUtility")]
-    public static int ShareSetContentParamUtility(CpuContext ctx) => ShareSetContentParam(ctx);
-
     [SysAbiExport(Nid = "ORspsWDXPps", ExportName = "sceShareSetContentParamForApplicationTitle", Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libSceShare")]
     public static int ShareSetContentParamForApplicationTitle(CpuContext ctx)
     {

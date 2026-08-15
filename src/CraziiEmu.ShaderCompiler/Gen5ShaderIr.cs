@@ -193,7 +193,8 @@ public sealed record Gen5GlobalMemoryControl(
     uint ScalarAddress,
     int OffsetBytes,
     bool Glc,
-    bool Slc) : Gen5InstructionControl;
+    bool Slc,
+    bool UsesFlatAddress = false) : Gen5InstructionControl;
 
 public sealed record Gen5BufferMemoryControl(
     uint DwordCount,
@@ -302,6 +303,12 @@ public sealed record Gen5GlobalMemoryBinding(
     public bool WriteBackToGuest { get; set; } = true;
 }
 
+// One attribute per distinct guest stream view. AliasPcs carries the other
+// fetch instructions that read the same view: uber-shaders fetch a stream from
+// every material branch, and the scalar evaluator visits one instruction on
+// several CFG paths. Both must resolve to this binding's single location,
+// because Metal caps a vertex function at 31 attributes and one location per
+// fetch instruction overruns that on UE's larger vertex shaders.
 public sealed record Gen5VertexInputBinding(
     uint Pc,
     uint Location,
@@ -313,7 +320,9 @@ public sealed record Gen5VertexInputBinding(
     uint OffsetBytes,
     byte[] Data,
     int DataLength,
-    bool DataPooled);
+    bool DataPooled,
+    bool PerInstance = false,
+    IReadOnlyList<uint>? AliasPcs = null);
 
 public sealed record Gen5ShaderEvaluation(
     IReadOnlyList<uint> InitialScalarRegisters,

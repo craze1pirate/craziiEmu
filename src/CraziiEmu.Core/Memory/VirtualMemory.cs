@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.Core.Loader;
+using CraziiEmu.HLE;
 
 namespace CraziiEmu.Core.Memory;
 
@@ -94,8 +95,14 @@ public sealed class VirtualMemory : IVirtualMemory
             }
 
             CopyToRegions(virtualAddress, source, regionIndex);
-            return true;
         }
+
+        if (GuestWriteWatch.Armed)
+        {
+            GuestWriteWatch.Check(virtualAddress, source);
+        }
+
+        return true;
     }
 
     private bool TryValidateRange(

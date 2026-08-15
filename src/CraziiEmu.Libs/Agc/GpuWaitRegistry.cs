@@ -640,15 +640,15 @@ internal static class GpuWaitRegistry
     // Under orphan force-submit, producers can run ahead of waiter
     // registration and pass an equal-compare value before it's ever seen.
     // Treat == as "reached or passed" only in that mode, so other titles
-    // keep exact hardware semantics. SHARPEMU_GPU_WAIT_EQ_EXACT=1 restores
+    // keep exact hardware semantics. CRAZIIEMU_GPU_WAIT_EQ_EXACT=1 restores
     // strict equality for A/B.
     private static readonly bool _equalCompareExact =
         string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_GPU_WAIT_EQ_EXACT"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_WAIT_EQ_EXACT"),
             "1",
             StringComparison.Ordinal) ||
         !string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_FORCE_SUBMIT_ORPHAN_PREAMBLES"),
             "1",
             StringComparison.Ordinal);
 

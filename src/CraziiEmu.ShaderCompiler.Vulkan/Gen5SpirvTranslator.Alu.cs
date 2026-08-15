@@ -904,6 +904,22 @@ public static partial class Gen5SpirvTranslator
                         width);
                     break;
                 }
+                case "VBfeI32":
+                {
+                    // Same extract as VBfeU32 but sign-extended from the top bit
+                    // of the extracted field, so the result type must be signed
+                    // and bitcast back for storage.
+                    var width = BitwiseAnd(GetRawSource(instruction, 2), UInt(31));
+                    result = Bitcast(
+                        _uintType,
+                        _module.AddInstruction(
+                            SpirvOp.BitFieldSExtract,
+                            _intType,
+                            Bitcast(_intType, GetRawSource(instruction, 0)),
+                            BitwiseAnd(GetRawSource(instruction, 1), UInt(31)),
+                            width));
+                    break;
+                }
                 case "VBfiB32":
                 {
                     var mask = GetRawSource(instruction, 0);
@@ -954,22 +970,22 @@ public static partial class Gen5SpirvTranslator
                 case "VPkMulF16":
                 case "VPkMinF16":
                 case "VPkMaxF16":
+                case "VPkFmaF16":
                     if (!TryEmitPackedF16(instruction, out result, out error))
                     {
                         return false;
                     }
 
                     break;
-                case "VPkFmaF16":
-                    // Deliberately loud: a fused f16 FMA rounds the product+add once,
-                    // whereas doing the multiply-add in f32 and rounding to f16 at the
-                    // end double-rounds. Concrete miss: fma(0x4100, 0x7522, 0x04EA) is
-                    // 0x7A6B fused but 0x7A6A via f32. Exact emulation (round-to-odd
-                    // f32 product then RNE pack) is a planned follow-up slice.
-                    error =
-                        $"unsupported vop3p opcode {instruction.Opcode} " +
-                        "(fused f16 FMA requires single-rounding; deferred to a later slice)";
-                    return false;
+                case "VFmaMixF32":
+                case "VFmaMixloF16":
+                case "VFmaMixhiF16":
+                    if (!TryEmitFmaMix(instruction, destination, out result, out error))
+                    {
+                        return false;
+                    }
+
+                    break;
                 default:
                     error = $"unsupported vector opcode {instruction.Opcode}";
                     return false;
@@ -1009,8 +1025,9 @@ public static partial class Gen5SpirvTranslator
         // even. For add and mul this is bit-exact to a true f16 op (the f32 result
         // rounds losslessly to f16 by the double-rounding theorem; a f16 product even
         // fits in f32 exactly). min/max carry no rounding, so they are exact once the
-        // conversions are. v_pk_fma_f16 is intentionally not routed here because a
-        // fused f16 FMA cannot be reproduced by an f32 multiply-add plus a pack.
+        // conversions are. v_pk_fma_f16 cannot be reproduced by a plain f32
+        // multiply-add plus a pack (that double-rounds), so it goes through the
+        // round-to-odd sequence in EmitPackedF16FusedMultiplyAdd instead.
         private bool TryEmitPackedF16(
             Gen5ShaderInstruction instruction,
             out uint result,
@@ -1024,13 +1041,8 @@ public static partial class Gen5SpirvTranslator
                 return false;
             }
 
-            if (control.Clamp)
-            {
-                error = $"unsupported vop3p modifiers (clamp) for {instruction.Opcode}";
-                return false;
-            }
-
-            for (var index = 0; index < 2; index++)
+            var sourceCount = instruction.Opcode == "VPkFmaF16" ? 3 : 2;
+            for (var index = 0; index < sourceCount; index++)
             {
                 var source = instruction.Sources[index];
                 if (source.Kind is not (Gen5OperandKind.VectorRegister or Gen5OperandKind.ScalarRegister))
@@ -1047,7 +1059,112 @@ public static partial class Gen5SpirvTranslator
             return true;
         }
 
+        // V_FMA_MIX_F32 / _MIXLO_F16 / _MIXHI_F16 (VOP3P opcodes 0x20 / 0x21 /
+        // 0x22). Unlike the packed v_pk_* ops these compute a single f32
+        // fma(a, b, c): each of the three sources is *independently* read as
+        // either a full f32 register/constant or one f16 half widened to f32,
+        // selected per operand by op_sel_hi (read as f16 when set) and op_sel
+        // (which half feeds the f32). For the mix ops the VOP3P neg_hi field is
+        // the absolute-value modifier and neg negates, applied abs-then-neg to
+        // match the hardware and shadPS4's GetSrcMix. _MIXLO / _MIXHI round the
+        // f32 result back to f16 and write it into the low / high 16 bits of
+        // vdst, leaving the other half intact.
+        private bool TryEmitFmaMix(
+            Gen5ShaderInstruction instruction,
+            uint destination,
+            out uint result,
+            out string error)
+        {
+            result = 0;
+            error = string.Empty;
+            if (instruction.Control is not Gen5Vop3pControl control)
+            {
+                error = $"missing vop3p control for {instruction.Opcode}";
+                return false;
+            }
+
+            var product = Bitcast(
+                _uintType,
+                Ext(
+                    50,
+                    _floatType,
+                    EmitFmaMixOperand(instruction, control, 0),
+                    EmitFmaMixOperand(instruction, control, 1),
+                    EmitFmaMixOperand(instruction, control, 2)));
+            if (control.Clamp)
+            {
+                product = EmitClampToUnitInterval(product);
+            }
+
+            if (instruction.Opcode == "VFmaMixF32")
+            {
+                result = product;
+                return true;
+            }
+
+            // _MIXLO / _MIXHI: narrow to f16 and merge into one half of vdst.
+            var half = EmitFloatToHalf(product);
+            var existing = LoadV(destination);
+            result = instruction.Opcode == "VFmaMixloF16"
+                ? BitwiseOr(BitwiseAnd(existing, UInt(0xFFFF_0000)), half)
+                : BitwiseOr(
+                    BitwiseAnd(existing, UInt(0x0000_FFFF)),
+                    ShiftLeftLogical(half, UInt(16)));
+            return true;
+        }
+
+        // Reads one V_FMA_MIX source as an f32. op_sel_hi selects whether a
+        // register operand is taken as an f16 (the half picked by op_sel, widened
+        // exactly to f32) or as a full f32; inline constants are always f32. The
+        // per-operand neg_hi bit takes the absolute value and neg negates, in that
+        // order (abs-then-neg), reusing the VOP3P modifier fields the way the mix
+        // ops define them rather than the packed low/high-lane meaning.
+        private uint EmitFmaMixOperand(
+            Gen5ShaderInstruction instruction,
+            Gen5Vop3pControl control,
+            int index)
+        {
+            var source = instruction.Sources[index];
+            var readAsHalf =
+                ((control.OpSelHiMask >> index) & 1) != 0 &&
+                source.Kind is Gen5OperandKind.VectorRegister or Gen5OperandKind.ScalarRegister;
+
+            uint value;
+            if (readAsHalf)
+            {
+                var raw = GetRawSource(instruction, index);
+                var half = ((control.OpSelMask >> index) & 1) != 0
+                    ? ShiftRightLogical(raw, UInt(16))
+                    : raw;
+                value = Bitcast(_floatType, EmitHalfToFloat(half));
+            }
+            else
+            {
+                value = GetFloatSource(instruction, index);
+            }
+
+            if (((control.NegHiMask >> index) & 1) != 0)
+            {
+                value = Ext(4, _floatType, value);
+            }
+
+            if (((control.NegLoMask >> index) & 1) != 0)
+            {
+                value = _module.AddInstruction(SpirvOp.FNegate, _floatType, value);
+            }
+
+            return value;
+        }
+
         // Computes one result lane (low or high) as a packed 16-bit f16 value.
+        // The op runs in f32 and its result is narrowed back to f16 exactly (see
+        // EmitFloatToHalf). When the clamp modifier is set the pre-narrowing f32
+        // value is saturated to [0, 1] first; because 0.0 and 1.0 are exact in both
+        // f32 and f16 and the clamp is monotonic, clamping before the narrowing
+        // gives the same f16 the hardware produces by clamping the f16 result. For
+        // the fused multiply-add the pre-narrowing value is the round-to-odd f32
+        // from EmitPackedF16FusedMultiplyAdd, and round-to-odd preserves that
+        // equivalence through the final round-to-nearest-even.
         private uint EmitPackedF16Lane(
             Gen5ShaderInstruction instruction,
             Gen5Vop3pControl control,
@@ -1055,15 +1172,113 @@ public static partial class Gen5SpirvTranslator
         {
             var left = EmitPackedF16Operand(instruction, control, 0, highLane);
             var right = EmitPackedF16Operand(instruction, control, 1, highLane);
-            var value = instruction.Opcode switch
+            uint value;
+            if (instruction.Opcode == "VPkFmaF16")
             {
-                "VPkAddF16" => _module.AddInstruction(SpirvOp.FAdd, _floatType, left, right),
-                "VPkMulF16" => _module.AddInstruction(SpirvOp.FMul, _floatType, left, right),
-                "VPkMinF16" => EmitPackedF16MinMax(left, right, isMax: false),
-                "VPkMaxF16" => EmitPackedF16MinMax(left, right, isMax: true),
-                _ => left,
-            };
-            return EmitFloatToHalf(Bitcast(_uintType, value));
+                var addend = EmitPackedF16Operand(instruction, control, 2, highLane);
+                value = EmitPackedF16FusedMultiplyAdd(left, right, addend);
+            }
+            else
+            {
+                value = Bitcast(_uintType, instruction.Opcode switch
+                {
+                    "VPkAddF16" => _module.AddInstruction(SpirvOp.FAdd, _floatType, left, right),
+                    "VPkMulF16" => _module.AddInstruction(SpirvOp.FMul, _floatType, left, right),
+                    "VPkMinF16" => EmitPackedF16MinMax(left, right, isMax: false),
+                    "VPkMaxF16" => EmitPackedF16MinMax(left, right, isMax: true),
+                    _ => left,
+                });
+            }
+
+            if (control.Clamp)
+            {
+                value = EmitClampToUnitInterval(value);
+            }
+
+            return EmitFloatToHalf(value);
+        }
+
+        // Saturates an f32 bit pattern to [0, 1] the way the VOP3P clamp modifier
+        // does: below 0 (and NaN, since the ordered compare is false for it) becomes
+        // 0, above 1 becomes 1. Ordered compares match the hardware's NaN-to-zero
+        // behaviour without a separate IsNan test.
+        private uint EmitClampToUnitInterval(uint valueBits)
+        {
+            var value = Bitcast(_floatType, valueBits);
+            var aboveZero = _module.AddInstruction(SpirvOp.FOrdGreaterThan, _boolType, value, Float(0));
+            var lowerBounded = _module.AddInstruction(SpirvOp.Select, _floatType, aboveZero, value, Float(0));
+            var belowOne = _module.AddInstruction(SpirvOp.FOrdLessThan, _boolType, lowerBounded, Float(1));
+            var clamped = _module.AddInstruction(SpirvOp.Select, _floatType, belowOne, lowerBounded, Float(1));
+            return Bitcast(_uintType, clamped);
+        }
+
+        // Fused f16 multiply-add with a single rounding, emulated in f32 without the
+        // Float16 capability. The f32 product of two widened f16 values is exact
+        // (11-bit significands, and the exponent stays inside the f32 normal range:
+        // any non-zero product magnitude is in [2^-48, 2^33]), so only the addition
+        // rounds. An f32 add then an f16 pack would round twice; instead the add is
+        // corrected to round-to-odd, which a following round-to-nearest-even pack
+        // turns into the exactly-once-rounded fused result (innocuous double rounding
+        // holds because f32 carries 24 significand bits >= 11 + 2).
+        //
+        // sum = RN(product + addend); Knuth's 2Sum recovers the exact residual
+        // (product + addend) - sum from four more RN ops. 2Sum is exact for any two
+        // finite f32 inputs; no intermediate here can overflow (|product| < 2^33,
+        // |addend| < 2^16) and none can enter the f32 subnormal range (every finite
+        // value in play is a multiple of 2^-48 by construction), so implementation
+        // f32 denorm-flush modes never see a denormal. If the residual says the sum
+        // was inexact and the sum's significand is even, step one ulp towards the
+        // true value: consecutive floats have consecutive sign-magnitude encodings,
+        // so that neighbour is the enclosing float with the odd significand.
+        //
+        // Inf/NaN inputs make the residual NaN (e.g. sum - addend = Inf - Inf); the
+        // ordered compare below is then false and the IEEE sum passes through
+        // unchanged. A residual of zero also covers the exact-sum case, where the
+        // parity fix must not fire. Returns the round-to-odd f32 bit pattern.
+        private uint EmitPackedF16FusedMultiplyAdd(uint left, uint right, uint addend)
+        {
+            var product = EmitPreciseFloat(SpirvOp.FMul, left, right);
+            var sum = EmitPreciseFloat(SpirvOp.FAdd, product, addend);
+
+            var productPart = EmitPreciseFloat(SpirvOp.FSub, sum, addend);
+            var addendPart = EmitPreciseFloat(SpirvOp.FSub, sum, productPart);
+            var productError = EmitPreciseFloat(SpirvOp.FSub, product, productPart);
+            var addendError = EmitPreciseFloat(SpirvOp.FSub, addend, addendPart);
+            var residual = EmitPreciseFloat(SpirvOp.FAdd, productError, addendError);
+
+            var sumBits = Bitcast(_uintType, sum);
+            var residualBits = Bitcast(_uintType, residual);
+            var inexact = _module.AddInstruction(
+                SpirvOp.FOrdNotEqual, _boolType, residual, Float(0));
+            var evenSignificand = Equal(BitwiseAnd(sumBits, UInt(1)), 0);
+            var adjust = _module.AddInstruction(
+                SpirvOp.LogicalAnd, _boolType, inexact, evenSignificand);
+
+            // Residual sign relative to the sum picks the step direction: same sign
+            // means the true value lies away from zero (encoding + 1), opposite sign
+            // means towards zero (encoding - 1). The sum cannot be zero here (any
+            // inexact sum has magnitude >= 2^-48) and cannot be the largest finite
+            // value (its significand is odd), so the step never crosses zero or Inf.
+            var towardZero = IsNotZero(
+                BitwiseAnd(BitwiseXor(sumBits, residualBits), UInt(0x8000_0000)));
+            var stepped = SelectU(
+                towardZero,
+                ISubU(sumBits, UInt(1)),
+                IAdd(sumBits, UInt(1)));
+            return SelectU(adjust, stepped, sumBits);
+        }
+
+        // A float op the driver must evaluate exactly as written. The 2Sum
+        // residual above is error-free only op by op; without NoContraction
+        // driver compilers fold the sequence (e.g. contract product+sum into an
+        // f32 fma and simplify the rebuilt terms), collapsing the residual to
+        // zero. Observed on AMD RDNA3 Windows: the pinned midpoint case decays
+        // to the double-rounded result unless every op in the chain is marked.
+        private uint EmitPreciseFloat(SpirvOp operation, uint left, uint right)
+        {
+            var value = _module.AddInstruction(operation, _floatType, left, right);
+            _module.AddDecoration(value, SpirvDecoration.NoContraction);
+            return value;
         }
 
         // Reads source `index`, selects the half feeding this lane (op_sel / op_sel_hi),
@@ -1410,10 +1625,10 @@ public static partial class Gen5SpirvTranslator
             if (_state.Program.Address == 0x0000000500781200ul &&
                 ((instruction.Pc == 0x4D4 &&
                   Environment.GetEnvironmentVariable(
-                      "CRAZIIEMU_FORCE_TITLE_COMPARE_4D4") == "1") ||
+                      "SHARPEMU_FORCE_TITLE_COMPARE_4D4") == "1") ||
                  (instruction.Pc == 0x540 &&
                   Environment.GetEnvironmentVariable(
-                      "CRAZIIEMU_FORCE_TITLE_COMPARE_540") == "1")))
+                      "SHARPEMU_FORCE_TITLE_COMPARE_540") == "1")))
             {
                 condition = _module.ConstantBool(true);
             }
@@ -2508,20 +2723,31 @@ public static partial class Gen5SpirvTranslator
 
                 if (applySdwaIntegerModifiers)
                 {
+                    // SDWA ABS/NEG are floating-point sign-bit modifiers even on
+                    // a bit-move opcode: ABS clears the sign bit, NEG flips it.
+                    // Two's-complement negating the raw bits instead turns 1.0
+                    // into -4.0 and -3.0 into 1.5, which silently skews every
+                    // pass that y-flips its clip position with an SDWA-negated
+                    // V_MOV_B32 - the whole of UE's DrawRectangle.
+                    var signBit = selector switch
+                    {
+                        <= 3 => 0x80u,
+                        4 or 5 => 0x8000u,
+                        _ => 0x80000000u,
+                    };
+
                     if ((sdwa.AbsoluteMask & (1u << sourceIndex)) != 0)
                     {
-                        value = Bitcast(
-                            _uintType,
-                            Ext(5, _intType, Bitcast(_intType, value)));
+                        value = BitwiseAnd(value, UInt(~signBit));
                     }
 
                     if ((sdwa.NegateMask & (1u << sourceIndex)) != 0)
                     {
                         value = _module.AddInstruction(
-                            SpirvOp.ISub,
+                            SpirvOp.BitwiseXor,
                             _uintType,
-                            UInt(0),
-                            value);
+                            value,
+                            UInt(signBit));
                     }
                 }
             }

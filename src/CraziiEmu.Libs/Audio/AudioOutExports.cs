@@ -5,6 +5,7 @@
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
@@ -12,8 +13,17 @@ namespace CraziiEmu.Libs.Audio;
 
 public static class AudioOutExports
 {
+    private const int AudioOutOutputParamSize = 16;
+    private const int AudioOutMaximumOutputCount = 25;
+
+    internal const int AudioOutErrorInvalidPort = unchecked((int)0x80260003);
+    internal const int AudioOutErrorInvalidPointer = unchecked((int)0x80260004);
+    internal const int AudioOutErrorPortFull = unchecked((int)0x80260005);
+    internal const int AudioOutErrorInvalidSize = unchecked((int)0x80260006);
+
     private static readonly ConcurrentDictionary<int, PortState> Ports = new();
     private static int _nextPortHandle;
+    private static Func<uint, IHostAudioStream?>? _streamFactoryForTests;
 
     // Diagnostic: confirm sceAudioOutOutput is actually called and whether the
     // guest submits real samples or silence. Gated so it costs nothing when off.
@@ -35,6 +45,7 @@ public static class AudioOutExports
             int channels,
             int bytesPerSample,
             bool isFloat,
+            bool preservesGuestFormat,
             IHostAudioStream? backend)
         {
             UserId = userId;
@@ -45,6 +56,7 @@ public static class AudioOutExports
             Channels = channels;
             BytesPerSample = bytesPerSample;
             IsFloat = isFloat;
+            PreservesGuestFormat = preservesGuestFormat;
             Backend = backend;
         }
 
@@ -56,7 +68,9 @@ public static class AudioOutExports
         public int Channels { get; }
         public int BytesPerSample { get; }
         public bool IsFloat { get; }
+        public bool PreservesGuestFormat { get; }
         public IHostAudioStream? Backend { get; }
+        public object SubmissionGate { get; } = new();
         public volatile float Volume = 1.0f;
         public int BufferByteLength =>
             checked((int)BufferLength * Channels * BytesPerSample);
@@ -84,7 +98,24 @@ public static class AudioOutExports
             }
         }
 
-        public void Dispose() => Backend?.Dispose();
+        public void Dispose()
+        {
+            lock (SubmissionGate)
+            {
+                Backend?.Dispose();
+            }
+        }
+    }
+
+    private readonly record struct OutputDescriptor(int Handle, ulong SourceAddress);
+
+    private struct ResolvedOutput
+    {
+        public int Handle;
+        public ulong SourceAddress;
+        public PortState Port;
+        public byte[]? HostBuffer;
+        public int HostBufferLength;
     }
 
     [SysAbiExport(
@@ -113,12 +144,33 @@ public static class AudioOutExports
         }
 
         IHostAudioStream? backend = null;
+        var preservesGuestFormat = false;
         string backendName;
         try
         {
-            var audio = HostPlatform.Current.Audio;
-            backend = audio.OpenStereoPcm16Stream(frequency);
-            backendName = audio.BackendName;
+            var streamFactory = Volatile.Read(ref _streamFactoryForTests);
+            if (streamFactory is not null)
+            {
+                backend = streamFactory(frequency);
+                backendName = "test";
+            }
+            else
+            {
+                var audio = HostPlatform.Current.Audio;
+                if (audio is IHostPcmAudioOutput pcmAudio)
+                {
+                    backend = pcmAudio.OpenPcmStream(
+                        frequency,
+                        channels,
+                        isFloat ? HostPcmFormat.Float32 : HostPcmFormat.Signed16);
+                    preservesGuestFormat = true;
+                }
+                else
+                {
+                    backend = audio.OpenStereoPcm16Stream(frequency);
+                }
+                backendName = audio.BackendName;
+            }
         }
         catch (Exception exception)
         {
@@ -137,6 +189,7 @@ public static class AudioOutExports
             channels,
             bytesPerSample,
             isFloat,
+            preservesGuestFormat,
             backend);
         Console.Error.WriteLine(
             $"[LOADER][INFO] AudioOut port {handle}: {frequency} Hz, " +
@@ -176,6 +229,14 @@ public static class AudioOutExports
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
+        // Same rule as AudioOut2 PortGetState: never bulk-write onto the caller
+        // stack. Some titles place small locals next to the canary; a full
+        // SceAudioOutPortState write smashes it.
+        if (IsGuestStackAddress(stateAddress))
+        {
+            return ctx.SetReturn(0);
+        }
+
         // SceAudioOutPortState: report a connected primary output at full volume
         // so pacing/mixing code sees a live port. We do no host rerouting, so
         // rerouteCounter and flag stay zero.
@@ -191,6 +252,49 @@ public static class AudioOutExports
         }
 
         return ctx.SetReturn(0);
+    }
+
+    private static bool IsGuestStackAddress(ulong value) =>
+        value >= 0x0000_7FF0_0000_0000UL && value <= 0x0000_7FFF_FFFF_FFFFUL;
+
+    [SysAbiExport(
+        Nid = "w3PdaSTSwGE",
+        ExportName = "sceAudioOutOutputs",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceAudioOut")]
+    public static int AudioOutOutputs(CpuContext ctx)
+    {
+        var parameterAddress = ctx[CpuRegister.Rdi];
+        var outputCount = unchecked((uint)ctx[CpuRegister.Rsi]);
+        if (outputCount == 0 || outputCount > AudioOutMaximumOutputCount)
+        {
+            return ctx.SetReturn(AudioOutErrorPortFull);
+        }
+
+        if (parameterAddress == 0)
+        {
+            return ctx.SetReturn(AudioOutErrorInvalidPointer);
+        }
+
+        var count = checked((int)outputCount);
+        Span<byte> parameterBytes =
+            stackalloc byte[AudioOutMaximumOutputCount * AudioOutOutputParamSize];
+        parameterBytes = parameterBytes[..checked(count * AudioOutOutputParamSize)];
+        if (!ctx.Memory.TryRead(parameterAddress, parameterBytes))
+        {
+            return ctx.SetReturn(AudioOutErrorInvalidPointer);
+        }
+
+        Span<OutputDescriptor> descriptors = stackalloc OutputDescriptor[count];
+        for (var i = 0; i < count; i++)
+        {
+            var entry = parameterBytes.Slice(i * AudioOutOutputParamSize, AudioOutOutputParamSize);
+            descriptors[i] = new OutputDescriptor(
+                BinaryPrimitives.ReadInt32LittleEndian(entry),
+                BinaryPrimitives.ReadUInt64LittleEndian(entry[8..]));
+        }
+
+        return ctx.SetReturn(SubmitOutputs(ctx, descriptors));
     }
 
     [SysAbiExport(
@@ -226,16 +330,7 @@ public static class AudioOutExports
                 return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
             }
 
-            if (_traceOutput)
-            {
-                var n = Interlocked.Increment(ref _outputCount);
-                if (n <= 8 || n % 200 == 0)
-                {
-                    var peak = PeakAmplitude(source, port.IsFloat, port.BytesPerSample);
-                    Console.Error.WriteLine(
-                        $"[LOADER][TRACE] audioout.output#{n} handle={handle} bytes={source.Length} ch={port.Channels} float={port.IsFloat} vol={port.Volume:F2} peak={peak:F4} backend={(port.Backend is null ? "none" : "coreaudio")}");
-                }
-            }
+            TraceOutput(handle, port, source);
 
             if (port.Backend is null)
             {
@@ -243,18 +338,13 @@ public static class AudioOutExports
                 return ctx.SetReturn(0);
             }
 
-            var outputLength = checked((int)port.BufferLength * AudioPcmConversion.OutputFrameSize);
+            var outputLength = port.PreservesGuestFormat
+                ? port.BufferByteLength
+                : checked((int)port.BufferLength * AudioPcmConversion.OutputFrameSize);
             var output = ArrayPool<byte>.Shared.Rent(outputLength);
             try
             {
-                AudioPcmConversion.ConvertToStereoPcm16(
-                    source,
-                    output.AsSpan(0, outputLength),
-                    checked((int)port.BufferLength),
-                    port.Channels,
-                    port.BytesPerSample,
-                    port.IsFloat,
-                    port.Volume);
+                ConvertForHost(port, source, output.AsSpan(0, outputLength));
                 if (!port.Backend.Submit(output.AsSpan(0, outputLength)))
                 {
                     port.PaceSilence();
@@ -270,6 +360,196 @@ public static class AudioOutExports
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static int SubmitOutputs(CpuContext ctx, ReadOnlySpan<OutputDescriptor> descriptors)
+    {
+        var resolvedArray = ArrayPool<ResolvedOutput>.Shared.Rent(descriptors.Length);
+        var resolved = resolvedArray.AsSpan(0, descriptors.Length);
+        resolved.Clear();
+
+        Span<int> lockOrder = stackalloc int[descriptors.Length];
+        var acquiredLocks = 0;
+        try
+        {
+            uint bufferLength = 0;
+            for (var i = 0; i < descriptors.Length; i++)
+            {
+                var descriptor = descriptors[i];
+                for (var previous = 0; previous < i; previous++)
+                {
+                    if (resolved[previous].Handle == descriptor.Handle)
+                    {
+                        return AudioOutErrorInvalidPort;
+                    }
+                }
+
+                if (!Ports.TryGetValue(descriptor.Handle, out var port))
+                {
+                    return _shutdown ? 0 : AudioOutErrorInvalidPort;
+                }
+
+                if (i == 0)
+                {
+                    bufferLength = port.BufferLength;
+                }
+                else if (port.BufferLength != bufferLength)
+                {
+                    return AudioOutErrorInvalidSize;
+                }
+
+                resolved[i].Handle = descriptor.Handle;
+                resolved[i].SourceAddress = descriptor.SourceAddress;
+                resolved[i].Port = port;
+                lockOrder[i] = i;
+            }
+
+            // Every batch takes port locks in handle order. Two guest threads can
+            // submit overlapping batches in a different descriptor order without
+            // deadlocking each other.
+            for (var i = 1; i < lockOrder.Length; i++)
+            {
+                var index = lockOrder[i];
+                var position = i;
+                while (position > 0 &&
+                       resolved[lockOrder[position - 1]].Handle > resolved[index].Handle)
+                {
+                    lockOrder[position] = lockOrder[position - 1];
+                    position--;
+                }
+
+                lockOrder[position] = index;
+            }
+
+            for (; acquiredLocks < lockOrder.Length; acquiredLocks++)
+            {
+                Monitor.Enter(resolved[lockOrder[acquiredLocks]].Port.SubmissionGate);
+            }
+
+            // AudioOutClose removes the handle before waiting for SubmissionGate.
+            // Recheck after acquiring all gates so a close racing this batch cannot
+            // turn a validated submission into a write to a disposed backend.
+            for (var i = 0; i < resolved.Length; i++)
+            {
+                if (!Ports.TryGetValue(resolved[i].Handle, out var current) ||
+                    !ReferenceEquals(current, resolved[i].Port))
+                {
+                    return _shutdown ? 0 : AudioOutErrorInvalidPort;
+                }
+            }
+
+            // Stage every guest buffer before the first host submission. A bad
+            // pointer in a later descriptor therefore cannot partially enqueue the
+            // earlier ports.
+            for (var i = 0; i < resolved.Length; i++)
+            {
+                ref var output = ref resolved[i];
+                if (output.SourceAddress == 0)
+                {
+                    continue;
+                }
+
+                var sourceBuffer = ArrayPool<byte>.Shared.Rent(output.Port.BufferByteLength);
+                try
+                {
+                    var source = sourceBuffer.AsSpan(0, output.Port.BufferByteLength);
+                    if (!ctx.Memory.TryRead(output.SourceAddress, source))
+                    {
+                        return AudioOutErrorInvalidPointer;
+                    }
+
+                    TraceOutput(output.Handle, output.Port, source);
+
+                    output.HostBufferLength = output.Port.PreservesGuestFormat
+                        ? output.Port.BufferByteLength
+                        : checked((int)output.Port.BufferLength * AudioPcmConversion.OutputFrameSize);
+                    output.HostBuffer = ArrayPool<byte>.Shared.Rent(output.HostBufferLength);
+                    ConvertForHost(output.Port, source, output.HostBuffer.AsSpan(0, output.HostBufferLength));
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(sourceBuffer);
+                }
+            }
+
+            PortState? pacingPort = null;
+            for (var i = 0; i < resolved.Length; i++)
+            {
+                ref var output = ref resolved[i];
+                if (output.HostBuffer is null ||
+                    output.Port.Backend is null ||
+                    !output.Port.Backend.Submit(
+                        output.HostBuffer.AsSpan(0, output.HostBufferLength)))
+                {
+                    if (pacingPort is null ||
+                        HasLongerBufferDuration(output.Port, pacingPort))
+                    {
+                        pacingPort = output.Port;
+                    }
+                }
+            }
+
+            // A batch is one guest scheduling point. When one or more ports have
+            // no usable backend, pace once using the longest affected buffer rather
+            // than sleeping once per port.
+            pacingPort?.PaceSilence();
+            return checked((int)resolved[0].Port.BufferLength);
+        }
+        finally
+        {
+            for (var i = acquiredLocks - 1; i >= 0; i--)
+            {
+                Monitor.Exit(resolved[lockOrder[i]].Port.SubmissionGate);
+            }
+
+            for (var i = 0; i < resolved.Length; i++)
+            {
+                if (resolved[i].HostBuffer is { } hostBuffer)
+                {
+                    ArrayPool<byte>.Shared.Return(hostBuffer);
+                }
+            }
+
+            ArrayPool<ResolvedOutput>.Shared.Return(resolvedArray, clearArray: true);
+        }
+    }
+
+    private static bool HasLongerBufferDuration(PortState candidate, PortState current) =>
+        (ulong)candidate.BufferLength * current.Frequency >
+        (ulong)current.BufferLength * candidate.Frequency;
+
+    private static void ConvertForHost(PortState port, ReadOnlySpan<byte> source, Span<byte> destination)
+    {
+        if (port.PreservesGuestFormat)
+        {
+            AudioPcmConversion.CopyWithVolume(source, destination, port.IsFloat, port.Volume);
+            return;
+        }
+
+        AudioPcmConversion.ConvertToStereoPcm16(
+            source,
+            destination,
+            checked((int)port.BufferLength),
+            port.Channels,
+            port.BytesPerSample,
+            port.IsFloat,
+            port.Volume);
+    }
+
+    private static void TraceOutput(int handle, PortState port, ReadOnlySpan<byte> source)
+    {
+        if (!_traceOutput)
+        {
+            return;
+        }
+
+        var n = Interlocked.Increment(ref _outputCount);
+        if (n <= 8 || n % 200 == 0)
+        {
+            var peak = PeakAmplitude(source, port.IsFloat, port.BytesPerSample);
+            Console.Error.WriteLine(
+                $"[LOADER][TRACE] audioout.output#{n} handle={handle} bytes={source.Length} ch={port.Channels} float={port.IsFloat} vol={port.Volume:F2} peak={peak:F4} backend={(port.Backend is null ? "none" : "coreaudio")}");
         }
     }
 
@@ -361,6 +641,25 @@ public static class AudioOutExports
                 port.Dispose();
             }
         }
+    }
+
+    internal static void SetStreamFactoryForTests(Func<uint, IHostAudioStream?>? streamFactory) =>
+        Volatile.Write(ref _streamFactoryForTests, streamFactory);
+
+    internal static void ResetForTests()
+    {
+        foreach (var handle in Ports.Keys)
+        {
+            if (Ports.TryRemove(handle, out var port))
+            {
+                port.Dispose();
+            }
+        }
+
+        _nextPortHandle = 0;
+        _outputCount = 0;
+        Volatile.Write(ref _shutdown, false);
+        Volatile.Write(ref _streamFactoryForTests, null);
     }
 
     private static bool _shutdown;
