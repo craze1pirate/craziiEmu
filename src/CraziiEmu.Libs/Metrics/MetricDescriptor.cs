@@ -50,12 +50,13 @@ public class MetricDescriptor
     public void Update(double value)
     {
         var now = Stopwatch.GetTimestamp();
-        var elapsedTicks = now - _lastRefreshTimestamp;
-        
-        // Refresh interval throttling
-        if (elapsedTicks < RefreshInterval.Ticks)
+        if (_lastRefreshTimestamp != 0)
         {
-            return;
+            var elapsedSeconds = (double)(now - _lastRefreshTimestamp) / Stopwatch.Frequency;
+            if (elapsedSeconds < RefreshInterval.TotalSeconds)
+            {
+                return;
+            }
         }
 
         _lastRefreshTimestamp = now;

@@ -285,18 +285,7 @@ internal static class Bink2MovieBridge
         }
 
         var baseDirectory = AppContext.BaseDirectory;
-        if (OperatingSystem.IsMacOS())
-        {
-            yield return Path.Combine(baseDirectory, "libcraziiemu_bink2_bridge.dylib");
-        }
-        else if (OperatingSystem.IsWindows())
-        {
-            yield return Path.Combine(baseDirectory, "craziiemu_bink2_bridge.dll");
-        }
-        else
-        {
-            yield return Path.Combine(baseDirectory, "libcraziiemu_bink2_bridge.so");
-        }
+        yield return Path.Combine(baseDirectory, "craziiemu_bink2_bridge.dll");
     }
 
     private static void CloseActiveLocked()

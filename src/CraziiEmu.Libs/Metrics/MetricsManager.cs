@@ -48,6 +48,25 @@ public static class MetricsManager
 
     private static long _drawsInWindow;
     private static long _totalSpirvCompilations;
+    private static long _lastFrameTimestamp;
+    private static long _totalFrames;
+
+    public static void RecordFrame()
+    {
+        Interlocked.Increment(ref _totalFrames);
+        var now = Stopwatch.GetTimestamp();
+        var last = Interlocked.Exchange(ref _lastFrameTimestamp, now);
+        if (last != 0)
+        {
+            var deltaMs = (double)(now - last) * 1000.0 / Stopwatch.Frequency;
+            if (deltaMs > 0.05 && deltaMs < 2000.0)
+            {
+                Frametime.Update(deltaMs);
+                var fps = 1000.0 / deltaMs;
+                Fps.Update(fps);
+            }
+        }
+    }
 
     public static void RecordDraw() => Interlocked.Increment(ref _drawsInWindow);
     public static long FlushDrawCount() => Interlocked.Exchange(ref _drawsInWindow, 0);

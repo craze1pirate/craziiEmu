@@ -56,8 +56,7 @@ public sealed partial class DirectExecutionBackend
         // Darwin the XMM area is still a zeroed scratch buffer - running this there would
         // silently compute a result from stale bytes and then discard whatever it "wrote", so
         // the recovery declines until that bridge exists.
-        return (OperatingSystem.IsWindows() || _posixXmmContextBridged) &&
-            TryRecoverSse4aExtractInsert(contextRecord, rip);
+        return TryRecoverSse4aExtractInsert(contextRecord, rip);
     }
 
     private unsafe bool TryRecoverMonitorxMwaitx(void* contextRecord, ulong rip)
@@ -98,8 +97,7 @@ public sealed partial class DirectExecutionBackend
 
     private unsafe bool TryRecoverSse4aExtractInsert(void* contextRecord, ulong rip)
     {
-        if (!OperatingSystem.IsWindows() && !_posixXmmContextBridged ||
-            !TryReadFaultingInstruction(rip, out var instruction))
+        if (!TryReadFaultingInstruction(rip, out var instruction))
         {
             return false;
         }

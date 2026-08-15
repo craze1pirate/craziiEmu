@@ -4,8 +4,6 @@
 
 namespace CraziiEmu.Libs.VideoOut;
 
-using CraziiEmu.Libs.Gpu.Metal;
-
 public enum HostWindowMode
 {
     Windowed,
@@ -60,10 +58,6 @@ public sealed record HostVideoOptions
 
 public static class HostVideoHost
 {
-    public static bool TryConfigureVideo(HostVideoOptions options)
-    {
-        var normalized = options.Normalize();
-        return VulkanVideoPresenter.TryConfigureVideo(normalized) &
-               MetalVideoPresenter.TryConfigureVideo(normalized);
-    }
+    public static bool TryConfigureVideo(HostVideoOptions options) =>
+        VulkanVideoPresenter.TryConfigureVideo(options.Normalize());
 }

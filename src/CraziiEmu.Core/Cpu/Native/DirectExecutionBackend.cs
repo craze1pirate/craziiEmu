@@ -775,11 +775,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private static readonly nint ImportGatewayPtr = ResolveWin64CallbackPtr(
 		Marshal.GetFunctionPointerForDelegate(ImportGatewayDelegateInstance));
 
-	// Emitted trampolines call managed callbacks with the Win64 ABI. On
-	// Windows the runtime already compiles them that way; on POSIX .NET they
-	// are SysV, so route through a Win64->SysV thunk.
-	private static nint ResolveWin64CallbackPtr(nint sysvPtr) =>
-		OperatingSystem.IsWindows() ? sysvPtr : PosixHostStubs.CreateWin64ToSysVThunk(sysvPtr);
+	private static nint ResolveWin64CallbackPtr(nint sysvPtr) => sysvPtr;
 
 	private static readonly nint RawVectoredHandlerPtrManaged =
 		Marshal.GetFunctionPointerForDelegate(RawVectoredHandlerDelegateInstance);
@@ -1080,15 +1076,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				throw new InvalidOperationException("Failed to resolve kernel32 thread timing functions");
 			}
 			_setEventAddress = kernel32 != 0 ? GetProcAddress(kernel32, "SetEvent") : 0;
-		}
-		else
-		{
-			// Win64-ABI-compatible helper stubs so the emitted call sites do
-			// not need to change per platform.
-			_tlsGetValueAddress = PosixHostStubs.TlsGetValueStubAddress;
-			_queryPerformanceCounterAddress = PosixHostStubs.QueryPerformanceCounterStubAddress;
-			_switchToThreadAddress = PosixHostStubs.SwitchToThreadStubAddress;
-			_sleepAddress = PosixHostStubs.SleepStubAddress;
 		}
 		_tlsBaseAddress = (nint)VirtualAlloc(null, 4096u, 12288u, 4u);
 		if (_tlsBaseAddress == 0)
@@ -6858,35 +6845,25 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	}
 
 
-	private static uint TlsAlloc() =>
-		OperatingSystem.IsWindows() ? Win32TlsAlloc() : PosixHostStubs.TlsAlloc();
+	private static uint TlsAlloc() => Win32TlsAlloc();
 
-	private static bool TlsFree(uint dwTlsIndex) =>
-		OperatingSystem.IsWindows() ? Win32TlsFree(dwTlsIndex) : PosixHostStubs.TlsFree(dwTlsIndex);
+	private static bool TlsFree(uint dwTlsIndex) => Win32TlsFree(dwTlsIndex);
 
-	private static bool TlsSetValue(uint dwTlsIndex, nint lpTlsValue) =>
-		OperatingSystem.IsWindows() ? Win32TlsSetValue(dwTlsIndex, lpTlsValue) : PosixHostStubs.TlsSetValue(dwTlsIndex, lpTlsValue);
+	private static bool TlsSetValue(uint dwTlsIndex, nint lpTlsValue) => Win32TlsSetValue(dwTlsIndex, lpTlsValue);
 
-	private static nint TlsGetValue(uint dwTlsIndex) =>
-		OperatingSystem.IsWindows() ? Win32TlsGetValue(dwTlsIndex) : PosixHostStubs.TlsGetValue(dwTlsIndex);
+	private static nint TlsGetValue(uint dwTlsIndex) => Win32TlsGetValue(dwTlsIndex);
 
-	private unsafe static void* AddVectoredExceptionHandler(uint first, IntPtr handler) =>
-		OperatingSystem.IsWindows() ? Win32AddVectoredExceptionHandler(first, handler) : null;
+	private unsafe static void* AddVectoredExceptionHandler(uint first, IntPtr handler) => Win32AddVectoredExceptionHandler(first, handler);
 
-	private unsafe static uint RemoveVectoredExceptionHandler(void* handle) =>
-		OperatingSystem.IsWindows() ? Win32RemoveVectoredExceptionHandler(handle) : 0u;
+	private unsafe static uint RemoveVectoredExceptionHandler(void* handle) => Win32RemoveVectoredExceptionHandler(handle);
 
-	private static IntPtr SetUnhandledExceptionFilter(IntPtr lpTopLevelExceptionFilter) =>
-		OperatingSystem.IsWindows() ? Win32SetUnhandledExceptionFilter(lpTopLevelExceptionFilter) : IntPtr.Zero;
+	private static IntPtr SetUnhandledExceptionFilter(IntPtr lpTopLevelExceptionFilter) => Win32SetUnhandledExceptionFilter(lpTopLevelExceptionFilter);
 
-	private static uint GetCurrentThreadId() =>
-		OperatingSystem.IsWindows() ? Win32GetCurrentThreadId() : PosixHostStubs.GetCurrentThreadId();
+	private static uint GetCurrentThreadId() => Win32GetCurrentThreadId();
 
-	private static nint GetCurrentThread() =>
-		OperatingSystem.IsWindows() ? Win32GetCurrentThread() : 0;
+	private static nint GetCurrentThread() => Win32GetCurrentThread();
 
-	private static nuint SetThreadAffinityMask(nint hThread, nuint dwThreadAffinityMask) =>
-		OperatingSystem.IsWindows() ? Win32SetThreadAffinityMask(hThread, dwThreadAffinityMask) : 1;
+	private static nuint SetThreadAffinityMask(nint hThread, nuint dwThreadAffinityMask) => Win32SetThreadAffinityMask(hThread, dwThreadAffinityMask);
 
 	private static nint OpenThread(uint dwDesiredAccess, bool bInheritHandle, uint dwThreadId) =>
 		OperatingSystem.IsWindows() ? Win32OpenThread(dwDesiredAccess, bInheritHandle, dwThreadId) : 0;
@@ -7018,13 +6995,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 
 		ClearGuestThreads();
-		if (ReferenceEquals(_posixSignalBackend, this))
-		{
-			// The signal handlers stay installed (they chain to the previous
-			// action when no backend is active), but must stop dispatching
-			// into a disposed backend.
-			_posixSignalBackend = null;
-		}
 		ClearImportHandlerTrampolines();
 		_importEntries = Array.Empty<ImportStubEntry>();
 		_runtimeSymbolsByName.Clear();

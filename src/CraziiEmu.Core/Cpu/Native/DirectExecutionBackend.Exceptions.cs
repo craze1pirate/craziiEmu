@@ -26,12 +26,6 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe void SetupExceptionHandler()
 	{
-		if (!OperatingSystem.IsWindows())
-		{
-			SetupPosixExceptionHandler();
-			return;
-		}
-
 		if (!string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_RAW_HANDLER"), "1", StringComparison.Ordinal))
 		{
 			_rawExceptionHandlerStub = CreateExceptionHandlerTrampoline(RawVectoredHandlerPtrManaged);

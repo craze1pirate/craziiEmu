@@ -773,35 +773,6 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         var requestedCursor = AlignUp(desiredAddress, effectiveAlignment);
         var cursor = GetAllocationSearchCursor(desiredAddress, requestedCursor, effectiveAlignment, executable);
 
-        // macOS needs alignment over-allocation; Linux uses exact-address search.
-        if (OperatingSystem.IsMacOS())
-        {
-            var reserveSize = effectiveAlignment > PageSize
-                ? alignedSize + effectiveAlignment
-                : alignedSize;
-            try
-            {
-                var posixAddress = AllocateAt(cursor, reserveSize, executable, allowAlternative: true);
-                if (posixAddress != 0)
-                {
-                    var alignedBase = AlignUp(posixAddress, effectiveAlignment);
-                    if (alignedBase + alignedSize <= posixAddress + reserveSize)
-                    {
-                        actualAddress = alignedBase;
-                        UpdateAllocationSearchCursor(desiredAddress, effectiveAlignment, executable, alignedBase + alignedSize);
-                        return true;
-                    }
-
-                    ReleaseUntrackedAllocation(posixAddress);
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
         for (var attempt = 0; attempt < 0x10000; attempt++)
         {
             if (cursor == 0 || ulong.MaxValue - cursor < alignedSize)

@@ -179,12 +179,7 @@ public static unsafe class GuestImageWriteTracker
             return;
         }
 
-        // VirtualProtect only belongs on VirtualAlloc/mmap pages. Warming on
-        // CRT heap memory makes neighbouring heap metadata read-only and
-        // crashes the process on Windows.
-        var scratch = OperatingSystem.IsWindows()
-            ? VirtualAlloc(0, 4096, MemCommit | MemReserve, PageReadWrite)
-            : (nint)NativeMemory.AllocZeroed(4096);
+        var scratch = VirtualAlloc(0, 4096, MemCommit | MemReserve, PageReadWrite);
         if (scratch == 0)
         {
             return;
@@ -203,14 +198,7 @@ public static unsafe class GuestImageWriteTracker
         }
         finally
         {
-            if (OperatingSystem.IsWindows())
-            {
-                _ = VirtualFree(scratch, 0, MemRelease);
-            }
-            else
-            {
-                NativeMemory.Free((void*)scratch);
-            }
+            _ = VirtualFree(scratch, 0, MemRelease);
         }
     }
 
@@ -785,31 +773,15 @@ public static unsafe class GuestImageWriteTracker
             return true;
         }
 
-        if (OperatingSystem.IsWindows())
-        {
-            return VirtualProtect(
-                (nint)start,
-                (nuint)length,
-                writable ? PageReadWrite : PageReadonly,
-                out _) != 0;
-        }
-
-        return Mprotect(
+        return VirtualProtect(
             (nint)start,
             (nuint)length,
-            writable ? ProtRead | ProtWrite : ProtRead) == 0;
+            writable ? PageReadWrite : PageReadonly,
+            out _) != 0;
     }
 
     private static long GetMonotonicNanoseconds()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return Stopwatch.GetTimestamp() * 1_000_000_000L / Stopwatch.Frequency;
-        }
-
-        Timespec time;
-        return ClockGetTime(ClockMonotonicRaw, &time) == 0
-            ? unchecked((time.Seconds * 1_000_000_000L) + time.Nanoseconds)
-            : 0;
+        return Stopwatch.GetTimestamp() * 1_000_000_000L / Stopwatch.Frequency;
     }
 }

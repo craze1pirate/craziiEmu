@@ -10,7 +10,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
     <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler\CraziiEmu.ShaderCompiler.csproj" />
-    <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Metal\CraziiEmu.ShaderCompiler.Metal.csproj" />
     <ProjectReference Include="..\CraziiEmu.ShaderCompiler.Vulkan\CraziiEmu.ShaderCompiler.Vulkan.csproj" />
     <!-- SysAbi export generator + analyzers (compile-time registry, NID validation). -->
     <ProjectReference Include="..\CraziiEmu.SourceGenerators\CraziiEmu.SourceGenerators.csproj"

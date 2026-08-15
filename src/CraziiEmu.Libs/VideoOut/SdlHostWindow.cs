@@ -11,12 +11,6 @@ using static SDL.SDL3;
 
 namespace CraziiEmu.Libs.VideoOut;
 
-internal enum SdlGraphicsApi
-{
-    Vulkan,
-    Metal,
-}
-
 internal readonly record struct SdlHdrState(
     bool Enabled,
     float SdrWhiteLevel,
@@ -29,11 +23,9 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
     private const uint OutputDurationMs = 5_000;
 
     private readonly HostVideoOptions _options;
-    private readonly SdlGraphicsApi _graphicsApi;
     private readonly Action? _toggleBackendHud;
     private readonly object _gamepadGate = new();
     private SDL_Window* _window;
-    private nint _metalView;
     private SDL_Gamepad* _gamepad;
     private HostGamepadType _gamepadType;
     private byte _leftTriggerRumble;
@@ -45,17 +37,16 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
     private bool _cursorVisible = true;
     private long _cursorHideDeadline;
     private bool _surfaceRestorePending;
-    private bool _hdrStateChangePending;
     private bool _disposed;
+    private bool _hdrStateChangePending;
+    private SdlHdrState _cachedHdrState;
 
     public SdlHostWindow(
         string title,
         HostVideoOptions options,
-        SdlGraphicsApi graphicsApi,
         Action? toggleBackendHud = null)
     {
         _options = options.Normalize();
-        _graphicsApi = graphicsApi;
         _toggleBackendHud = toggleBackendHud;
         SdlGamepadStateReader.EnableSonyHidApi();
         if (!SDL_InitSubSystem(InitFlags))
@@ -63,10 +54,7 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
             throw new InvalidOperationException($"SDL video initialization failed: {GetError()}");
         }
 
-        var graphicsFlag = graphicsApi == SdlGraphicsApi.Vulkan
-            ? SDL_WindowFlags.SDL_WINDOW_VULKAN
-            : SDL_WindowFlags.SDL_WINDOW_METAL;
-        var flags = graphicsFlag |
+        var flags = SDL_WindowFlags.SDL_WINDOW_VULKAN |
                     SDL_WindowFlags.SDL_WINDOW_RESIZABLE |
                     SDL_WindowFlags.SDL_WINDOW_HIGH_PIXEL_DENSITY |
                     SDL_WindowFlags.SDL_WINDOW_HIDDEN;
@@ -158,7 +146,6 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
 
     public byte** GetRequiredVulkanInstanceExtensions(out uint count)
     {
-        EnsureGraphicsApi(SdlGraphicsApi.Vulkan);
         uint extensionCount = 0;
         var extensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
         count = extensionCount;
@@ -172,7 +159,6 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
 
     public SurfaceKHR CreateVulkanSurface(Instance instance)
     {
-        EnsureGraphicsApi(SdlGraphicsApi.Vulkan);
         VkSurfaceKHR_T* surface = null;
         if (!SDL_Vulkan_CreateSurface(
                 _window,
@@ -184,27 +170,6 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
         }
 
         return new SurfaceKHR(unchecked((ulong)surface));
-    }
-
-    public nint CreateMetalLayer()
-    {
-        EnsureGraphicsApi(SdlGraphicsApi.Metal);
-        if (_metalView == 0)
-        {
-            _metalView = SDL_Metal_CreateView(_window);
-            if (_metalView == 0)
-            {
-                throw new InvalidOperationException($"SDL Metal view creation failed: {GetError()}");
-            }
-        }
-
-        var layer = SDL_Metal_GetLayer(_metalView);
-        if (layer == 0)
-        {
-            throw new InvalidOperationException($"SDL Metal layer lookup failed: {GetError()}");
-        }
-
-        return layer;
     }
 
     public void SetTitle(string title)
@@ -385,11 +350,6 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
         SDL_ShowCursor();
         HostWindowInput.Disconnect();
         CloseGamepad();
-        if (_metalView != 0)
-        {
-            SDL_Metal_DestroyView(_metalView);
-            _metalView = 0;
-        }
 
         if (_window is not null)
         {
@@ -824,13 +784,4 @@ internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
 
     private static string GetError() =>
         Marshal.PtrToStringUTF8((nint)Unsafe_SDL_GetError()) ?? "unknown SDL error";
-
-    private void EnsureGraphicsApi(SdlGraphicsApi expected)
-    {
-        if (_graphicsApi != expected)
-        {
-            throw new InvalidOperationException(
-                $"SDL host window uses {_graphicsApi}, not {expected}.");
-        }
-    }
 }
