@@ -99,49 +99,4 @@ public static class UnityCompatExports
         }
         return 0;
     }
-
-    [SysAbiExport(
-        Nid = "WkwEd3N7w0Y",
-        ExportName = "sceKernelInstallExceptionHandler",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int UnityInstallExceptionHandler(CpuContext ctx)
-    {
-        var handler = ctx[CpuRegister.Rdi];
-        var outHandle = ctx[CpuRegister.Rsi];
-        if (outHandle != 0)
-        {
-            _ = ctx.TryWriteUInt64(outHandle, 1UL);
-        }
-        return 0;
-    }
-
-    [SysAbiExport(
-        Nid = "il03nluKfMk",
-        ExportName = "sceKernelRaiseException",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int UnityRaiseException(CpuContext ctx) => 0;
-
-    [SysAbiExport(
-        Nid = "Qhv5ARAoOEc",
-        ExportName = "sceKernelRemoveExceptionHandler",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int UnityRemoveExceptionHandler(CpuContext ctx) => 0;
-
-    [SysAbiExport(
-        Nid = "wXGfB-u2Yrk",
-        ExportName = "sceKernelGetExceptionHandler",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libkernel_unity")]
-    public static int UnityGetExceptionHandler(CpuContext ctx)
-    {
-        var outHandler = ctx[CpuRegister.Rdi];
-        if (outHandler != 0)
-        {
-            _ = ctx.TryWriteUInt64(outHandler, 0UL);
-        }
-        return 0;
-    }
 }
