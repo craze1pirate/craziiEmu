@@ -811,6 +811,7 @@ public partial class MainWindow : Window
             {
                 FileName = processPath,
                 Arguments = $"--play-game \"{_selectedExecutablePath}\"",
+                WorkingDirectory = AppContext.BaseDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

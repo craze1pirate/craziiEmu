@@ -14,7 +14,21 @@ namespace CraziiEmu.HLE.Configuration;
 public class CraziiEmuConfig
 {
     private static CraziiEmuConfig? _instance;
-    private static readonly string ConfigFilePath = "config.json";
+    private static string ConfigFilePath
+    {
+        get
+        {
+            var basePath = AppContext.BaseDirectory;
+            if (!string.IsNullOrEmpty(basePath))
+            {
+                return Path.Combine(basePath, "config.json");
+            }
+            return "config.json";
+        }
+    }
+
+    private static long _lastConfigFileCheckTick;
+    private static DateTime _lastConfigFileModified;
 
     public static CraziiEmuConfig Instance
     {
@@ -41,6 +55,45 @@ public class CraziiEmuConfig
     public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3
     public int HotkeyVerboseConsole { get; set; } = 0x73; // VK 0x73 = F4
 
+    public float GetMasterGain()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastConfigFileCheckTick > 250) // check disk at most every 250ms for live settings updates
+        {
+            _lastConfigFileCheckTick = now;
+            CheckAndReloadIfModified();
+        }
+
+        return EnableAudio ? Math.Clamp(MasterVolume / 100f, 0f, 1f) : 0f;
+    }
+
+    private void CheckAndReloadIfModified()
+    {
+        try
+        {
+            var path = ConfigFilePath;
+            if (File.Exists(path))
+            {
+                var modified = File.GetLastWriteTimeUtc(path);
+                if (modified != _lastConfigFileModified)
+                {
+                    _lastConfigFileModified = modified;
+                    var json = File.ReadAllText(path);
+                    var updated = JsonSerializer.Deserialize<CraziiEmuConfig>(json);
+                    if (updated != null)
+                    {
+                        EnableAudio = updated.EnableAudio;
+                        MasterVolume = updated.MasterVolume;
+                        MetricsOverlayMode = updated.MetricsOverlayMode;
+                        HotkeyMetricsOverlay = updated.HotkeyMetricsOverlay;
+                        HotkeyVerboseConsole = updated.HotkeyVerboseConsole;
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
     public int GetResolutionScaleIndex()
     {
         if (ResolutionScale < 0.75f) return 0;       // 0.66x (720p)
@@ -66,9 +119,11 @@ public class CraziiEmuConfig
     {
         try
         {
-            if (File.Exists(ConfigFilePath))
+            var path = ConfigFilePath;
+            if (File.Exists(path))
             {
-                var json = File.ReadAllText(ConfigFilePath);
+                _lastConfigFileModified = File.GetLastWriteTimeUtc(path);
+                var json = File.ReadAllText(path);
                 _instance = JsonSerializer.Deserialize<CraziiEmuConfig>(json) ?? new CraziiEmuConfig();
             }
             else
@@ -89,7 +144,9 @@ public class CraziiEmuConfig
         {
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(this, options);
-            File.WriteAllText(ConfigFilePath, json);
+            var path = ConfigFilePath;
+            File.WriteAllText(path, json);
+            _lastConfigFileModified = File.GetLastWriteTimeUtc(path);
         }
         catch (Exception ex)
         {

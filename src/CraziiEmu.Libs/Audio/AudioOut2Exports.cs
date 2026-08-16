@@ -955,10 +955,11 @@ public static class AudioOut2Exports
 
                 var outputSpan = output.AsSpan(0, frames * AudioPcmConversion.OutputFrameSize);
                 var peak = 0f;
+                var masterGain = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.GetMasterGain();
                 for (var frame = 0; frame < frames; frame++)
                 {
-                    var left = Math.Clamp(mix[frame * 2], -1f, 1f);
-                    var right = Math.Clamp(mix[(frame * 2) + 1], -1f, 1f);
+                    var left = Math.Clamp(mix[frame * 2] * masterGain, -1f, 1f);
+                    var right = Math.Clamp(mix[(frame * 2) + 1] * masterGain, -1f, 1f);
                     peak = Math.Max(peak, Math.Max(Math.Abs(left), Math.Abs(right)));
                     BinaryPrimitives.WriteInt16LittleEndian(
                         outputSpan[(frame * AudioPcmConversion.OutputFrameSize)..],

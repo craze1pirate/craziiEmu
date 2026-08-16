@@ -221,7 +221,7 @@ internal sealed class WinMmAudioPort : IDisposable
         bool isFloat)
     {
         var config = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance;
-        float masterGain = config.EnableAudio ? (config.MasterVolume / 100f) : 0f;
+        float masterGain = config.GetMasterGain();
         var sourceFrameSize = checked(channels * bytesPerSample);
         for (var frame = 0; frame < frames; frame++)
         {

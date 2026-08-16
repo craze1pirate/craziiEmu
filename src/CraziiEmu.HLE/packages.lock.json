@@ -2,6 +2,12 @@
   "version": 2,
   "dependencies": {
     "net10.0": {
+      "ppy.SDL3-CS": {
+        "type": "Direct",
+        "requested": "[2026.629.0, )",
+        "resolved": "2026.629.0",
+        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
+      },
       "craziiemu.logging": {
         "type": "Project"
       }

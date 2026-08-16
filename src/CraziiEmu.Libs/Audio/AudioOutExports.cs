@@ -521,9 +521,11 @@ public static class AudioOutExports
 
     private static void ConvertForHost(PortState port, ReadOnlySpan<byte> source, Span<byte> destination)
     {
+        var masterGain = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.GetMasterGain();
+        var effectiveVolume = port.Volume * masterGain;
         if (port.PreservesGuestFormat)
         {
-            AudioPcmConversion.CopyWithVolume(source, destination, port.IsFloat, port.Volume);
+            AudioPcmConversion.CopyWithVolume(source, destination, port.IsFloat, effectiveVolume);
             return;
         }
 
@@ -534,7 +536,7 @@ public static class AudioOutExports
             port.Channels,
             port.BytesPerSample,
             port.IsFloat,
-            port.Volume);
+            effectiveVolume);
     }
 
     private static void TraceOutput(int handle, PortState port, ReadOnlySpan<byte> source)
