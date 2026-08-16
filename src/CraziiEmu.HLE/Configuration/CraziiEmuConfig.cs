@@ -35,11 +35,25 @@ public class CraziiEmuConfig
 
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
+    public string Resolution { get; set; } = "1920x1080";
     public bool UiFullscreenOnStartup { get; set; } = false;
 
     public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
     public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3
     public int HotkeyVerboseConsole { get; set; } = 0x73; // VK 0x73 = F4
+
+    public (int Width, int Height) GetResolution()
+    {
+        if (!string.IsNullOrEmpty(Resolution))
+        {
+            var parts = Resolution.Split(['x', 'X', '×', ' '], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h))
+            {
+                if (w > 0 && h > 0) return (w, h);
+            }
+        }
+        return (1920, 1080);
+    }
     public static void Load()
     {
         try

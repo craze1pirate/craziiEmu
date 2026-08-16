@@ -3677,14 +3677,19 @@ internal static unsafe class VulkanVideoPresenter
                 MaximumCachedHostBufferBytes,
                 DestroyHostBufferAllocation);
 
+            var targetWidth = _videoOptions.Width > 0 ? (int)_videoOptions.Width : (int)DefaultWindowWidth;
+            var targetHeight = _videoOptions.Height > 0 ? (int)_videoOptions.Height : (int)DefaultWindowHeight;
+
             var options = WindowOptions.DefaultVulkan;
-            options.Size = new Vector2D<int>((int)DefaultWindowWidth, (int)DefaultWindowHeight);
+            options.Size = new Vector2D<int>(targetWidth, targetHeight);
             options.Title = VideoOutExports.GetWindowTitle();
             options.WindowBorder = WindowBorder.Fixed;
-            options.VSync = true;
-            options.FramesPerSecond = 60;
-            options.UpdatesPerSecond = 60;
-            options.WindowState = WindowState.Normal;
+            options.VSync = _videoOptions.VSync;
+            options.FramesPerSecond = _videoOptions.RefreshRate > 0 ? _videoOptions.RefreshRate : 60;
+            options.UpdatesPerSecond = _videoOptions.RefreshRate > 0 ? _videoOptions.RefreshRate : 60;
+            options.WindowState = _videoOptions.WindowMode == HostWindowMode.Borderless || _videoOptions.WindowMode == HostWindowMode.ExclusiveFullscreen
+                ? WindowState.Fullscreen
+                : WindowState.Normal;
             _window = Window.Create(options);
             _window.Load += Initialize;
             _window.Render += Render;

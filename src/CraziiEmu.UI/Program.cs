@@ -31,6 +31,17 @@ internal static class Program
                 CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode =
                     (CraziiEmu.Libs.VideoOut.Overlay.OverlayMode)Math.Clamp(config.MetricsOverlayMode, 0, 3);
 
+                var (resW, resH) = config.GetResolution();
+                var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
+                {
+                    Width = resW,
+                    Height = resH,
+                    WindowMode = config.UiFullscreenOnStartup
+                        ? CraziiEmu.Libs.VideoOut.HostWindowMode.Borderless
+                        : CraziiEmu.Libs.VideoOut.HostWindowMode.Windowed,
+                };
+                CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
+
                 var options = new CraziiEmu.Core.Runtime.CraziiEmuRuntimeOptions();
                 using var runtime = CraziiEmu.Core.Runtime.CraziiEmuRuntime.CreateDefault(options);
                 var result = runtime.Run(args[1]);

@@ -203,6 +203,23 @@ internal static partial class Program
                 continue;
             }
 
+            const string resolutionPrefix = "--resolution=";
+            if (argument.StartsWith(resolutionPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var valueText = argument[resolutionPrefix.Length..];
+                var parts = valueText.Split(['x', 'X', '×', ' '], StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2 && int.TryParse(parts[0], out var rw) && int.TryParse(parts[1], out var rh) && rw > 0 && rh > 0)
+                {
+                    var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
+                    {
+                        Width = rw,
+                        Height = rh,
+                    };
+                    CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
+                }
+                continue;
+            }
+
             if (argument.StartsWith("--", StringComparison.Ordinal))
             {
                 ebootPath = string.Empty;
