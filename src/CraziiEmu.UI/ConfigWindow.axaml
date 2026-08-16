@@ -105,15 +105,24 @@
                                 <ComboBoxItem Content="2.0× (4K)" />
                             </ComboBox>
                         </StackPanel>
+                        <StackPanel Spacing="4">
+                            <TextBlock Classes="SettingsLabel" Text="DISPLAY SCALING" />
+                            <ComboBox x:Name="CmbDisplayScaling" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="Fit" />
+                                <ComboBoxItem Content="Cover" />
+                                <ComboBoxItem Content="Stretch" />
+                                <ComboBoxItem Content="Integer" />
+                            </ComboBox>
+                        </StackPanel>
                     </StackPanel>
 
-                    <!-- ΓöÇΓöÇ Audio ΓöÇΓöÇ -->
+                    <!-- ── Audio ── -->
                     <StackPanel x:Name="PanelAudio" IsVisible="False" Spacing="20">
                         <TextBlock Classes="SectionHeader" Text="Audio" />
                         <CheckBox x:Name="ChkAudio" Content="Enable Audio Output" IsChecked="True" Foreground="#FFFFFF" />
                         <StackPanel Spacing="4">
                             <TextBlock Classes="SettingsLabel" Text="VOLUME" />
-                            <Slider x:Name="SldVolume" Minimum="0" Maximum="100" Value="80" Width="280" HorizontalAlignment="Left" />
+                            <Slider x:Name="SldVolume" Minimum="0" Maximum="100" Value="80" Width="280" HorizontalAlignment="Left" IsEnabled="{Binding #ChkAudio.IsChecked}" />
                         </StackPanel>
                     </StackPanel>
 

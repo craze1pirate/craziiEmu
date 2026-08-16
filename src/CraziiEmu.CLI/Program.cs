@@ -218,6 +218,21 @@ internal static partial class Program
                 continue;
             }
 
+            const string scalingPrefix = "--scaling=";
+            if (argument.StartsWith(scalingPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var valueText = argument[scalingPrefix.Length..];
+                if (Enum.TryParse<CraziiEmu.Libs.VideoOut.HostScalingMode>(valueText, true, out var scalingMode))
+                {
+                    var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
+                    {
+                        ScalingMode = scalingMode,
+                    };
+                    CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
+                }
+                continue;
+            }
+
             if (argument.StartsWith("--", StringComparison.Ordinal))
             {
                 ebootPath = string.Empty;
@@ -270,6 +285,7 @@ internal static partial class Program
         Console.WriteLine("  --log-level=LEVEL         Set log level (Trace, Debug, Info, Warning, Error)");
         Console.WriteLine("  --cpu-engine=TYPE         Set CPU execution engine (Native)");
         Console.WriteLine("  --resolution-scale=SCALE  Set internal render resolution scale (e.g. 0.66, 1.0, 1.33, 2.0)");
+        Console.WriteLine("  --scaling=MODE            Set display scaling mode (Fit, Cover, Stretch, Integer)");
     }
 }
 

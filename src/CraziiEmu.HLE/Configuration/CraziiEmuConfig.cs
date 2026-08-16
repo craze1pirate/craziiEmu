@@ -49,6 +49,7 @@ public class CraziiEmuConfig
 
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
+    public string DisplayScaling { get; set; } = "Fit";
     public bool UiFullscreenOnStartup { get; set; } = false;
 
     public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
@@ -87,6 +88,7 @@ public class CraziiEmuConfig
                         MetricsOverlayMode = updated.MetricsOverlayMode;
                         HotkeyMetricsOverlay = updated.HotkeyMetricsOverlay;
                         HotkeyVerboseConsole = updated.HotkeyVerboseConsole;
+                        DisplayScaling = updated.DisplayScaling;
                     }
                 }
             }
@@ -113,6 +115,28 @@ public class CraziiEmuConfig
             3 => 1.333333f,
             4 => 2.0f,
             _ => 1.0f,
+        };
+    }
+
+    public int GetDisplayScalingIndex()
+    {
+        return DisplayScaling?.ToLowerInvariant() switch
+        {
+            "cover" => 1,
+            "stretch" => 2,
+            "integer" => 3,
+            _ => 0, // "Fit" default
+        };
+    }
+
+    public void SetDisplayScalingFromIndex(int index)
+    {
+        DisplayScaling = index switch
+        {
+            1 => "Cover",
+            2 => "Stretch",
+            3 => "Integer",
+            _ => "Fit",
         };
     }
     public static void Load()

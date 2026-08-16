@@ -18287,6 +18287,61 @@ internal static unsafe class VulkanVideoPresenter
             var destinationY = 0u;
             var destinationWidth = _extent.Width;
             var destinationHeight = _extent.Height;
+            var scalingMode = _videoOptions.ScalingMode;
+
+            if (scalingMode == HostScalingMode.Cover)
+            {
+                var sourceIsWider = (ulong)sourceWidth * _extent.Height >
+                                     (ulong)_extent.Width * sourceHeight;
+                if (sourceIsWider)
+                {
+                    sourceWidth = Math.Max(1u, (uint)((ulong)sourceHeight * _extent.Width / _extent.Height));
+                    sourceX = (source.Width - sourceWidth) / 2;
+                }
+                else
+                {
+                    sourceHeight = Math.Max(1u, (uint)((ulong)sourceWidth * _extent.Height / _extent.Width));
+                    sourceY = (source.Height - sourceHeight) / 2;
+                }
+            }
+            else if (scalingMode is HostScalingMode.Fit or HostScalingMode.Integer)
+            {
+                var useIntegerScale = scalingMode == HostScalingMode.Integer &&
+                                      sourceWidth <= _extent.Width && sourceHeight <= _extent.Height;
+                if (useIntegerScale)
+                {
+                    var scale = Math.Max(1u, Math.Min(_extent.Width / sourceWidth, _extent.Height / sourceHeight));
+                    destinationWidth = sourceWidth * scale;
+                    destinationHeight = sourceHeight * scale;
+                }
+                else if ((ulong)sourceWidth * _extent.Height > (ulong)_extent.Width * sourceHeight)
+                {
+                    destinationWidth = _extent.Width;
+                    destinationHeight = Math.Max(1u, (uint)((ulong)_extent.Width * sourceHeight / sourceWidth));
+                }
+                else
+                {
+                    destinationHeight = _extent.Height;
+                    destinationWidth = Math.Max(1u, (uint)((ulong)_extent.Height * sourceWidth / sourceHeight));
+                }
+
+                destinationX = (_extent.Width - destinationWidth) / 2;
+                destinationY = (_extent.Height - destinationHeight) / 2;
+            }
+
+            if (destinationX != 0 || destinationY != 0 ||
+                destinationWidth != _extent.Width || destinationHeight != _extent.Height)
+            {
+                var clearColor = new ClearColorValue(0f, 0f, 0f, 1f);
+                var clearRange = ColorSubresourceRange();
+                _vk.CmdClearColorImage(
+                    _commandBuffer,
+                    presentationTarget,
+                    ImageLayout.TransferDstOptimal,
+                    &clearColor,
+                    1,
+                    &clearRange);
+            }
 
             var sourceOffsets = new ImageBlit.SrcOffsetsBuffer
             {

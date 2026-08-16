@@ -93,8 +93,24 @@ public partial class ConfigWindow : Window
             }
         };
 
+        CmbDisplayScaling.SelectedIndex = config.GetDisplayScalingIndex();
+        CmbDisplayScaling.SelectionChanged += (s, e) =>
+        {
+            if (CmbDisplayScaling.SelectedIndex >= 0)
+            {
+                config.SetDisplayScalingFromIndex(CmbDisplayScaling.SelectedIndex);
+                config.Save();
+            }
+        };
+
         ChkAudio.IsChecked = config.EnableAudio;
-        ChkAudio.IsCheckedChanged += (s, e) => { config.EnableAudio = ChkAudio.IsChecked == true; config.Save(); };
+        SldVolume.IsEnabled = config.EnableAudio;
+        ChkAudio.IsCheckedChanged += (s, e) => 
+        { 
+            config.EnableAudio = ChkAudio.IsChecked == true; 
+            SldVolume.IsEnabled = config.EnableAudio;
+            config.Save(); 
+        };
         
         SldVolume.Value = config.MasterVolume;
         SldVolume.ValueChanged += (s, e) => { config.MasterVolume = (float)SldVolume.Value; config.Save(); };

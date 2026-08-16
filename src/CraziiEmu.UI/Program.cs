@@ -34,6 +34,9 @@ internal static class Program
                 var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
                 {
                     ResolutionScale = config.ResolutionScale > 0f ? config.ResolutionScale : 1.0f,
+                    ScalingMode = Enum.TryParse<CraziiEmu.Libs.VideoOut.HostScalingMode>(config.DisplayScaling, true, out var sm)
+                        ? sm
+                        : CraziiEmu.Libs.VideoOut.HostScalingMode.Fit,
                     WindowMode = config.UiFullscreenOnStartup
                         ? CraziiEmu.Libs.VideoOut.HostWindowMode.Borderless
                         : CraziiEmu.Libs.VideoOut.HostWindowMode.Windowed,
