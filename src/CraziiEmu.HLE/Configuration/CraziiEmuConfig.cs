@@ -35,24 +35,32 @@ public class CraziiEmuConfig
 
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
-    public string Resolution { get; set; } = "1920x1080";
     public bool UiFullscreenOnStartup { get; set; } = false;
 
     public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
     public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3
     public int HotkeyVerboseConsole { get; set; } = 0x73; // VK 0x73 = F4
 
-    public (int Width, int Height) GetResolution()
+    public int GetResolutionScaleIndex()
     {
-        if (!string.IsNullOrEmpty(Resolution))
+        if (ResolutionScale < 0.75f) return 0;       // 0.66x (720p)
+        if (ResolutionScale < 0.90f) return 1;       // 0.83x (900p)
+        if (ResolutionScale < 1.15f) return 2;       // 1.0x (1080p) [Native]
+        if (ResolutionScale < 1.65f) return 3;       // 1.33x (1440p / 2K)
+        return 4;                                    // 2.0x (4K)
+    }
+
+    public void SetResolutionScaleFromIndex(int index)
+    {
+        ResolutionScale = index switch
         {
-            var parts = Resolution.Split(['x', 'X', '×', ' '], StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h))
-            {
-                if (w > 0 && h > 0) return (w, h);
-            }
-        }
-        return (1920, 1080);
+            0 => 0.666667f,
+            1 => 0.833333f,
+            2 => 1.0f,
+            3 => 1.333333f,
+            4 => 2.0f,
+            _ => 1.0f,
+        };
     }
     public static void Load()
     {

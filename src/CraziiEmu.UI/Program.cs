@@ -31,11 +31,9 @@ internal static class Program
                 CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode =
                     (CraziiEmu.Libs.VideoOut.Overlay.OverlayMode)Math.Clamp(config.MetricsOverlayMode, 0, 3);
 
-                var (resW, resH) = config.GetResolution();
                 var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
                 {
-                    Width = resW,
-                    Height = resH,
+                    ResolutionScale = config.ResolutionScale > 0f ? config.ResolutionScale : 1.0f,
                     WindowMode = config.UiFullscreenOnStartup
                         ? CraziiEmu.Libs.VideoOut.HostWindowMode.Borderless
                         : CraziiEmu.Libs.VideoOut.HostWindowMode.Windowed,

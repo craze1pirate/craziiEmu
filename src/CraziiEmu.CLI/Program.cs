@@ -203,17 +203,15 @@ internal static partial class Program
                 continue;
             }
 
-            const string resolutionPrefix = "--resolution=";
-            if (argument.StartsWith(resolutionPrefix, StringComparison.OrdinalIgnoreCase))
+            const string resolutionScalePrefix = "--resolution-scale=";
+            if (argument.StartsWith(resolutionScalePrefix, StringComparison.OrdinalIgnoreCase))
             {
-                var valueText = argument[resolutionPrefix.Length..];
-                var parts = valueText.Split(['x', 'X', '×', ' '], StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2 && int.TryParse(parts[0], out var rw) && int.TryParse(parts[1], out var rh) && rw > 0 && rh > 0)
+                var valueText = argument[resolutionScalePrefix.Length..];
+                if (float.TryParse(valueText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scale) && scale > 0f)
                 {
                     var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
                     {
-                        Width = rw,
-                        Height = rh,
+                        ResolutionScale = scale,
                     };
                     CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
                 }
@@ -269,8 +267,9 @@ internal static partial class Program
         Console.WriteLine("Options:");
         Console.WriteLine("  --strict           Enable strict dynlib resolution");
         Console.WriteLine("  --trace-imports=N  Limit import tracing (default 32)");
-        Console.WriteLine("  --log-level=LEVEL  Set log level (Trace, Debug, Info, Warning, Error)");
-        Console.WriteLine("  --cpu-engine=TYPE  Set CPU execution engine (Native)");
+        Console.WriteLine("  --log-level=LEVEL         Set log level (Trace, Debug, Info, Warning, Error)");
+        Console.WriteLine("  --cpu-engine=TYPE         Set CPU execution engine (Native)");
+        Console.WriteLine("  --resolution-scale=SCALE  Set internal render resolution scale (e.g. 0.66, 1.0, 1.33, 2.0)");
     }
 }
 

@@ -1019,12 +1019,12 @@ public partial class MainWindow : Window
             config.Save();
         };
 
-        PopulateResolutions(CmbGraphicsScale, config.Resolution);
+        CmbGraphicsScale.SelectedIndex = config.GetResolutionScaleIndex();
         CmbGraphicsScale.SelectionChanged += (s, e) =>
         {
-            if (CmbGraphicsScale.SelectedItem is string selRes)
+            if (CmbGraphicsScale.SelectedIndex >= 0)
             {
-                config.Resolution = selRes;
+                config.SetResolutionScaleFromIndex(CmbGraphicsScale.SelectedIndex);
                 config.Save();
             }
         };
@@ -1044,64 +1044,6 @@ public partial class MainWindow : Window
         };
 
         InitializeHotkeyBindings();
-    }
-
-    private static void PopulateResolutions(ComboBox cmb, string selectedResolution)
-    {
-        var list = new System.Collections.Generic.List<string>();
-        try
-        {
-            var displays = CraziiEmu.Libs.VideoOut.HostDisplayCatalog.Query();
-            if (displays.Count > 0)
-            {
-                foreach (var mode in displays[0].Modes)
-                {
-                    if (mode.Width > 0 && mode.Height > 0)
-                    {
-                        var resStr = $"{mode.Width}x{mode.Height}";
-                        if (!list.Contains(resStr, StringComparer.OrdinalIgnoreCase))
-                        {
-                            list.Add(resStr);
-                        }
-                    }
-                }
-            }
-        }
-        catch { }
-
-        string[] standards = ["3840x2160", "2560x1440", "1920x1080", "1600x900", "1280x720"];
-        foreach (var std in standards)
-        {
-            if (!list.Contains(std, StringComparer.OrdinalIgnoreCase))
-            {
-                list.Add(std);
-            }
-        }
-
-        var ordered = list
-            .Select(r =>
-            {
-                var parts = r.Split(['x', 'X', '×', ' '], StringSplitOptions.RemoveEmptyEntries);
-                int w = int.TryParse(parts[0], out var pw) ? pw : 0;
-                int h = parts.Length > 1 && int.TryParse(parts[1], out var ph) ? ph : 0;
-                return (Text: r, Area: w * h, W: w, H: h);
-            })
-            .OrderByDescending(x => x.Area)
-            .ThenByDescending(x => x.W)
-            .Select(x => x.Text)
-            .ToList();
-
-        cmb.ItemsSource = ordered;
-        var foundIndex = ordered.FindIndex(r => string.Equals(r, selectedResolution, StringComparison.OrdinalIgnoreCase));
-        if (foundIndex >= 0)
-        {
-            cmb.SelectedIndex = foundIndex;
-        }
-        else
-        {
-            var idx1080 = ordered.FindIndex(r => r.Equals("1920x1080", StringComparison.OrdinalIgnoreCase));
-            cmb.SelectedIndex = idx1080 >= 0 ? idx1080 : 0;
-        }
     }
 
     private void InitializeHotkeyBindings()

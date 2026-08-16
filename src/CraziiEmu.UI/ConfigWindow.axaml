@@ -96,8 +96,14 @@
                             </ComboBox>
                         </StackPanel>
                         <StackPanel Spacing="4">
-                            <TextBlock Classes="SettingsLabel" Text="RESOLUTION" />
-                            <ComboBox x:Name="CmbGraphicsScale" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF" />
+                            <TextBlock Classes="SettingsLabel" Text="RESOLUTION SCALE" />
+                            <ComboBox x:Name="CmbGraphicsScale" SelectedIndex="2" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                <ComboBoxItem Content="0.66× (720p)" />
+                                <ComboBoxItem Content="0.83× (900p)" />
+                                <ComboBoxItem Content="1.0× (1080p) [Native]" />
+                                <ComboBoxItem Content="1.33× (1440p / 2K)" />
+                                <ComboBoxItem Content="2.0× (4K)" />
+                            </ComboBox>
                         </StackPanel>
                     </StackPanel>
 

@@ -3677,6 +3677,11 @@ internal static unsafe class VulkanVideoPresenter
                 MaximumCachedHostBufferBytes,
                 DestroyHostBufferAllocation);
 
+            if (_videoOptions.ResolutionScale > 0f)
+            {
+                _renderResolutionScale = _videoOptions.ResolutionScale;
+            }
+
             var targetWidth = _videoOptions.Width > 0 ? (int)_videoOptions.Width : (int)DefaultWindowWidth;
             var targetHeight = _videoOptions.Height > 0 ? (int)_videoOptions.Height : (int)DefaultWindowHeight;
 
@@ -17376,14 +17381,14 @@ internal static unsafe class VulkanVideoPresenter
             !string.IsNullOrWhiteSpace(
                 Environment.GetEnvironmentVariable(
                     "CRAZIIEMU_TRACE_GUEST_IMAGE_ADDRS"));
-        private static readonly double _renderResolutionScale =
+        private static double _renderResolutionScale =
             double.TryParse(
                 Environment.GetEnvironmentVariable("CRAZIIEMU_RENDER_SCALE"),
                 System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture,
                 out var renderResolutionScale) &&
             renderResolutionScale > 0 &&
-            renderResolutionScale <= 2.0
+            renderResolutionScale <= 4.0
                 ? renderResolutionScale
                 : 1.0;
 
