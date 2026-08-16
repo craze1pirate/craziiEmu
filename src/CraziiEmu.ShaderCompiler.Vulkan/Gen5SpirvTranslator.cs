@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.ShaderCompiler;
 
@@ -3621,14 +3622,16 @@ public static partial class Gen5SpirvTranslator
                     image,
                     addressCursor,
                     coordinateComponentCount);
-                var explicitLod = hasGradients || hasZeroLod || hasLod;
+                var explicitLod = hasGradients || hasZeroLod || hasLod || _stage != Gen5SpirvStage.Pixel;
                 var lod = hasZeroLod
                     ? Float(0)
                     : hasLod
                         ? LoadImageFloatAddress(
                             image,
                             addressCursor + (int)coordinateComponentCount)
-                        : lodOrBias;
+                        : _stage != Gen5SpirvStage.Pixel
+                            ? Float(0)
+                            : lodOrBias;
                 if (hasOffset)
                 {
                     // Vulkan before maintenance8 forbids the dynamic Offset

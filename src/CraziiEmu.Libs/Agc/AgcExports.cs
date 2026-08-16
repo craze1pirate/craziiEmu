@@ -11267,13 +11267,18 @@ public static partial class AgcExports
                 out elementsWide,
                 out elementsHigh,
                 out bytesPerElement);
+        var blockBytes = GetBlockCompressedBlockBytes(descriptor.Format);
+        var pitchElements = blockBytes != 0
+            ? (int)((descriptor.Pitch + 3) / 4)
+            : (int)descriptor.Pitch;
         if (hasElementLayout &&
             GnmTiling.TryGetTiledByteCount(
                 descriptor.TileMode,
                 elementsWide,
                 elementsHigh,
                 bytesPerElement,
-                out var tiledByteCount))
+                out var tiledByteCount,
+                pitchElements))
         {
             physicalSourceByteCount = tiledByteCount;
         }

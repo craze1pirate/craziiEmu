@@ -13799,8 +13799,8 @@ internal static unsafe class VulkanVideoPresenter
                     return existing;
                 }
 
-                if (existing.Width == target.Width &&
-                    existing.Height == target.Height &&
+                if ((existing.LogicalWidth == target.Width || existing.Width == target.Width) &&
+                    (existing.LogicalHeight == target.Height || existing.Height == target.Height) &&
                     existing.MipLevels == mipLevels &&
                     IsCompatibleViewFormat(existing.Format, format))
                 {
