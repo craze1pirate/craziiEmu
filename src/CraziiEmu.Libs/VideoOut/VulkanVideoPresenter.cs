@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using Silk.NET.Input;
 using Silk.NET.Maths;
@@ -13404,41 +13405,78 @@ internal static unsafe class VulkanVideoPresenter
                 return 0;
             }
 
-            var rowsPerVolume = checked((ulong)target.Height * target.Depth);
-            var texelCount = checked((ulong)target.Width * rowsPerVolume);
+            var blockBytes = target.Format switch
+            {
+                Format.BC1RgbUnormBlock or
+                Format.BC1RgbSrgbBlock or
+                Format.BC1RgbaUnormBlock or
+                Format.BC1RgbaSrgbBlock or
+                Format.BC4UnormBlock or
+                Format.BC4SNormBlock => 8UL,
+                Format.BC2UnormBlock or
+                Format.BC2SrgbBlock or
+                Format.BC3UnormBlock or
+                Format.BC3SrgbBlock or
+                Format.BC5UnormBlock or
+                Format.BC5SNormBlock or
+                Format.BC6HUfloatBlock or
+                Format.BC6HSfloatBlock or
+                Format.BC7UnormBlock or
+                Format.BC7SrgbBlock => 16UL,
+                _ => 0UL,
+            };
+
+            if (blockBytes != 0)
+            {
+                var blocksHigh = checked(((ulong)target.Height + 3) / 4);
+                var rowsPerVolume = checked(blocksHigh * Math.Max(target.Depth, 1u));
+                if (rowsPerVolume == 0 || uploadByteCount % rowsPerVolume != 0)
+                {
+                    return 0;
+                }
+
+                var rowBytes = uploadByteCount / rowsPerVolume;
+                if (rowBytes % blockBytes != 0)
+                {
+                    return 0;
+                }
+
+                var rowBlocks = rowBytes / blockBytes;
+                var blocksWide = ((ulong)target.Width + 3) / 4;
+                if (rowBlocks < blocksWide || rowBlocks * 4 > uint.MaxValue)
+                {
+                    return 0;
+                }
+
+                return (uint)(rowBlocks * 4);
+            }
+
+            var uncompressedRowsPerVolume = checked((ulong)target.Height * Math.Max(target.Depth, 1u));
+            var texelCount = checked((ulong)target.Width * uncompressedRowsPerVolume);
             if (texelCount == 0 || expectedByteCount % texelCount != 0)
             {
-                // Block-compressed or otherwise non-linear: no per-texel pitch.
                 return 0;
             }
 
             var bytesPerTexel = expectedByteCount / texelCount;
-            if (bytesPerTexel == 0 || uploadByteCount % rowsPerVolume != 0)
+            if (bytesPerTexel == 0 || uploadByteCount % uncompressedRowsPerVolume != 0)
             {
                 return 0;
             }
 
-            var rowBytes = uploadByteCount / rowsPerVolume;
-            if (rowBytes % bytesPerTexel != 0)
+            var uncompressedRowBytes = uploadByteCount / uncompressedRowsPerVolume;
+            if (uncompressedRowBytes % bytesPerTexel != 0)
             {
                 return 0;
             }
 
-            var rowTexels = rowBytes / bytesPerTexel;
+            var rowTexels = uncompressedRowBytes / bytesPerTexel;
             if (rowTexels < target.Width || rowTexels > uint.MaxValue)
             {
                 return 0;
             }
 
-            foreach (var alignment in (ReadOnlySpan<uint>)[8, 16, 32, 64, 128, 256])
-            {
-                if (AlignUp(target.Width, alignment) == rowTexels)
-                {
-                    return (uint)rowTexels;
-                }
-            }
-
-            return 0;
+            return (uint)rowTexels;
         }
 
         private static uint AlignUp(uint value, uint alignment) =>

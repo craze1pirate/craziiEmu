@@ -441,7 +441,8 @@ internal static unsafe class GnmTiling
         uint swizzleMode,
         int elementsWide,
         int elementsHigh,
-        int bytesPerElement)
+        int bytesPerElement,
+        int pitchElements = 0)
     {
         if (!ShouldDetile(swizzleMode) || elementsWide <= 0 || elementsHigh <= 0 || bytesPerElement <= 0)
         {
@@ -473,7 +474,8 @@ internal static unsafe class GnmTiling
             return false;
         }
 
-        var blocksPerRow = (elementsWide + blockWidth - 1) / blockWidth;
+        var effectivePitch = Math.Max(elementsWide, pitchElements);
+        var blocksPerRow = (effectivePitch + blockWidth - 1) / blockWidth;
         var requiredLinear = (long)elementsWide * elementsHigh * bytesPerElement;
         if (linear.Length < requiredLinear)
         {
@@ -575,7 +577,8 @@ internal static unsafe class GnmTiling
         uint swizzleMode,
         int bytesPerElement,
         int elementsWide,
-        int elementsHigh)
+        int elementsHigh,
+        int pitchElements = 0)
     {
         if (!ShouldDetile(swizzleMode) ||
             bytesPerElement <= 0 ||
@@ -599,7 +602,8 @@ internal static unsafe class GnmTiling
             return default;
         }
 
-        var blocksPerRow = (elementsWide + blockWidth - 1) / blockWidth;
+        var effectivePitch = Math.Max(elementsWide, pitchElements);
+        var blocksPerRow = (effectivePitch + blockWidth - 1) / blockWidth;
 
         if (TryGetExactXorPattern(swizzleMode, bppLog2, out var pattern))
         {

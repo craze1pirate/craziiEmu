@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Collections.Concurrent;
 using CraziiEmu.HLE;
@@ -11077,6 +11078,11 @@ public static partial class AgcExports
             return null;
         }
 
+        var blockBytes = GetBlockCompressedBlockBytes(descriptor.Format);
+        var pitchElements = blockBytes != 0
+            ? (int)((descriptor.Pitch + 3) / 4)
+            : (int)descriptor.Pitch;
+
         if (baseMipInTail)
         {
             if (!GnmTiling.TryGetBlockElementDimensions(
@@ -11102,7 +11108,8 @@ public static partial class AgcExports
                     descriptor.TileMode,
                     blockWidth,
                     blockHeight,
-                    bytesPerElement))
+                    bytesPerElement,
+                    pitchElements))
             {
                 return null;
             }
@@ -11139,7 +11146,8 @@ public static partial class AgcExports
                     descriptor.TileMode,
                     elementsWide,
                     elementsHigh,
-                    bytesPerElement))
+                    bytesPerElement,
+                    pitchElements))
             {
                 return null;
             }
