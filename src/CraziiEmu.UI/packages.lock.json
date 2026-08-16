@@ -60,12 +60,6 @@
         "resolved": "2.17.1",
         "contentHash": "HaAgFlseUcR0UEfyNOoJMqlpAtWsb5Am9Rc3Ej20+eEXNzsM2kvEs/liuUMioCslge+9Z5J0YyaPReiYbTRNvw=="
       },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[10.0.9, )",
-        "resolved": "10.0.9",
-        "contentHash": "4Iw41e2h7I4t70SJcX2GCmbyKJIlA273Cfm9RJMM050/3VBejGAG1KcthP5Z2L6SQcbfbf6BhNWO26+ZG+GzMg=="
-      },
       "System.Management": {
         "type": "Direct",
         "requested": "[9.0.0, )",

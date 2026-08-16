@@ -73,6 +73,8 @@ public static class PadExports
     // (and the game loop that drives it) misbehaved. Same validation as
     // scePadOpen — the one primary pad — returning its handle or a not-connected
     // error, never opening or logging.
+    private static bool IsPrimaryUser(int userId) => userId is PrimaryUserId or 1000 or 1 or 0;
+
     [SysAbiExport(
         Nid = "u1GRHp+oWoY",
         ExportName = "scePadGetHandle",
@@ -88,7 +90,7 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorNotInitialized);
         }
 
-        if (userId != PrimaryUserId || type is not (0 or 1 or 2) || index != 0)
+        if (!IsPrimaryUser(userId) || type is not (0 or 1 or 2) || index != 0)
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
@@ -115,7 +117,7 @@ public static class PadExports
         }
 
         var typeAccepted = extended ? type is 0 or 1 or 2 : type == StandardPortType;
-        if (userId != PrimaryUserId || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
+        if (!IsPrimaryUser(userId) || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
