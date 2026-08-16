@@ -142,7 +142,6 @@
           "CraziiEmu.LibAtrac9": "[0.30.0-alpha, )",
           "CraziiEmu.Logging": "[0.30.0-alpha, )",
           "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Metal": "[0.30.0-alpha, )",
           "CraziiEmu.ShaderCompiler.Vulkan": "[0.30.0-alpha, )",
           "FFmpeg.AutoGen": "[7.1.1, )",
           "NLayer": "[1.14.0, )",
@@ -161,12 +160,6 @@
         "type": "Project",
         "dependencies": {
           "CraziiEmu.HLE": "[0.30.0-alpha, )"
-        }
-      },
-      "craziiemu.shadercompiler.metal": {
-        "type": "Project",
-        "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
@@ -224,6 +217,19 @@
           "Silk.NET.Core": "2.23.0",
           "Silk.NET.Vulkan": "2.23.0"
         }
+      }
+    },
+    "net10.0/win-x64": {
+      "Ultz.Native.GLFW": {
+        "type": "Transitive",
+        "resolved": "3.4.0",
+        "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
+      },
+      "ppy.SDL3-CS": {
+        "type": "CentralTransitive",
+        "requested": "[2026.629.0, )",
+        "resolved": "2026.629.0",
+        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
       }
     }
   }
