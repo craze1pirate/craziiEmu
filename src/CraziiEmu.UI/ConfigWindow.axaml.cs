@@ -62,13 +62,54 @@ public partial class ConfigWindow : Window
             try
             {
                 using var searcher = new ManagementObjectSearcher("select * from Win32_VideoController");
+                string? bestGpu = null;
+                int bestScore = -1;
+
                 foreach (ManagementObject obj in searcher.Get())
                 {
-                    if (obj["Name"] != null)
+                    var name = obj["Name"]?.ToString()?.Trim();
+                    if (string.IsNullOrWhiteSpace(name))
                     {
-                        gpuName = obj["Name"].ToString() ?? "Default System GPU";
-                        break;
+                        continue;
                     }
+
+                    int score = 10;
+                    var lower = name.ToLowerInvariant();
+                    if (lower.Contains("nvidia") || lower.Contains("geforce") || lower.Contains("rtx") || lower.Contains("gtx") || lower.Contains("quadro"))
+                    {
+                        score = 100;
+                    }
+                    else if (lower.Contains("radeon rx") || lower.Contains("radeon pro") || (lower.Contains("amd") && !lower.Contains("graphics") && !lower.Contains("apu")))
+                    {
+                        score = 90;
+                    }
+                    else if (lower.Contains("arc") && lower.Contains("intel"))
+                    {
+                        score = 80;
+                    }
+                    else if (lower.Contains("radeon"))
+                    {
+                        score = 50;
+                    }
+                    else if (lower.Contains("intel"))
+                    {
+                        score = 30;
+                    }
+                    else if (lower.Contains("basic display") || lower.Contains("virtual") || lower.Contains("vmware"))
+                    {
+                        score = 5;
+                    }
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestGpu = name;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(bestGpu))
+                {
+                    gpuName = bestGpu;
                 }
             }
             catch { }

@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using CraziiEmu.Core.Gpu;
+using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.ShaderCompiler;
 
 namespace CraziiEmu.TestRunner;
@@ -38,6 +39,7 @@ public static class VideoOutFlipTests
         TestNoVersionSkipped();
         TestNoWaitExecutesBeforeCapture();
         TestRenderWorkerRemainsResponsive();
+        TestWindowTitleWithGpuFormat();
 
         Console.WriteLine("[TEST] VideoOutFlipTests PASSED cleanly.");
     }
@@ -545,5 +547,32 @@ public static class VideoOutFlipTests
         }
 
         Console.WriteLine("  [PASS] 19. Multi-queue non-blocking responsiveness verified (0 worker stalls)");
+    }
+
+    private static void TestWindowTitleWithGpuFormat()
+    {
+        VideoOutExports.ConfigureApplicationInfo("Among Us", "PPSA03596", "01.000.000");
+        VideoOutExports.SetSelectedGpuName("NVIDIA GeForce RTX 3070 Laptop GPU");
+
+        var title = VideoOutExports.GetWindowTitle();
+        const string expected = "CraziiEmu - Among Us [PPSA03596] v01.000.000 · NVIDIA GeForce RTX 3070 Laptop GPU";
+        if (title != expected)
+        {
+            throw new InvalidOperationException(
+                $"Window title format mismatch.\nExpected: \"{expected}\"\nActual:   \"{title}\"");
+        }
+
+        // Test with empty GPU
+        VideoOutExports.ConfigureApplicationInfo("Test Game", "CUSA00001", null);
+        VideoOutExports.SetSelectedGpuName("NVIDIA GeForce RTX 5070");
+        var title5070 = VideoOutExports.GetWindowTitle();
+        const string expected5070 = "CraziiEmu - Test Game [CUSA00001] · NVIDIA GeForce RTX 5070";
+        if (title5070 != expected5070)
+        {
+            throw new InvalidOperationException(
+                $"Window title format mismatch for RTX 5070.\nExpected: \"{expected5070}\"\nActual:   \"{title5070}\"");
+        }
+
+        Console.WriteLine("  [PASS] 20. Window title with GPU name format verified cleanly");
     }
 }

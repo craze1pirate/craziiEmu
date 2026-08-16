@@ -140,7 +140,12 @@ public static class VideoOutExports
     {
         lock (_stateGate)
         {
-            return $"CraziiEmu - {_applicationWindowTitle}";
+            if (string.IsNullOrWhiteSpace(_selectedGpuName))
+            {
+                return $"CraziiEmu - {_applicationWindowTitle}";
+            }
+
+            return $"CraziiEmu - {_applicationWindowTitle} · {_selectedGpuName}";
         }
     }
 
