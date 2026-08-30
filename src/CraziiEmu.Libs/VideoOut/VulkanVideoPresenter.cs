@@ -1685,6 +1685,7 @@ internal static unsafe class VulkanVideoPresenter
                 VideoOutHandle: videoOutHandle,
                 FlipArg: flipArg,
                 IsHdr: VideoOutExports.IsHdrOutputRequested);
+            _pendingGuestColorClears[address] = 0;
             _latestPresentation = presentation;
             _pendingGuestImagePresentations.Enqueue(presentation);
             while (_pendingGuestImagePresentations.Count > MaxPendingGuestFlipVersions)
@@ -5937,6 +5938,14 @@ internal static unsafe class VulkanVideoPresenter
                     {
                         _pendingGuestImagePresentations.Dequeue();
                     }
+                }
+
+                _pendingGuestColorClears[work.Address] = 0;
+                foreach (var depth in _guestDepthImages.Values)
+                {
+                    depth.Initialized = false;
+                    depth.InitializationSource = "none";
+                    depth.Layout = ImageLayout.Undefined;
                 }
 
                 CollectAbandonedGuestImageVersions();

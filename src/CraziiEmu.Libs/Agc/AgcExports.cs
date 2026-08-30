@@ -9411,6 +9411,7 @@ public static partial class AgcExports
             "SWaitcnt" or
             "SInstPrefetch" or
             "SEndpgm" or
+            "SMovB32" or
             "VMovB32" ||
         instruction.Control is Gen5ExportControl { Target: 0 };
 
@@ -9495,7 +9496,6 @@ public static partial class AgcExports
     {
         if (!_fillClearHack ||
             textures.Count != 0 ||
-            vertexInputs.Count != 0 ||
             pixelUserData.Count < 4 ||
             !renderState.Blends.All(IsTransparentPremultipliedFillBlend))
         {

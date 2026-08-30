@@ -94,7 +94,7 @@
 
         <!-- ── Hover on non-selected ── -->
         <Style Selector="ListBox.Carousel ListBoxItem:pointerover Border.GameCard">
-            <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
         </Style>
 
         <!-- ── Carousel list itself ── -->
@@ -266,7 +266,13 @@
     <Grid>
 
         <!-- Layer -1: Wallpaper (behind particles) -->
-        <Image x:Name="WallpaperImage" Stretch="UniformToFill" IsHitTestVisible="False" Opacity="0.6"/>
+        <Image x:Name="WallpaperImage" Stretch="UniformToFill" IsHitTestVisible="False" Opacity="0.6">
+            <Image.Transitions>
+                <Transitions>
+                    <DoubleTransition Property="Opacity" Duration="0:0:0.35" Easing="CubicEaseOut"/>
+                </Transitions>
+            </Image.Transitions>
+        </Image>
 
         <!-- Layer 0: Ambient particles -->
         <local:ParticleControl IsHitTestVisible="False" Opacity="0.45"/>
@@ -439,6 +445,7 @@
                                 <!-- VerticalAlignment=Bottom so all cards anchor to the bottom edge -->
                                 <StackPanel Orientation="Horizontal"
                                             Spacing="16"
+                                            Margin="0,0,800,0"
                                             UseLayoutRounding="False"
                                             VerticalAlignment="Bottom"/>
                             </ItemsPanelTemplate>

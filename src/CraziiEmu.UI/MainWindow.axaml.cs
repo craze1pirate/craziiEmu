@@ -1,3 +1,4 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -102,12 +103,27 @@ public partial class MainWindow : Window
         
         GameCarousel.SelectionChanged += OnCarouselSelectionChanged;
         GameCarousel.SelectedIndex = Games.Count > 0 ? 0 : -1;
+        SizeChanged += (_, _) => ScrollToSelectedItem(GameCarousel.SelectedIndex);
+        MainScrollViewer.PointerWheelChanged += OnCarouselPointerWheelChanged;
 
         // ── Action buttons ─────────────────────────────────────────────
         BtnPlay.Click += OnBtnPlay;
         BtnStop.Click += OnBtnStop;
         BtnAddGameTop.Click += OnBtnAddGame;
         BtnAddGameEmpty.Click += OnBtnAddGame;
+        Closing += (_, _) =>
+        {
+            try
+            {
+                if (_gameProcess is not null && !_gameProcess.HasExited)
+                {
+                    _gameProcess.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+            }
+        };
 
         // ── Real-time clock ────────────────────────────────────────────
         var clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -545,6 +561,7 @@ public partial class MainWindow : Window
         {
             _selectedExecutablePath = selected.ExecutablePath;
             UpdateCarouselFooter(selected.Title);
+            ScrollToSelectedItem(GameCarousel.SelectedIndex);
 
             string? picPath = null;
             if (!string.IsNullOrEmpty(selected.ExecutablePath))
@@ -613,6 +630,101 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ScrollToSelectedItem(int index)
+    {
+        if (index < 0 || Games.Count == 0) return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                const double unselectedStride = 88.0 + 16.0; // 104.0 px
+                const double selectedWidth = 134.0;
+                
+                // Get current viewport width of carousel container
+                double viewportWidth = MainScrollViewer.Viewport.Width > 0 
+                    ? MainScrollViewer.Viewport.Width 
+                    : (Bounds.Width > 0 ? Bounds.Width : 1280.0);
+
+                double totalContentWidth = (Games.Count - 1) * unselectedStride + selectedWidth;
+                
+                // Total available padding inside the scroll viewer (40px left + 40px right)
+                double maxScrollX = Math.Max(0, totalContentWidth + 80.0 - viewportWidth);
+
+                // 1. If all tiles fit within the viewport (common in fullscreen or wide windows), lock offset to 0
+                if (totalContentWidth <= viewportWidth - 80.0)
+                {
+                    MainScrollViewer.Offset = new Avalonia.Vector(0, 0);
+                    return;
+                }
+
+                // 2. Dynamic Viewport Clamping:
+                double itemLeft = index * unselectedStride;
+                double itemRight = itemLeft + selectedWidth;
+
+                double currentOffset = MainScrollViewer.Offset.X;
+                double screenLeft = itemLeft - currentOffset;
+                double screenRight = itemRight - currentOffset;
+
+                // Thresholds: keep 40px left margin and 160px right margin (so next preview is visible)
+                const double leftThreshold = 40.0;
+                double rightThreshold = Math.Max(160.0, selectedWidth + 40.0);
+
+                double targetX = currentOffset;
+
+                // Wrap-around special anchors:
+                if (index == 0)
+                {
+                    targetX = 0;
+                }
+                else if (index == Games.Count - 1)
+                {
+                    targetX = maxScrollX;
+                }
+                // If moving beyond right safe zone, shift right to bring item into view
+                else if (screenRight > viewportWidth - rightThreshold)
+                {
+                    targetX = itemRight - (viewportWidth - rightThreshold);
+                }
+                // If moving beyond left safe zone, shift left to bring item into view
+                else if (screenLeft < leftThreshold)
+                {
+                    targetX = itemLeft - leftThreshold;
+                }
+
+                // Clamp within bounds [0, maxScrollX]
+                targetX = Math.Clamp(targetX, 0, maxScrollX);
+
+                MainScrollViewer.Offset = new Avalonia.Vector(targetX, 0);
+            }
+            catch
+            {
+            }
+        }, DispatcherPriority.Render);
+    }
+
+    private void OnCarouselPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (Games.Count == 0) return;
+
+        if (e.Delta.Y < 0 || e.Delta.X < 0)
+        {
+            if (GameCarousel.SelectedIndex < GameCarousel.ItemCount - 1)
+            {
+                GameCarousel.SelectedIndex++;
+            }
+            e.Handled = true;
+        }
+        else if (e.Delta.Y > 0 || e.Delta.X > 0)
+        {
+            if (GameCarousel.SelectedIndex > 0)
+            {
+                GameCarousel.SelectedIndex--;
+            }
+            e.Handled = true;
+        }
+    }
+
     private void SaveLibrary()
     {
         try
@@ -645,6 +757,8 @@ public partial class MainWindow : Window
                 var loadedGames = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<GameItem>>(json);
                 if (loadedGames != null)
                 {
+                    loadedGames.Sort((a, b) => string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase));
+
                     foreach (var g in loadedGames)
                     {
                         if (!string.IsNullOrEmpty(g.BoxartPath) && System.IO.File.Exists(g.BoxartPath))
@@ -668,92 +782,214 @@ public partial class MainWindow : Window
     // ══════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// Opens a folder picker so the user can add a game folder to the library.
+    /// Opens a folder picker so the user can select a game folder or parent games directory to scan.
     /// </summary>
     private async void OnBtnAddGame(object? sender, RoutedEventArgs e)
     {
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
-            Title         = "Add Game — Select Game Folder",
+            Title         = "Add Games — Select Game Folder or Root Games Directory",
             AllowMultiple = false
         });
 
         if (folders.Count > 0)
         {
             var folderPath = folders[0].Path.LocalPath;
-            var ebootPath = System.IO.Path.Combine(folderPath, "eboot.bin");
-
-            if (!System.IO.File.Exists(ebootPath))
+            if (System.IO.Directory.Exists(folderPath))
             {
-                AppendConsole($"[Library] Could not find eboot.bin in folder: {folderPath}");
-                return;
+                await ScanDirectoryAndAddGamesAsync(folderPath);
             }
+        }
+    }
 
-            var path = ebootPath;
+    /// <summary>
+    /// Recursively scans a root directory to discover all valid PS5 titles (eboot.bin/elf),
+    /// extracts metadata, loads artwork, and registers them in the library.
+    /// </summary>
+    private async System.Threading.Tasks.Task ScanDirectoryAndAddGamesAsync(string rootPath)
+    {
+        AppendConsole($"[Library] Starting recursive scan in: {rootPath}…");
 
-            // Prevent duplicate entries
+        var discoveredEboots = await System.Threading.Tasks.Task.Run(() =>
+        {
+            var results = new System.Collections.Generic.List<string>();
+            try
+            {
+                // Check if the root folder itself directly contains eboot.bin / eboot.elf
+                foreach (var directFile in new[] { "eboot.bin", "eboot.elf", "EBOOT.BIN", "EBOOT.ELF" })
+                {
+                    var directPath = System.IO.Path.Combine(rootPath, directFile);
+                    if (System.IO.File.Exists(directPath))
+                    {
+                        results.Add(directPath);
+                        break;
+                    }
+                }
+
+                // Recursively scan subdirectories for all eboot.bin and eboot.elf
+                var enumerationOptions = new System.IO.EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    MatchCasing = System.IO.MatchCasing.CaseInsensitive,
+                    AttributesToSkip = System.IO.FileAttributes.ReparsePoint | System.IO.FileAttributes.System,
+                    MaxRecursionDepth = 12
+                };
+
+                var files = System.IO.Directory.EnumerateFiles(rootPath, "*eboot.bin", enumerationOptions)
+                    .Concat(System.IO.Directory.EnumerateFiles(rootPath, "*eboot.elf", enumerationOptions));
+
+                foreach (var file in files)
+                {
+                    var fileName = System.IO.Path.GetFileName(file);
+                    if (string.Equals(fileName, "eboot.bin", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(fileName, "eboot.elf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!results.Contains(file, StringComparer.OrdinalIgnoreCase))
+                        {
+                            results.Add(file);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendConsole($"[Library] Scan warning: {ex.Message}");
+            }
+            return results;
+        });
+
+        if (discoveredEboots.Count == 0)
+        {
+            AppendConsole($"[Library] No PS5 titles (eboot.bin) found in: {rootPath}");
+            return;
+        }
+
+        int addedCount = 0;
+        int firstAddedIndex = -1;
+
+        foreach (var ebootPath in discoveredEboots)
+        {
+            // Check for duplicate registration
+            int existingIndex = -1;
             for (int i = 0; i < Games.Count; i++)
             {
-                if (string.Equals(Games[i].ExecutablePath, path, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(Games[i].ExecutablePath, ebootPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    GameCarousel.SelectedIndex = i;
-                    AppendConsole($"[Library] Game already exists in library: {path}");
-                    return;
+                    existingIndex = i;
+                    break;
                 }
             }
 
-            var filename = System.IO.Path.GetFileName(folderPath);
-            var title = filename;
+            if (existingIndex >= 0)
+            {
+                if (discoveredEboots.Count == 1)
+                {
+                    GameCarousel.SelectedIndex = existingIndex;
+                    ScrollToSelectedItem(existingIndex);
+                    AppendConsole($"[Library] Game already exists in library: {ebootPath}");
+                }
+                continue;
+            }
+
+            var gameDirectory = System.IO.Path.GetDirectoryName(ebootPath);
+            if (string.IsNullOrEmpty(gameDirectory)) continue;
+
+            var folderName = System.IO.Path.GetFileName(gameDirectory);
+            var title = folderName;
             var titleId = string.Empty;
             var version = string.Empty;
 
-            var paramPath = System.IO.Path.Combine(folderPath, "sce_sys", "param.json");
+            var paramPath = System.IO.Path.Combine(gameDirectory, "sce_sys", "param.json");
             if (System.IO.File.Exists(paramPath))
             {
-                var data = System.IO.File.ReadAllBytes(paramPath);
-                var meta = Ps5ParamJsonReader.TryReadPs5Param(data);
-                
-                if (!string.IsNullOrEmpty(meta.Title)) title = meta.Title;
-                if (!string.IsNullOrEmpty(meta.TitleId)) titleId = meta.TitleId;
-                if (!string.IsNullOrEmpty(meta.Version)) version = meta.Version;
+                try
+                {
+                    var data = await System.IO.File.ReadAllBytesAsync(paramPath);
+                    var meta = Ps5ParamJsonReader.TryReadPs5Param(data);
+                    if (!string.IsNullOrEmpty(meta.Title)) title = meta.Title;
+                    if (!string.IsNullOrEmpty(meta.TitleId)) titleId = meta.TitleId;
+                    if (!string.IsNullOrEmpty(meta.Version)) version = meta.Version;
+                }
+                catch { }
             }
-            
-            var coverPath = FindCoverFor(path);
+
+            var coverPath = FindCoverFor(ebootPath);
             Avalonia.Media.Imaging.Bitmap? coverArt = null;
             if (coverPath != null)
             {
                 try
                 {
-                    coverArt = new Avalonia.Media.Imaging.Bitmap(coverPath);
+                    coverArt = await System.Threading.Tasks.Task.Run(() => new Avalonia.Media.Imaging.Bitmap(coverPath));
                 }
-                catch
-                {
-                    // Ignore decode errors
-                }
+                catch { }
             }
 
-            var newGame = new GameItem 
-            { 
-                Title = !string.IsNullOrEmpty(version) ? $"{title} [{titleId}] v{version}" : title, 
-                ExecutablePath = path,
+            string displayTitle;
+            if (!string.IsNullOrEmpty(titleId) && !string.IsNullOrEmpty(version))
+                displayTitle = $"{title} [{titleId}] v{version}";
+            else if (!string.IsNullOrEmpty(titleId))
+                displayTitle = $"{title} [{titleId}]";
+            else
+                displayTitle = title;
+
+            var newGame = new GameItem
+            {
+                Title = displayTitle,
+                ExecutablePath = ebootPath,
                 BoxartPath = coverPath ?? string.Empty,
                 CoverArt = coverArt
             };
-            
+
             Games.Add(newGame);
-            AppendConsole($"[Library] Added: {path}");
-            
+            if (firstAddedIndex == -1)
+            {
+                firstAddedIndex = Games.Count - 1;
+            }
+            addedCount++;
+            AppendConsole($"[Library] Discovered: {title} ({ebootPath})");
+        }
+
+        if (addedCount > 0)
+        {
+            // Sort all games alphabetically ascending by Title (A to Z)
+            var currentSelectedPath = _selectedExecutablePath;
+            var sortedList = Games.OrderBy(g => g.Title, StringComparer.OrdinalIgnoreCase).ToList();
+            Games.Clear();
+            foreach (var g in sortedList)
+            {
+                Games.Add(g);
+            }
+
             SaveLibrary();
             UpdateEmptyState();
 
-            // Auto-select the newly added game
-            GameCarousel.SelectedIndex = Games.Count - 1;
+            int selectedIndex = 0;
+            if (!string.IsNullOrEmpty(currentSelectedPath))
+            {
+                for (int i = 0; i < Games.Count; i++)
+                {
+                    if (string.Equals(Games[i].ExecutablePath, currentSelectedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            GameCarousel.SelectedIndex = selectedIndex;
+            ScrollToSelectedItem(selectedIndex);
+            AppendConsole($"[Library] Scan complete. Added {addedCount} new title(s) ({Games.Count} total in library).");
+        }
+        else if (discoveredEboots.Count > 1)
+        {
+            AppendConsole($"[Library] Scan complete. All {discoveredEboots.Count} discovered title(s) are already registered in the library.");
         }
     }
 
     /// <summary>
     /// Finds the cover art shipped with the game: sce_sys/icon0.png next to
-    /// the executable (falling back to pic0.png).
+    /// the executable (falling back to pic0.png, pic1.png, or cover.png).
     /// </summary>
     private static string? FindCoverFor(string ebootPath)
     {
@@ -764,9 +1000,18 @@ public partial class MainWindow : Window
         }
 
         var sceSys = System.IO.Path.Combine(directory, "sce_sys");
-        foreach (var candidate in new[] { "icon0.png", "pic0.png" })
+        foreach (var candidate in new[] { "icon0.png", "icon0_00.png", "icon0.jpg", "pic0.png", "pic1.png" })
         {
             var coverPath = System.IO.Path.Combine(sceSys, candidate);
+            if (System.IO.File.Exists(coverPath))
+            {
+                return coverPath;
+            }
+        }
+
+        foreach (var candidate in new[] { "icon0.png", "cover.png", "cover.jpg", "poster.png", "poster.jpg" })
+        {
+            var coverPath = System.IO.Path.Combine(directory, candidate);
             if (System.IO.File.Exists(coverPath))
             {
                 return coverPath;
@@ -879,7 +1124,7 @@ public partial class MainWindow : Window
             AppendConsole("[Emulation] Force terminating game...");
             try
             {
-                _gameProcess.Kill();
+                _gameProcess.Kill(entireProcessTree: true);
             }
             catch (Exception ex)
             {
