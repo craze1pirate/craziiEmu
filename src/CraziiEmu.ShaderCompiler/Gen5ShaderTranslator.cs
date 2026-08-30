@@ -1647,10 +1647,16 @@ public static class Gen5ShaderTranslator
             binding.ResourceDescriptor.SequenceEqual(candidate.ResourceDescriptor));
     }
 
-    public static bool IsArrayedImageBinding(Gen5ImageBinding binding) =>
-        binding.Control.IsArray &&
-        (binding.Opcode.StartsWith("ImageSample", StringComparison.Ordinal) ||
-         binding.Opcode.StartsWith("ImageGather4", StringComparison.Ordinal));
+    public static bool IsArrayedImageBinding(Gen5ImageBinding binding)
+    {
+        var type = binding.ResourceDescriptor.Count >= 4
+            ? (binding.ResourceDescriptor[3] >> 28) & 0xFu
+            : 0u;
+        var isArrayType = type is 12 or 13; // kColor1DArray, kColor2DArray
+        return (binding.Control.IsArray || isArrayType) &&
+            (binding.Opcode.StartsWith("ImageSample", StringComparison.Ordinal) ||
+             binding.Opcode.StartsWith("ImageGather4", StringComparison.Ordinal));
+    }
 
     public static bool IsDataShareAtomic(string name) => name switch
     {

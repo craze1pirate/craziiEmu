@@ -8268,11 +8268,27 @@ public static partial class AgcExports
             // modelling DCC block state.
             if (translatedDraw.IsDccFastClear)
             {
-                foreach (var target in translatedDraw.GuestTargets)
+                if (translatedDraw.ClearRed != 0f ||
+                    translatedDraw.ClearGreen != 0f ||
+                    translatedDraw.ClearBlue != 0f ||
+                    translatedDraw.ClearAlpha != 0f)
                 {
-                    if (target.Address != 0)
+                    VulkanVideoPresenter.SubmitOffscreenColorClear(
+                        translatedDraw.GuestTargets,
+                        translatedDraw.ClearRed,
+                        translatedDraw.ClearGreen,
+                        translatedDraw.ClearBlue,
+                        translatedDraw.ClearAlpha,
+                        translatedDraw.ExportShaderAddress);
+                }
+                else
+                {
+                    foreach (var target in translatedDraw.GuestTargets)
                     {
-                        VulkanVideoPresenter.RequestGuestColorClear(target.Address);
+                        if (target.Address != 0)
+                        {
+                            VulkanVideoPresenter.RequestGuestColorClear(target.Address);
+                        }
                     }
                 }
 
@@ -9207,6 +9223,16 @@ public static partial class AgcExports
             vertexInputs,
             pixelEvaluation.InitialScalarRegisters);
 
+        var isDccFastClear = IsDccFastClearDraw(
+            state.CxRegisters,
+            renderTargets,
+            textures,
+            vertexInputs,
+            renderState,
+            primitiveType,
+            vertexCount,
+            out var dccClearColor);
+
         draw = new TranslatedGuestDraw(
             exportShaderAddress,
             pixelShaderAddress,
@@ -9235,18 +9261,11 @@ public static partial class AgcExports
             pixelEvaluation.InitialScalarRegisters,
             exportEvaluation.InitialScalarRegisters,
             useFixedFullscreenClear,
-            fullscreenClearColor.Red,
-            fullscreenClearColor.Green,
-            fullscreenClearColor.Blue,
-            fullscreenClearColor.Alpha,
-            IsDccFastClearDraw(
-                state.CxRegisters,
-                renderTargets,
-                textures,
-                vertexInputs,
-                renderState,
-                primitiveType,
-                vertexCount));
+            useFixedFullscreenClear ? fullscreenClearColor.Red : (isDccFastClear ? dccClearColor.Red : 0f),
+            useFixedFullscreenClear ? fullscreenClearColor.Green : (isDccFastClear ? dccClearColor.Green : 0f),
+            useFixedFullscreenClear ? fullscreenClearColor.Blue : (isDccFastClear ? dccClearColor.Blue : 0f),
+            useFixedFullscreenClear ? fullscreenClearColor.Alpha : (isDccFastClear ? dccClearColor.Alpha : 1f),
+            isDccFastClear);
         return true;
     }
 
@@ -9548,6 +9567,41 @@ public static partial class AgcExports
     private const uint PositionDataFormat = 13;
     private const uint PositionNumberFormat = 7;
 
+    private static bool TryDecodePackedDccClearColor(
+        uint format,
+        uint numberType,
+        uint packed,
+        out (float Red, float Green, float Blue, float Alpha) clear)
+    {
+        static float Unorm8(uint v) => (v & 0xFFu) / 255.0f;
+        static float Srgb8(uint v)
+        {
+            var enc = (v & 0xFFu) / 255.0f;
+            return enc <= 0.04045f ? enc / 12.92f : MathF.Pow((enc + 0.055f) / 1.055f, 2.4f);
+        }
+
+        switch (format, numberType)
+        {
+            case (10, 9): // R8G8B8A8 Srgb
+                clear = (Srgb8(packed), Srgb8(packed >> 8), Srgb8(packed >> 16), Unorm8(packed >> 24));
+                return true;
+            case (10, _): // R8G8B8A8 Unorm
+                clear = (Unorm8(packed), Unorm8(packed >> 8), Unorm8(packed >> 16), Unorm8(packed >> 24));
+                return true;
+            case (8, 0): // A2B10G10R10
+            case (9, _):
+                clear = (
+                    (packed & 0x3FFu) / 1023.0f,
+                    ((packed >> 10) & 0x3FFu) / 1023.0f,
+                    ((packed >> 20) & 0x3FFu) / 1023.0f,
+                    ((packed >> 30) & 0x3u) / 3.0f);
+                return true;
+            default:
+                clear = (0f, 0f, 0f, 0f);
+                return true;
+        }
+    }
+
     private static bool IsDccFastClearDraw(
         IReadOnlyDictionary<uint, uint> registers,
         IReadOnlyList<RenderTargetDescriptor> renderTargets,
@@ -9555,8 +9609,10 @@ public static partial class AgcExports
         IReadOnlyList<Gen5VertexInputBinding> vertexInputs,
         GuestRenderState renderState,
         uint primitiveType,
-        uint vertexCount)
+        uint vertexCount,
+        out (float Red, float Green, float Blue, float Alpha) dccClearColor)
     {
+        dccClearColor = (0f, 0f, 0f, 0f);
         if (textures.Count != 0 ||
             vertexCount != 4 ||
             primitiveType != TriangleStripPrimitive ||
@@ -9568,13 +9624,26 @@ public static partial class AgcExports
         }
 
         var slotStride = renderTargets[0].Slot * CbColorRegisterStride;
-        return registers.TryGetValue(CbColor0Info + slotStride, out var info) &&
-            (info & CbColorInfoDccEnableMask) != 0 &&
-            registers.TryGetValue(CbColor0ClearWord0 + slotStride, out var clearWord0) &&
-            registers.TryGetValue(CbColor0ClearWord1 + slotStride, out var clearWord1) &&
-            clearWord0 == 0 &&
-            clearWord1 == 0 &&
-            CoversClipSpace(vertexInputs, vertexCount);
+        if (!registers.TryGetValue(CbColor0Info + slotStride, out var info) ||
+            (info & CbColorInfoDccEnableMask) == 0 ||
+            !registers.TryGetValue(CbColor0ClearWord0 + slotStride, out var clearWord0) ||
+            !registers.TryGetValue(CbColor0ClearWord1 + slotStride, out var clearWord1) ||
+            !CoversClipSpace(vertexInputs, vertexCount))
+        {
+            return false;
+        }
+
+        if (clearWord0 == 0 && clearWord1 == 0)
+        {
+            dccClearColor = (0f, 0f, 0f, 0f);
+            return true;
+        }
+
+        return TryDecodePackedDccClearColor(
+            renderTargets[0].Format,
+            renderTargets[0].NumberType,
+            clearWord0,
+            out dccClearColor);
     }
 
     /// <summary>
