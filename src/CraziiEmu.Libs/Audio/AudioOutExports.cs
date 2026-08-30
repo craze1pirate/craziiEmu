@@ -709,7 +709,7 @@ public static class AudioOutExports
     }
 
     [SysAbiExport(
-        Nid = "QcteRwbsnV0",
+        Nid = "58E5yeb1P7s",
         ExportName = "sceAudioOutGetPortTimestamp",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceAudioOut")]
