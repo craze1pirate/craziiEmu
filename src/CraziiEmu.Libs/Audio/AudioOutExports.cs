@@ -315,9 +315,15 @@ public static class AudioOutExports
     }
 
     [SysAbiExport(
+        Nid = "n91w1sJ7WdM",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceAudioOut")]
+    public static int AudioOutOutputGen4(CpuContext ctx) => AudioOutOutput(ctx);
+
+    [SysAbiExport(
         Nid = "QOQtbeDqsT4",
         ExportName = "sceAudioOutOutput",
-        Target = Generation.Gen5,
+        Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libSceAudioOut")]
     public static int AudioOutOutput(CpuContext ctx)
     {
@@ -702,6 +708,31 @@ public static class AudioOutExports
         port.RegisteredEventQueue = 0;
         port.RegisteredEventUserData = 0;
         return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "QcteRwbsnV0",
+        ExportName = "sceAudioOutGetPortTimestamp",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceAudioOut")]
+    public static int AudioOutGetPortTimestamp(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var timestampAddress = ctx[CpuRegister.Rsi];
+        if (timestampAddress == 0 || !Ports.TryGetValue(handle, out var port))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        Span<byte> timestamp = stackalloc byte[16];
+        timestamp.Clear();
+        BinaryPrimitives.WriteInt64LittleEndian(timestamp[0x00..], port.TotalSamplesPlayed);
+        BinaryPrimitives.WriteInt64LittleEndian(
+            timestamp[0x08..],
+            checked((long)(Stopwatch.GetTimestamp() * 1_000_000_000.0 / Stopwatch.Frequency)));
+        return ctx.Memory.TryWrite(timestampAddress, timestamp)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
 
     [SysAbiExport(
