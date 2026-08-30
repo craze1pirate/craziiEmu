@@ -36,10 +36,13 @@ public static unsafe class RenderDocCapture
 
         _initialized = true;
 
-        if (!string.Equals(
+        var isEnabled = string.Equals(
                 Environment.GetEnvironmentVariable("CRAZIIEMU_RENDERDOC"),
                 "1",
-                StringComparison.Ordinal))
+                StringComparison.Ordinal) ||
+            CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.EnableRenderDocCapture;
+
+        if (!isEnabled)
         {
             return;
         }
@@ -47,7 +50,7 @@ public static unsafe class RenderDocCapture
         if (!TryLoadLibrary(out var module))
         {
             Console.Error.WriteLine(
-                "[LOADER][WARN] renderdoc: CRAZIIEMU_RENDERDOC=1 was set but renderdoc.dll could not be loaded.");
+                "[LOADER][WARN] renderdoc: RenderDoc capture is enabled but renderdoc.dll could not be loaded. Please ensure RenderDoc is installed.");
             return;
         }
 
@@ -120,7 +123,18 @@ public static unsafe class RenderDocCapture
     {
         if (_api is null)
         {
-            return;
+            if (CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.EnableRenderDocCapture ||
+                string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_RENDERDOC"), "1", StringComparison.Ordinal))
+            {
+                Initialize();
+            }
+
+            if (_api is null)
+            {
+                Console.Error.WriteLine(
+                    "[LOADER][WARN] renderdoc: capture requested but RenderDoc is disabled or unavailable.");
+                return;
+            }
         }
 
         if (Interlocked.CompareExchange(ref _state, StateRequested, StateIdle) == StateIdle)

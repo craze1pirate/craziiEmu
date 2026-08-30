@@ -493,6 +493,14 @@ public partial class MainWindow : Window
                 CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.CycleMode();
                 e.Handled = true;
             }
+            else if (e.Key == Key.F10 || pressedVk == 0x79)
+            {
+                if (config.EnableRenderDocCapture || CraziiEmu.Libs.VideoOut.RenderDocCapture.IsAvailable)
+                {
+                    CraziiEmu.Libs.VideoOut.RenderDocCapture.RequestCapture();
+                    e.Handled = true;
+                }
+            }
         }
     }
 
@@ -1062,6 +1070,11 @@ public partial class MainWindow : Window
                 RedirectStandardError = true,
                 CreateNoWindow = true
             };
+
+            if (CraziiEmuConfig.Instance.EnableRenderDocCapture)
+            {
+                startInfo.Environment["CRAZIIEMU_RENDERDOC"] = "1";
+            }
 
             _gameProcess = new System.Diagnostics.Process { StartInfo = startInfo, EnableRaisingEvents = true };
 

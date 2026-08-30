@@ -51,6 +51,7 @@ public class CraziiEmuConfig
     public float ResolutionScale { get; set; } = 1.0f;
     public string DisplayScaling { get; set; } = "Fit";
     public bool UiFullscreenOnStartup { get; set; } = false;
+    public bool EnableRenderDocCapture { get; set; } = false;
 
     public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
     public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3
@@ -89,6 +90,7 @@ public class CraziiEmuConfig
                         HotkeyMetricsOverlay = updated.HotkeyMetricsOverlay;
                         HotkeyVerboseConsole = updated.HotkeyVerboseConsole;
                         DisplayScaling = updated.DisplayScaling;
+                        EnableRenderDocCapture = updated.EnableRenderDocCapture;
                     }
                 }
             }

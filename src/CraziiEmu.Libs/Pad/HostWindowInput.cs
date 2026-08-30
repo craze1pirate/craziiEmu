@@ -4,6 +4,7 @@
 
 using CraziiEmu.HLE.Host;
 using CraziiEmu.HLE.Configuration;
+using CraziiEmu.Libs.VideoOut;
 using Silk.NET.Input;
 using System;
 using System.Collections.Generic;
@@ -87,6 +88,13 @@ public static class HostWindowInput
         {
             keyboard.KeyDown += (_, key, _) =>
             {
+                if (key == Key.F10)
+                {
+                    if (CraziiEmuConfig.Instance.EnableRenderDocCapture || RenderDocCapture.IsAvailable)
+                    {
+                        RenderDocCapture.RequestCapture();
+                    }
+                }
                 lock (Gate) { Pressed.Add(key); }
             };
             keyboard.KeyUp += (_, key, _) =>

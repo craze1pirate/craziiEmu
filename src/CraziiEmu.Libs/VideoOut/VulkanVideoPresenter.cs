@@ -3766,6 +3766,7 @@ internal static unsafe class VulkanVideoPresenter
             }
 
             WaitForRenderDocAttachIfRequested();
+            RenderDocCapture.Initialize();
             _vk = Vk.GetApi();
             CreateInstance();
             CreateSurface();
