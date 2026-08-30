@@ -7591,7 +7591,7 @@ internal static unsafe class VulkanVideoPresenter
                         DepthWriteEnable = depth.WriteEnable,
                         DepthCompareOp = ToVkCompareOp(depth.CompareOp),
                         DepthBoundsTestEnable = false,
-                        StencilTestEnable = false,
+                        StencilTestEnable = depth.StencilTestEnable,
                     };
                     var pipelineInfo = new GraphicsPipelineCreateInfo
                     {

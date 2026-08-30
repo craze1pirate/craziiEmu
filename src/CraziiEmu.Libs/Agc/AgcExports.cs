@@ -10159,13 +10159,14 @@ public static partial class AgcExports
     {
         var hasDepthControl = registers.TryGetValue(DbDepthControl, out var control);
         registers.TryGetValue(DbRenderControl, out var renderControl);
+        var stencilEnable = (control & 0x1u) != 0;
         var testEnable = (control & 0x2u) != 0;
         var writeEnable = (control & 0x4u) != 0;
         var compareOp = hasDepthControl
             ? (control >> 4) & 0x7u
             : GuestDepthState.Default.CompareOp;
         var clearEnable = (renderControl & 0x1u) != 0;
-        return new GuestDepthState(testEnable, writeEnable, compareOp, clearEnable);
+        return new GuestDepthState(testEnable, writeEnable, compareOp, clearEnable, stencilEnable);
     }
 
     private static GuestDepthTarget? DecodeDepthTarget(
@@ -10174,7 +10175,8 @@ public static partial class AgcExports
         var depthState = DecodeDepthState(registers);
         if (!depthState.TestEnable &&
             !depthState.WriteEnable &&
-            !depthState.ClearEnable)
+            !depthState.ClearEnable &&
+            !depthState.StencilTestEnable)
         {
             return null;
         }
