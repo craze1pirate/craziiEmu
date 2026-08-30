@@ -267,7 +267,7 @@
                                         <TextBlock Text="Metrics Overlay" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" />
                                         <Button x:Name="BindHotkeyOverlay" Grid.Row="1" Grid.Column="1" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
 
-                                        <TextBlock Text="Verbose Console" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
+                                        <TextBlock Text="Logging Overlay" Foreground="#FFFFFF" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" />
                                         <Button x:Name="BindHotkeyConsole" Grid.Row="1" Grid.Column="4" Background="#1A1A1A" Foreground="#FFFFFF" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                                     </Grid>
                                 </StackPanel>
