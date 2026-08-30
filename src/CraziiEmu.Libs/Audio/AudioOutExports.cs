@@ -80,7 +80,7 @@ public static class AudioOutExports
         public int BufferByteLength =>
             checked((int)BufferLength * Channels * BytesPerSample);
 
-        public void PaceSilence()
+        public void Pace()
         {
             long delay;
             lock (_paceGate)
@@ -102,6 +102,8 @@ public static class AudioOutExports
                 Thread.Sleep(TimeSpan.FromSeconds((double)delay / Stopwatch.Frequency));
             }
         }
+
+        public void PaceSilence() => Pace();
 
         public void Dispose() => Dispose(0);
 
@@ -367,7 +369,7 @@ public static class AudioOutExports
 
             if (port.Backend is null)
             {
-                port.PaceSilence();
+                port.Pace();
                 return ctx.SetReturn(0);
             }
 
@@ -378,10 +380,8 @@ public static class AudioOutExports
             try
             {
                 ConvertForHost(port, source, output.AsSpan(0, outputLength));
-                if (!port.Backend.Submit(output.AsSpan(0, outputLength)))
-                {
-                    port.PaceSilence();
-                }
+                port.Backend.Submit(output.AsSpan(0, outputLength));
+                port.Pace();
             }
             finally
             {
@@ -520,23 +520,21 @@ public static class AudioOutExports
                         output.Port.RegisteredEventUserData);
                 }
 
-                if (output.HostBuffer is null ||
-                    output.Port.Backend is null ||
-                    !output.Port.Backend.Submit(
-                        output.HostBuffer.AsSpan(0, output.HostBufferLength)))
+                if (output.HostBuffer is not null &&
+                    output.Port.Backend is not null)
                 {
-                    if (pacingPort is null ||
-                        HasLongerBufferDuration(output.Port, pacingPort))
-                    {
-                        pacingPort = output.Port;
-                    }
+                    output.Port.Backend.Submit(
+                        output.HostBuffer.AsSpan(0, output.HostBufferLength));
+                }
+
+                if (pacingPort is null ||
+                    HasLongerBufferDuration(output.Port, pacingPort))
+                {
+                    pacingPort = output.Port;
                 }
             }
 
-            // A batch is one guest scheduling point. When one or more ports have
-            // no usable backend, pace once using the longest affected buffer rather
-            // than sleeping once per port.
-            pacingPort?.PaceSilence();
+            pacingPort?.Pace();
             return checked((int)resolved[0].Port.BufferLength);
         }
         finally
