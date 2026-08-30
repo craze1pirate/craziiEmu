@@ -4599,6 +4599,10 @@ public static partial class AgcExports
             submissionId,
             tracePackets));
         PumpSubmittedQueue(ctx, gpuState, state);
+        if (state.IsSuspended)
+        {
+            EnsureGpuWaitMonitor(ctx, gpuState);
+        }
     }
 
     private static void PumpSubmittedQueue(
@@ -6697,7 +6701,7 @@ public static partial class AgcExports
              Environment.GetEnvironmentVariable("CRAZIIEMU_GPU_DEADLOCK_BREAK_MS"),
              out var deadlockMs) && deadlockMs > 0
             ? deadlockMs
-            : 500L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
+            : 100L) * System.Diagnostics.Stopwatch.Frequency / 1000L;
 
     // Reads the WAIT_REG_MEM watched address, reference, mask, and 3-bit compare
     // function for both the AGC NOP-encapsulated (RWaitMem32/64) and the standard

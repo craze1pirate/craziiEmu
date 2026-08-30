@@ -196,24 +196,8 @@ internal sealed unsafe class SdlHostAudio : IHostPcmAudioOutput
                 }
 
                 var blockStart = Stopwatch.GetTimestamp();
-                var deadline = blockStart +
-                               (Stopwatch.Frequency * MaximumWaitMilliseconds / 1_000);
-                int queued;
-                var overrun = false;
-                while ((queued = SDL_GetAudioStreamQueued(_stream)) > _maximumQueuedBytes)
-                {
-                    if (Stopwatch.GetTimestamp() >= deadline)
-                    {
-                        // Enqueue anyway rather than discarding the buffer. A gap in
-                        // the stream is an audible click; the extra latency of one
-                        // over-deep submission is not, and the queue recovers as soon
-                        // as the device drains back under the cap.
-                        overrun = true;
-                        break;
-                    }
-
-                    Thread.Sleep(1);
-                }
+                var queued = SDL_GetAudioStreamQueued(_stream);
+                var overrun = queued > _maximumQueuedBytes;
 
                 RecordSubmission(queued, blockStart, dropped: overrun, bytes: pcm.Length);
                 bool submitted;

@@ -606,9 +606,15 @@ internal static class GpuWaitRegistry
                 {
                     var waiter = list[i];
                     if (!ReferenceEquals(waiter.Memory, memory) ||
-                        nowTicks - waiter.RegisteredTicks < minAgeTicks ||
-                        !_lastProduced.TryGetValue((memory, address), out var produced) ||
-                        !Compare(waiter, produced))
+                        nowTicks - waiter.RegisteredTicks < minAgeTicks)
+                    {
+                        continue;
+                    }
+
+                    var hasProduced = _lastProduced.TryGetValue((memory, address), out var produced) && Compare(waiter, produced);
+                    var stuckTimeout = (nowTicks - waiter.RegisteredTicks) >= minAgeTicks;
+
+                    if (!hasProduced && !stuckTimeout)
                     {
                         continue;
                     }

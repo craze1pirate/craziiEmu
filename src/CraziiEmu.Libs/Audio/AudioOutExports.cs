@@ -103,10 +103,22 @@ public static class AudioOutExports
             }
         }
 
-        public void Dispose()
+        public void Dispose() => Dispose(0);
+
+        public void Dispose(int handle)
         {
             lock (SubmissionGate)
             {
+                if (RegisteredEventQueue != 0)
+                {
+                    KernelEventQueueCompatExports.DeleteRegisteredEvent(
+                        RegisteredEventQueue,
+                        (ulong)handle,
+                        KernelEventQueueCompatExports.KernelEventFilterUser);
+                    RegisteredEventQueue = 0;
+                    RegisteredEventUserData = 0;
+                }
+
                 Backend?.Dispose();
             }
         }
@@ -216,7 +228,7 @@ public static class AudioOutExports
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        port.Dispose();
+        port.Dispose(handle);
         return ctx.SetReturn(0);
     }
 
@@ -642,8 +654,27 @@ public static class AudioOutExports
             return ctx.SetReturn(AudioOutErrorInvalidPort);
         }
 
+        if (port.RegisteredEventQueue != 0)
+        {
+            KernelEventQueueCompatExports.DeleteRegisteredEvent(
+                port.RegisteredEventQueue,
+                (ulong)handle,
+                KernelEventQueueCompatExports.KernelEventFilterUser);
+        }
+
         port.RegisteredEventQueue = eventQueueHandle;
         port.RegisteredEventUserData = userData;
+
+        if (eventQueueHandle != 0)
+        {
+            KernelEventQueueCompatExports.RegisterEvent(
+                eventQueueHandle,
+                (ulong)handle,
+                KernelEventQueueCompatExports.KernelEventFilterUser,
+                userData,
+                KernelEventQueueCompatExports.KernelEventFlagClear);
+        }
+
         return ctx.SetReturn(0);
     }
 
@@ -658,6 +689,14 @@ public static class AudioOutExports
         if (!Ports.TryGetValue(handle, out var port))
         {
             return ctx.SetReturn(AudioOutErrorInvalidPort);
+        }
+
+        if (port.RegisteredEventQueue != 0)
+        {
+            KernelEventQueueCompatExports.DeleteRegisteredEvent(
+                port.RegisteredEventQueue,
+                (ulong)handle,
+                KernelEventQueueCompatExports.KernelEventFilterUser);
         }
 
         port.RegisteredEventQueue = 0;
