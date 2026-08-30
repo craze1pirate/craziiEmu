@@ -791,6 +791,14 @@
                                                 <ComboBoxItem Content="Developer Mode" />
                                             </ComboBox>
                                         </StackPanel>
+
+                                        <StackPanel Spacing="4">
+                                            <TextBlock Classes="SettingsLabel" Text="RENDERDOC CAPTURE" />
+                                            <ComboBox x:Name="CmbRenderDocCapture" SelectedIndex="0" Width="280" HorizontalAlignment="Left" Background="#111111" Foreground="#FFFFFF">
+                                                <ComboBoxItem Content="Disable" />
+                                                <ComboBoxItem Content="Enable" />
+                                            </ComboBox>
+                                        </StackPanel>
                                     </StackPanel>
                 
                                 </Grid>

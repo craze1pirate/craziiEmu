@@ -1318,6 +1318,13 @@ public partial class MainWindow : Window
             CraziiEmu.Libs.VideoOut.Overlay.OverlayRenderer.Mode = (CraziiEmu.Libs.VideoOut.Overlay.OverlayMode)config.MetricsOverlayMode;
         };
 
+        CmbRenderDocCapture.SelectedIndex = config.EnableRenderDocCapture ? 1 : 0;
+        CmbRenderDocCapture.SelectionChanged += (s, e) =>
+        {
+            config.EnableRenderDocCapture = CmbRenderDocCapture.SelectedIndex == 1;
+            config.Save();
+        };
+
         InitializeHotkeyBindings();
     }
 
