@@ -3208,10 +3208,6 @@ internal static unsafe class VulkanVideoPresenter
         private bool _supportsIndependentBlend;
         private uint _maxColorAttachments;
         private Device _device;
-        private PipelineCache _pipelineCache;
-        private string? _pipelineCachePath;
-        private bool _pipelineCacheDirty;
-        private long _lastPipelineCacheSaveTick;
         private Queue _queue;
         private uint _queueFamilyIndex;
         // GPU deswizzle (default on; CRAZIIEMU_GPU_DETILE=0 forces the CPU path).
@@ -3775,7 +3771,6 @@ internal static unsafe class VulkanVideoPresenter
             CreateSurface();
             SelectPhysicalDevice();
             CreateDevice();
-            CreatePipelineCache();
             CreateSwapchain();
             CreateCommandResources();
             CreateGuestDrawResources();
@@ -4555,203 +4550,6 @@ internal static unsafe class VulkanVideoPresenter
             if (!_vk.TryGetDeviceExtension(_instance, _device, out _swapchainApi))
             {
                 throw new InvalidOperationException("VK_KHR_swapchain is unavailable.");
-            }
-        }
-
-        private void CreatePipelineCache()
-        {
-            var cacheMode = Environment.GetEnvironmentVariable("CRAZIIEMU_VK_PIPELINE_CACHE");
-            // Vulkan cache blobs carry the implementation's compatibility
-            // header and are rejected/rebuilt below when the device or driver
-            // changes. MoltenVK compilation of a large translated shader can
-            // take ten seconds, so discarding a valid cache at every launch is
-            // much more harmful than using Vulkan's normal persistence path.
-            // Keep an explicit opt-out for diagnostics and read-only systems.
-            var persistentCacheEnabled =
-                !string.Equals(cacheMode, "0", StringComparison.Ordinal);
-            _pipelineCachePath = persistentCacheEnabled ? GetPipelineCachePath() : null;
-            byte[] initialData = [];
-            try
-            {
-                if (_pipelineCachePath is not null && File.Exists(_pipelineCachePath))
-                {
-                    initialData = File.ReadAllBytes(_pipelineCachePath);
-                }
-            }
-            catch (Exception exception)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][WARN] Vulkan pipeline cache read failed: {exception.Message}");
-            }
-
-            var result = TryCreatePipelineCache(initialData, out _pipelineCache);
-            if (result != Result.Success && initialData.Length != 0)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][WARN] Vulkan pipeline cache rejected ({result}); rebuilding it.");
-                result = TryCreatePipelineCache([], out _pipelineCache);
-            }
-
-            if (result != Result.Success)
-            {
-                _pipelineCache = default;
-                _pipelineCachePath = null;
-                Console.Error.WriteLine(
-                    $"[LOADER][WARN] Vulkan pipeline cache unavailable: {result}");
-                return;
-            }
-
-            SetDebugName(
-                ObjectType.PipelineCache,
-                _pipelineCache.Handle,
-                _pipelineCachePath is null
-                    ? "CraziiEmu in-memory pipeline cache"
-                    : "CraziiEmu persistent pipeline cache");
-            _lastPipelineCacheSaveTick = Environment.TickCount64;
-            if (_pipelineCachePath is null)
-            {
-                Console.Error.WriteLine(
-                    "[LOADER][INFO] Vulkan pipeline cache ready: memory-only " +
-                    "(persistence disabled with CRAZIIEMU_VK_PIPELINE_CACHE=0).");
-            }
-            else
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][INFO] Vulkan pipeline cache ready: path={_pipelineCachePath} initial={initialData.Length} bytes");
-            }
-        }
-
-        private Result TryCreatePipelineCache(byte[] initialData, out PipelineCache pipelineCache)
-        {
-            fixed (byte* initialDataPointer = initialData)
-            {
-                var createInfo = new PipelineCacheCreateInfo
-                {
-                    SType = StructureType.PipelineCacheCreateInfo,
-                    InitialDataSize = (nuint)initialData.Length,
-                    PInitialData = initialData.Length == 0 ? null : initialDataPointer,
-                };
-                return _vk.CreatePipelineCache(
-                    _device,
-                    &createInfo,
-                    null,
-                    out pipelineCache);
-            }
-        }
-
-        private static string GetPipelineCachePath()
-        {
-            var configured = Environment.GetEnvironmentVariable("CRAZIIEMU_VK_PIPELINE_CACHE_PATH");
-            var cachePath = VulkanPipelineCacheStorage.ResolvePath(
-                VideoOutExports.GetApplicationTitleId(),
-                configured);
-            if (string.IsNullOrWhiteSpace(configured))
-            {
-                try
-                {
-                    var legacyPath = VulkanPipelineCacheStorage.GetLegacyPath();
-                    if (VulkanPipelineCacheStorage.ImportLegacyCache(legacyPath, cachePath))
-                    {
-                        Console.Error.WriteLine(
-                            $"[LOADER][INFO] Imported legacy Vulkan pipeline cache: source={legacyPath} destination={cachePath}");
-                    }
-                }
-                catch (Exception exception)
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] Vulkan pipeline cache migration failed: {exception.Message}");
-                }
-            }
-
-            return cachePath;
-        }
-
-        private void MarkPipelineCacheDirty()
-        {
-            if (_pipelineCache.Handle == 0)
-            {
-                return;
-            }
-
-            _pipelineCacheDirty = true;
-            // Exporting MoltenVK's cache can itself serialize the compiler.
-            // Gameplay may discover dozens of expensive pipelines in one
-            // frame, so saving after every slow creation compounds a warm-up
-            // hitch into a multi-minute stall. Coalesce all creations into one
-            // periodic snapshot; shutdown still forces a final save.
-            if (Environment.TickCount64 - _lastPipelineCacheSaveTick >= 30_000)
-            {
-                SavePipelineCache(force: false);
-            }
-        }
-
-        private void SavePipelineCache(bool force)
-        {
-            if (_pipelineCache.Handle == 0 || string.IsNullOrWhiteSpace(_pipelineCachePath))
-            {
-                return;
-            }
-
-            if (!force && !_pipelineCacheDirty)
-            {
-                return;
-            }
-
-            try
-            {
-                nuint size = 0;
-                var result = _vk.GetPipelineCacheData(
-                    _device,
-                    _pipelineCache,
-                    &size,
-                    null);
-                if (result != Result.Success || size == 0 || size > 256u * 1024u * 1024u)
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] Vulkan pipeline cache query failed: result={result} size={size}");
-                    return;
-                }
-
-                var data = new byte[checked((int)size)];
-                fixed (byte* dataPointer = data)
-                {
-                    result = _vk.GetPipelineCacheData(
-                        _device,
-                        _pipelineCache,
-                        &size,
-                        dataPointer);
-                }
-
-                if (result != Result.Success)
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] Vulkan pipeline cache export failed: {result}");
-                    return;
-                }
-
-                if (size != (nuint)data.Length)
-                {
-                    Array.Resize(ref data, checked((int)size));
-                }
-
-                var directory = Path.GetDirectoryName(_pipelineCachePath);
-                if (!string.IsNullOrWhiteSpace(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                var temporaryPath = _pipelineCachePath + $".{Environment.ProcessId}.tmp";
-                File.WriteAllBytes(temporaryPath, data);
-                File.Move(temporaryPath, _pipelineCachePath, overwrite: true);
-                _pipelineCacheDirty = false;
-                _lastPipelineCacheSaveTick = Environment.TickCount64;
-                Console.Error.WriteLine(
-                    $"[LOADER][INFO] Vulkan pipeline cache saved: path={_pipelineCachePath} bytes={data.Length}");
-            }
-            catch (Exception exception)
-            {
-                Console.Error.WriteLine(
-                    $"[LOADER][WARN] Vulkan pipeline cache save failed: {exception.Message}");
             }
         }
 
@@ -6784,13 +6582,12 @@ internal static unsafe class VulkanVideoPresenter
                 Check(
                     _vk.CreateGraphicsPipelines(
                         _device,
-                        _pipelineCache,
+                        default,
                         1,
                         &pipelineInfo,
                         null,
                         out pipeline),
                     $"vkCreateGraphicsPipelines(HDR {label} presentation)");
-                MarkPipelineCacheDirty();
             }
             finally
             {
@@ -6954,13 +6751,12 @@ internal static unsafe class VulkanVideoPresenter
                 Check(
                     _vk.CreateGraphicsPipelines(
                         _device,
-                        _pipelineCache,
+                        default,
                         1,
                         &pipelineInfo,
                         null,
                         out _barycentricPipeline),
                     "vkCreateGraphicsPipelines");
-                MarkPipelineCacheDirty();
             }
             finally
             {
@@ -7818,13 +7614,12 @@ internal static unsafe class VulkanVideoPresenter
                     Check(
                         _vk.CreateGraphicsPipelines(
                             _device,
-                            _pipelineCache,
+                            default,
                             1,
                             &pipelineInfo,
                         null,
                         out pipeline),
                     "vkCreateGraphicsPipelines(translated)");
-                    MarkPipelineCacheDirty();
                     resources.Pipeline = pipeline;
                     resources.PipelineCached = true;
                     _graphicsPipelines.Add(pipelineKey, pipeline);
@@ -8021,13 +7816,12 @@ internal static unsafe class VulkanVideoPresenter
                 Check(
                     _vk.CreateComputePipelines(
                         _device,
-                        _pipelineCache,
+                        default,
                         1,
                         &pipelineInfo,
                         null,
                         out pipeline),
                     "vkCreateComputePipelines(translated)");
-                MarkPipelineCacheDirty();
                 resources.Pipeline = pipeline;
                 resources.PipelineCached = true;
                 SetDebugName(
@@ -18813,7 +18607,6 @@ internal static unsafe class VulkanVideoPresenter
             }
             _vulkanReady = false;
             _vk.DeviceWaitIdle(_device);
-            SavePipelineCache(force: true);
             DrainFrameSlots();
             CollectCompletedGuestSubmissions(waitForOldest: false);
             ClearCachedTextureIdentities();
@@ -18894,11 +18687,6 @@ internal static unsafe class VulkanVideoPresenter
             _detilePass = null;
             if (_device.Handle != 0)
             {
-                if (_pipelineCache.Handle != 0)
-                {
-                    _vk.DestroyPipelineCache(_device, _pipelineCache, null);
-                    _pipelineCache = default;
-                }
                 _vk.DestroyDevice(_device, null);
                 _device = default;
             }
