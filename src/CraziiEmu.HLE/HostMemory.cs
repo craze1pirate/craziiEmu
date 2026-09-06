@@ -13,6 +13,7 @@ public static unsafe class HostMemory
 {
     public const uint MEM_COMMIT = 0x1000;
     public const uint MEM_RESERVE = 0x2000;
+    public const uint MEM_DECOMMIT = 0x4000;
     public const uint MEM_RELEASE = 0x8000;
     public const uint MEM_FREE_STATE = 0x10000;
     public const uint MEM_PRIVATE = 0x20000;

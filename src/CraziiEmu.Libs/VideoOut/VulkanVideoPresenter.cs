@@ -106,6 +106,10 @@ internal sealed record VulkanOrderedGuestFlipWait(
     int VideoOutHandle,
     int DisplayBufferIndex);
 
+internal sealed record VulkanUnmapGpuRange(
+    ulong Address,
+    ulong Size);
+
 internal readonly record struct VulkanGuestQueueIdentity(
     string Name,
     ulong SubmissionId)
@@ -1982,6 +1986,54 @@ internal static unsafe class VulkanVideoPresenter
         Volatile.Write(ref _cpuWrittenGuestImageSyncRequested, 1);
     }
 
+    public static void UnmapGpuRange(ulong address, ulong size)
+    {
+        if (address == 0 || size == 0)
+        {
+            return;
+        }
+
+        var end = address + size;
+        foreach (var key in _cachedTextureIdentities.Keys)
+        {
+            if (key.Address >= address && key.Address < end)
+            {
+                _cachedTextureIdentities.TryRemove(key, out _);
+            }
+        }
+
+        lock (_gate)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            var matchingImages = _availableGuestImages.Keys
+                .Where(addr => addr >= address && addr < end)
+                .ToArray();
+            foreach (var addr in matchingImages)
+            {
+                _availableGuestImages.Remove(addr);
+                _guestImageExtents.Remove(addr);
+                _guestImageWorkSequences.Remove(addr);
+                _cpuBackedUploadGenerations.Remove(addr);
+                _untrackedGuestImageContentProbes.Remove(addr);
+                _pendingGuestImageInitialData.Remove(addr);
+            }
+
+            var matchingUploads = _pendingGuestImageUploads.Keys
+                .Where(pair => pair.Address >= address && pair.Address < end)
+                .ToArray();
+            foreach (var pair in matchingUploads)
+            {
+                _pendingGuestImageUploads.Remove(pair);
+            }
+
+            EnqueueGuestWorkLocked(new VulkanUnmapGpuRange(address, size));
+        }
+    }
+
     internal static bool IsTextureContentCached(in TextureContentIdentity identity) =>
         _cachedTextureIdentities.ContainsKey(identity);
 
@@ -2028,7 +2080,11 @@ internal static unsafe class VulkanVideoPresenter
 
     // Display buffers registered through sceVideoOutRegisterBuffers remain
     // valid flip targets even before AGC has rendered into them.
-    internal static void RegisterKnownDisplayBuffer(ulong address, uint guestFormat)
+    internal static void RegisterKnownDisplayBuffer(
+        ulong address,
+        uint guestFormat,
+        uint width = 0,
+        uint height = 0)
     {
         if (address == 0 || guestFormat == 0)
         {
@@ -2038,6 +2094,20 @@ internal static unsafe class VulkanVideoPresenter
         lock (_gate)
         {
             _availableGuestImages[address] = guestFormat;
+            if (width > 0 && height > 0)
+            {
+                var bytesPerPixel = guestFormat == 9 ? 4u : 4u;
+                var byteCount = (ulong)width * height * bytesPerPixel;
+                _guestImageExtents[address] = (width, height, byteCount);
+                if (ShouldTrackGuestImageWrites(byteCount))
+                {
+                    CraziiEmu.HLE.GuestImageWriteTracker.Track(
+                        address,
+                        byteCount,
+                        CurrentGuestWorkSequenceForDiagnostics,
+                        "vulkan.display-buffer");
+                }
+            }
         }
     }
 
@@ -2650,7 +2720,8 @@ internal static unsafe class VulkanVideoPresenter
     private static bool IsPrioritySyncGuestWork(object work) => work is
         VulkanOrderedGuestAction or
         VulkanOrderedGuestFlip or
-        VulkanOrderedGuestFlipWait;
+        VulkanOrderedGuestFlipWait or
+        VulkanUnmapGpuRange;
 
     private static string FormatGuestQueueBacklogLocked()
     {
@@ -3205,6 +3276,7 @@ internal static unsafe class VulkanVideoPresenter
         private uint _maxComputeWorkGroupSizeZ;
         private uint _maxComputeWorkGroupInvocations;
         private ulong _minStorageBufferOffsetAlignment = 1;
+        private ulong _maxStorageBufferRange = ulong.MaxValue;
         private bool _supportsIndependentBlend;
         private uint _maxColorAttachments;
         private Device _device;
@@ -3280,6 +3352,10 @@ internal static unsafe class VulkanVideoPresenter
             _deferredResourceDestroys = new();
         private readonly Queue<(GuestImageResource Image, ulong RetireTimeline)>
             _deferredGuestImageVersionDestroys = new();
+        private readonly Queue<(GuestImageResource Image, ulong RetireTimeline)>
+            _deferredGuestImageDestroys = new();
+        private readonly Queue<(GuestDepthResource Depth, ulong RetireTimeline)>
+            _deferredGuestDepthDestroys = new();
         private readonly Stack<Fence> _recycledGuestFences = new();
         private readonly Stack<CommandBuffer> _recycledGuestCommandBuffers = new();
         private readonly List<(VkBuffer Buffer, DeviceMemory Memory)> _batchRetireBuffers = new();
@@ -4356,6 +4432,9 @@ internal static unsafe class VulkanVideoPresenter
             _minStorageBufferOffsetAlignment = Math.Max(
                 properties.Limits.MinStorageBufferOffsetAlignment,
                 1UL);
+            _maxStorageBufferRange = properties.Limits.MaxStorageBufferRange != 0
+                ? properties.Limits.MaxStorageBufferRange
+                : ulong.MaxValue;
             if (GuestStorageBufferOffsetAlignment %
                 _minStorageBufferOffsetAlignment != 0)
             {
@@ -5577,10 +5656,103 @@ internal static unsafe class VulkanVideoPresenter
         private void ExecuteOrderedGuestFlip(VulkanOrderedGuestFlip work)
         {
             FlushBatchedGuestCommands();
+            if (_deviceLost)
+            {
+                return;
+            }
+
             _guestImages.TryGetValue(work.Address, out var source);
-            if (_deviceLost ||
-                source is null ||
-                !source.Initialized)
+            if (source is null)
+            {
+                uint width = work.Width > 0 ? work.Width : 1920;
+                uint height = work.Height > 0 ? work.Height : 1080;
+                uint formatCode = 56;
+                uint numberType = 0;
+                Format vkFormat = Format.B8G8R8A8Unorm;
+
+                if (VideoOutExports.TryGetDisplayBufferInfo(work.VideoOutHandle, work.DisplayBufferIndex, out var displayBuffer))
+                {
+                    if (displayBuffer.Width > 0) width = displayBuffer.Width;
+                    if (displayBuffer.Height > 0) height = displayBuffer.Height;
+                    if (VideoOutExports.IsHdrPixelFormat(displayBuffer.PixelFormat))
+                    {
+                        formatCode = 9;
+                        vkFormat = Format.A2R10G10B10UnormPack32;
+                    }
+                    else
+                    {
+                        formatCode = 56;
+                        vkFormat = Format.B8G8R8A8Unorm;
+                    }
+                }
+                else if (_availableGuestImages.TryGetValue(work.Address, out var guestFmt))
+                {
+                    if (guestFmt == 9)
+                    {
+                        formatCode = 9;
+                        vkFormat = Format.A2R10G10B10UnormPack32;
+                    }
+                    else
+                    {
+                        formatCode = 56;
+                        vkFormat = Format.B8G8R8A8Unorm;
+                    }
+                }
+
+                var target = new GuestRenderTarget(
+                    work.Address,
+                    width,
+                    height,
+                    formatCode,
+                    numberType);
+                source = GetOrCreateGuestImage(target, vkFormat);
+                source.IsCpuBacked = true;
+            }
+
+            if (!source.Initialized)
+            {
+                var expectedByteCount = GetVulkanImageByteCount(
+                    source.Format,
+                    source.Width,
+                    source.Height,
+                    source.Depth);
+                if (expectedByteCount > 0 && expectedByteCount <= 128UL * 1024UL * 1024UL && _guestMemory is not null)
+                {
+                    var pixels = new byte[expectedByteCount];
+                    if (_guestMemory.TryRead(source.Address, pixels))
+                    {
+                        UploadGuestImageInitialData(source, pixels);
+                        FlushBatchedGuestCommands();
+                    }
+                }
+
+                if (!source.Initialized)
+                {
+                    source.Initialized = true;
+                }
+            }
+            else if (source.IsCpuBacked && _guestMemory is not null)
+            {
+                if (!CraziiEmu.HLE.GuestImageWriteTracker.Enabled || CraziiEmu.HLE.GuestImageWriteTracker.ConsumeDirty(source.Address))
+                {
+                    var expectedByteCount = GetVulkanImageByteCount(
+                        source.Format,
+                        source.Width,
+                        source.Height,
+                        source.Depth);
+                    if (expectedByteCount > 0 && expectedByteCount <= 128UL * 1024UL * 1024UL)
+                    {
+                        var pixels = new byte[expectedByteCount];
+                        if (_guestMemory.TryRead(source.Address, pixels))
+                        {
+                            UploadGuestImageInitialData(source, pixels);
+                            FlushBatchedGuestCommands();
+                        }
+                    }
+                }
+            }
+
+            if (source is null || !source.Initialized)
             {
                 Console.Error.WriteLine(
                     $"[LOADER][WARN] vk.flip_capture_failed version={work.Version} " +
@@ -5789,6 +5961,127 @@ internal static unsafe class VulkanVideoPresenter
             }
         }
 
+        private void ExecuteUnmapGpuRange(VulkanUnmapGpuRange unmap)
+        {
+            var start = unmap.Address;
+            var end = unmap.Address + unmap.Size;
+
+            List<ulong>? imagesToEvict = null;
+            foreach (var (imgAddress, _) in _guestImages)
+            {
+                if (imgAddress >= start && imgAddress < end)
+                {
+                    imagesToEvict ??= [];
+                    imagesToEvict.Add(imgAddress);
+                }
+            }
+            if (imagesToEvict != null)
+            {
+                foreach (var imgAddress in imagesToEvict)
+                {
+                    if (_guestImages.Remove(imgAddress, out var image))
+                    {
+                        _deferredGuestImageDestroys.Enqueue((image, _submitTimeline));
+                    }
+                }
+            }
+
+            List<GuestImageVariantKey>? variantsToEvict = null;
+            foreach (var (key, _) in _guestImageVariants)
+            {
+                if (key.Address >= start && key.Address < end)
+                {
+                    variantsToEvict ??= [];
+                    variantsToEvict.Add(key);
+                }
+            }
+            if (variantsToEvict != null)
+            {
+                foreach (var key in variantsToEvict)
+                {
+                    if (_guestImageVariants.Remove(key, out var image))
+                    {
+                        _deferredGuestImageDestroys.Enqueue((image, _submitTimeline));
+                    }
+                }
+            }
+
+            List<GuestDepthKey>? depthToEvict = null;
+            foreach (var (key, _) in _guestDepthImages)
+            {
+                if ((key.Address >= start && key.Address < end) ||
+                    (key.ReadAddress >= start && key.ReadAddress < end))
+                {
+                    depthToEvict ??= [];
+                    depthToEvict.Add(key);
+                }
+            }
+            if (depthToEvict != null)
+            {
+                foreach (var key in depthToEvict)
+                {
+                    if (_guestDepthImages.Remove(key, out var depth))
+                    {
+                        _deferredGuestDepthDestroys.Enqueue((depth, _submitTimeline));
+                    }
+                }
+            }
+
+            List<TextureContentIdentity>? texturesToEvict = null;
+            foreach (var (identity, _) in _textureCache)
+            {
+                if (identity.Address >= start && identity.Address < end)
+                {
+                    texturesToEvict ??= [];
+                    texturesToEvict.Add(identity);
+                }
+            }
+            if (texturesToEvict != null)
+            {
+                foreach (var identity in texturesToEvict)
+                {
+                    if (_textureCache.Remove(identity, out var texture))
+                    {
+                        _deferredTextureDestroys.Enqueue((texture, _submitTimeline));
+                    }
+                }
+            }
+
+            List<GuestBufferAllocation>? bufferOverlaps = null;
+            foreach (var allocation in _guestBufferAllocations)
+            {
+                if (allocation.BaseAddress < end && start < allocation.BaseAddress + allocation.Size)
+                {
+                    bufferOverlaps ??= [];
+                    bufferOverlaps.Add(allocation);
+                }
+            }
+            if (bufferOverlaps != null)
+            {
+                foreach (var overlap in bufferOverlaps)
+                {
+                    _guestBufferAllocations.Remove(overlap);
+                    if (overlap.Mapped != 0)
+                    {
+                        _vk.UnmapMemory(_device, overlap.Memory);
+                        overlap.Mapped = 0;
+                    }
+
+                    if (overlap.LastUseTimeline > _completedTimeline)
+                    {
+                        _batchRetireBuffers.Add((overlap.Buffer, overlap.Memory));
+                    }
+                    else
+                    {
+                        _vk.DestroyBuffer(_device, overlap.Buffer, null);
+                        _vk.FreeMemory(_device, overlap.Memory, null);
+                    }
+                }
+            }
+
+            ProcessDeferredTextureDestroys();
+        }
+
         private bool _loggedFlipWaitOrderViolation;
 
         private GuestImageResource CreateGuestFlipSnapshot(
@@ -5943,6 +6236,20 @@ internal static unsafe class VulkanVideoPresenter
                 TraceVulkanShader(
                     $"vk.flip_retired version={imageEntry.Image.FlipVersion} " +
                     $"timeline={imageEntry.RetireTimeline} reason=presentation-dropped");
+            }
+
+            while (_deferredGuestImageDestroys.TryPeek(out var variantEntry) &&
+                   variantEntry.RetireTimeline <= _completedTimeline)
+            {
+                _deferredGuestImageDestroys.Dequeue();
+                DestroyGuestImage(variantEntry.Image);
+            }
+
+            while (_deferredGuestDepthDestroys.TryPeek(out var depthEntry) &&
+                   depthEntry.RetireTimeline <= _completedTimeline)
+            {
+                _deferredGuestDepthDestroys.Dequeue();
+                DestroyGuestDepth(depthEntry.Depth);
             }
         }
 
@@ -7320,11 +7627,17 @@ internal static unsafe class VulkanVideoPresenter
                 {
                     for (var index = 0; index < globalBufferCount; index++)
                     {
+                        var bufferRange = resources.GlobalMemoryBuffers[index].Size;
+                        if (_maxStorageBufferRange != 0 && bufferRange > _maxStorageBufferRange)
+                        {
+                            bufferRange = _maxStorageBufferRange;
+                        }
+
                         bufferInfoPointer[index] = new DescriptorBufferInfo
                         {
                             Buffer = resources.GlobalMemoryBuffers[index].Buffer,
                             Offset = resources.GlobalMemoryBuffers[index].Offset,
-                            Range = resources.GlobalMemoryBuffers[index].Size,
+                            Range = bufferRange,
                         };
                     }
 
@@ -9451,6 +9764,35 @@ internal static unsafe class VulkanVideoPresenter
                     CpuContentFingerprint = contentFingerprint,
                     SupportsStorageUsage = supportsStorageUsage,
                 };
+
+                if (_guestImages.Count >= 1024)
+                {
+                    ulong evictAddress = 0;
+                    GuestImageResource? evictResource = null;
+                    foreach (var (addr, candidate) in _guestImages)
+                    {
+                        if (candidate.IsCpuBacked && addr != texture.Address)
+                        {
+                            evictAddress = addr;
+                            evictResource = candidate;
+                            break;
+                        }
+                    }
+
+                    if (evictResource is not null)
+                    {
+                        _guestImages.Remove(evictAddress);
+                        _deferredGuestImageDestroys.Enqueue((evictResource, _submitTimeline));
+                        lock (_gate)
+                        {
+                            _availableGuestImages.Remove(evictAddress);
+                            _cpuBackedUploadGenerations.Remove(evictAddress);
+                            _guestImageExtents.Remove(evictAddress);
+                        }
+                        CraziiEmu.HLE.GuestImageWriteTracker.Untrack(evictAddress);
+                    }
+                }
+
                 _guestImages.Add(texture.Address, guestImage);
                 resource.OwnsStorage = false;
                 resource.GuestImage = guestImage;
@@ -10014,9 +10356,7 @@ internal static unsafe class VulkanVideoPresenter
 
             if (allocation is null)
             {
-                throw new InvalidOperationException(
-                    $"no Vulkan guest buffer allocation covers " +
-                    $"0x{guestBuffer.BaseAddress:X16}-0x{endAddress:X16}");
+                return CreateTransientGlobalBufferResource(guestBuffer);
             }
 
             var guestOffset = guestBuffer.BaseAddress - allocation.BaseAddress;
@@ -13657,17 +13997,48 @@ internal static unsafe class VulkanVideoPresenter
                         $"initialized={existing.Initialized}");
                 }
 
-                _guestImageVariants.Add(
-                    new GuestImageVariantKey(
-                        existing.Address,
-                        existing.LogicalWidth,
-                        existing.LogicalHeight,
-                        existing.LogicalDepth,
-                        existing.Type,
-                        existing.MipLevels,
-                        existing.GuestFormat,
-                        existing.Format),
-                    existing);
+                var variantKey = new GuestImageVariantKey(
+                    existing.Address,
+                    existing.LogicalWidth,
+                    existing.LogicalHeight,
+                    existing.LogicalDepth,
+                    existing.Type,
+                    existing.MipLevels,
+                    existing.GuestFormat,
+                    existing.Format);
+
+                if (_guestImageVariants.Remove(variantKey, out var duplicateVariant))
+                {
+                    _deferredGuestImageDestroys.Enqueue((duplicateVariant, _submitTimeline));
+                }
+
+                var matchingKeys = _guestImageVariants.Keys.Where(k => k.Address == existing.Address).ToList();
+                if (matchingKeys.Count >= 2)
+                {
+                    foreach (var oldKey in matchingKeys)
+                    {
+                        if (_guestImageVariants.Remove(oldKey, out var oldVariant))
+                        {
+                            _deferredGuestImageDestroys.Enqueue((oldVariant, _submitTimeline));
+                            break;
+                        }
+                    }
+                }
+
+                while (_guestImageVariants.Count >= 32)
+                {
+                    var oldestKey = _guestImageVariants.Keys.First();
+                    if (_guestImageVariants.Remove(oldestKey, out var oldVariant))
+                    {
+                        _deferredGuestImageDestroys.Enqueue((oldVariant, _submitTimeline));
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                _guestImageVariants.Add(variantKey, existing);
                 _guestImages.Remove(target.Address);
                 lock (_gate)
                 {
@@ -14149,6 +14520,20 @@ internal static unsafe class VulkanVideoPresenter
                 ObjectType.ImageView,
                 view.Handle,
                 $"CraziiEmu guest depth view 0x{target.Address:X16}");
+
+            while (_guestDepthImages.Count >= 16)
+            {
+                var oldestKey = _guestDepthImages.Keys.First();
+                if (_guestDepthImages.Remove(oldestKey, out var oldDepth))
+                {
+                    _deferredGuestDepthDestroys.Enqueue((oldDepth, _submitTimeline));
+                }
+                else
+                {
+                    break;
+                }
+            }
+
             _guestDepthImages.Add(key, resource);
             if (_traceGuestImageEvents || _traceVulkanShaderEnabled)
             {
@@ -15300,6 +15685,9 @@ internal static unsafe class VulkanVideoPresenter
                             }
 
                             break;
+                        case VulkanUnmapGpuRange unmapRange:
+                            ExecuteUnmapGpuRange(unmapRange);
+                            break;
                     }
                 }
                 finally
@@ -15485,6 +15873,96 @@ internal static unsafe class VulkanVideoPresenter
                 _guestImages.TryGetValue(
                     presentation.GuestImageAddress,
                     out presentedGuestImage);
+
+                if (presentedGuestImage is null)
+                {
+                    uint width = presentation.Width > 0 ? presentation.Width : 1920;
+                    uint height = presentation.Height > 0 ? presentation.Height : 1080;
+                    uint formatCode = 56;
+                    uint numberType = 0;
+                    Format vkFormat = Format.B8G8R8A8Unorm;
+
+                    if (VideoOutExports.TryGetDisplayBufferInfo(presentation.VideoOutHandle, 0, out var displayBuffer))
+                    {
+                        if (displayBuffer.Width > 0) width = displayBuffer.Width;
+                        if (displayBuffer.Height > 0) height = displayBuffer.Height;
+                        if (VideoOutExports.IsHdrPixelFormat(displayBuffer.PixelFormat))
+                        {
+                            formatCode = 9;
+                            vkFormat = Format.A2R10G10B10UnormPack32;
+                        }
+                        else
+                        {
+                            formatCode = 56;
+                            vkFormat = Format.B8G8R8A8Unorm;
+                        }
+                    }
+                    else if (_availableGuestImages.TryGetValue(presentation.GuestImageAddress, out var guestFmt))
+                    {
+                        if (guestFmt == 9)
+                        {
+                            formatCode = 9;
+                            vkFormat = Format.A2R10G10B10UnormPack32;
+                        }
+                        else
+                        {
+                            formatCode = 56;
+                            vkFormat = Format.B8G8R8A8Unorm;
+                        }
+                    }
+
+                    var target = new GuestRenderTarget(
+                        presentation.GuestImageAddress,
+                        width,
+                        height,
+                        formatCode,
+                        numberType);
+                    presentedGuestImage = GetOrCreateGuestImage(target, vkFormat);
+                    presentedGuestImage.IsCpuBacked = true;
+                }
+
+                if (presentedGuestImage is not null && !presentedGuestImage.Initialized)
+                {
+                    var expectedByteCount = GetVulkanImageByteCount(
+                        presentedGuestImage.Format,
+                        presentedGuestImage.Width,
+                        presentedGuestImage.Height,
+                        presentedGuestImage.Depth);
+                    if (expectedByteCount > 0 && expectedByteCount <= 128UL * 1024UL * 1024UL && _guestMemory is not null)
+                    {
+                        var guestPixels = new byte[expectedByteCount];
+                        if (_guestMemory.TryRead(presentedGuestImage.Address, guestPixels))
+                        {
+                            UploadGuestImageInitialData(presentedGuestImage, guestPixels);
+                            FlushBatchedGuestCommands();
+                        }
+                    }
+
+                    if (!presentedGuestImage.Initialized)
+                    {
+                        presentedGuestImage.Initialized = true;
+                    }
+                }
+                else if (presentedGuestImage is not null && presentedGuestImage.IsCpuBacked && _guestMemory is not null)
+                {
+                    if (!CraziiEmu.HLE.GuestImageWriteTracker.Enabled || CraziiEmu.HLE.GuestImageWriteTracker.ConsumeDirty(presentedGuestImage.Address))
+                    {
+                        var expectedByteCount = GetVulkanImageByteCount(
+                            presentedGuestImage.Format,
+                            presentedGuestImage.Width,
+                            presentedGuestImage.Height,
+                            presentedGuestImage.Depth);
+                        if (expectedByteCount > 0 && expectedByteCount <= 128UL * 1024UL * 1024UL)
+                        {
+                            var guestPixels = new byte[expectedByteCount];
+                            if (_guestMemory.TryRead(presentedGuestImage.Address, guestPixels))
+                            {
+                                UploadGuestImageInitialData(presentedGuestImage, guestPixels);
+                                FlushBatchedGuestCommands();
+                            }
+                        }
+                    }
+                }
             }
 
             if (presentation.GuestImageAddress != 0 &&
@@ -18671,11 +19149,19 @@ internal static unsafe class VulkanVideoPresenter
             {
                 DestroyGuestImage(deferredVersion.Image);
             }
+            while (_deferredGuestImageDestroys.TryDequeue(out var deferredImage))
+            {
+                DestroyGuestImage(deferredImage.Image);
+            }
             foreach (var guestDepth in _guestDepthImages.Values)
             {
                 DestroyGuestDepth(guestDepth);
             }
             _guestDepthImages.Clear();
+            while (_deferredGuestDepthDestroys.TryDequeue(out var deferredDepth))
+            {
+                DestroyGuestDepth(deferredDepth.Depth);
+            }
             lock (_gate)
             {
                 _availableGuestImages.Clear();
@@ -19109,6 +19595,8 @@ internal static unsafe class VulkanVideoPresenter
                 VulkanOrderedGuestFlipWait wait =>
                     $"flip_wait version={wait.Version} " +
                     $"buf={wait.DisplayBufferIndex} {queuePart}",
+                VulkanUnmapGpuRange unmap =>
+                    $"unmap_gpu_range addr=0x{unmap.Address:X16} size=0x{unmap.Size:X} {queuePart}",
                 _ => $"{work.GetType().Name} {queuePart}",
             };
         }

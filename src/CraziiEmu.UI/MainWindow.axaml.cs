@@ -43,7 +43,7 @@ public partial class MainWindow : Window
 
 
     private readonly UiLogSink _logSink;
-    private readonly ConcurrentQueue<ConsoleLine> _logQueue = new();
+    private readonly LogWindow _logWindow;
     private ushort _lastGamepadButtons;
 
     // Settings fields
@@ -59,7 +59,7 @@ public partial class MainWindow : Window
     /// <summary>
     /// Gets the collection of log messages for the console output.
     /// </summary>
-    public ObservableCollection<ConsoleLine> ConsoleMessages { get; } = new();
+    public ObservableCollection<ConsoleLine> ConsoleMessages => _logWindow.ConsoleMessages;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MainWindow"/> class,
@@ -69,8 +69,12 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        ConsoleOutput.ItemsSource = ConsoleMessages;
-        
+        _logWindow = new LogWindow();
+        _logWindow.OnHidden += () =>
+        {
+            ChkConsoleVisible.IsChecked = false;
+        };
+
         _logSink = new UiLogSink(line => 
         {
             InsertConsoleLine(line);
@@ -81,10 +85,6 @@ public partial class MainWindow : Window
         var consoleWriter = new ConsoleTextWriter(line => InsertConsoleLine(line));
         Console.SetOut(consoleWriter);
         Console.SetError(consoleWriter);
-
-        BtnClearConsole.Click += OnBtnClearConsole;
-        BtnCopyConsole.Click += OnBtnCopyConsole;
-        BtnExportConsole.Click += OnBtnExportConsole;
 
         // ── Window chrome ──────────────────────────────────────────────
         BtnClose.Click    += (_, _) => Close();
@@ -115,6 +115,15 @@ public partial class MainWindow : Window
         {
             try
             {
+                _logWindow.AllowClose = true;
+                _logWindow.Close();
+            }
+            catch
+            {
+            }
+
+            try
+            {
                 if (_gameProcess is not null && !_gameProcess.HasExited)
                 {
                     _gameProcess.Kill(entireProcessTree: true);
@@ -130,10 +139,6 @@ public partial class MainWindow : Window
         clockTimer.Tick += (_, _) => TxtClock.Text = DateTime.Now.ToString("HH:mm");
         clockTimer.Start();
         TxtClock.Text = DateTime.Now.ToString("HH:mm");
-
-        var logTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        logTimer.Tick += OnLogTimerTick;
-        logTimer.Start();
 
         // ── Gamepad polling ────────────────────────────────────────────
         var gamepadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -153,7 +158,17 @@ public partial class MainWindow : Window
         ChkConsoleVisible.PropertyChanged += (s, e) => 
         {
             if (e.Property.Name == "IsChecked")
-                ConsoleBorder.IsVisible = ChkConsoleVisible.IsChecked == true;
+            {
+                if (ChkConsoleVisible.IsChecked == true)
+                {
+                    _logWindow.Show(this);
+                    _logWindow.Activate();
+                }
+                else
+                {
+                    _logWindow.Hide();
+                }
+            }
         };
 
         AddHandler(KeyDownEvent, OnGlobalKeyDown, RoutingStrategies.Tunnel);
@@ -1082,7 +1097,7 @@ public partial class MainWindow : Window
             {
                 if (!string.IsNullOrEmpty(ev.Data))
                 {
-                    Dispatcher.UIThread.Post(() => AppendConsole(ev.Data, "#AAAAAA"));
+                    AppendConsole(ev.Data, "#AAAAAA");
                 }
             };
 
@@ -1090,7 +1105,7 @@ public partial class MainWindow : Window
             {
                 if (!string.IsNullOrEmpty(ev.Data))
                 {
-                    Dispatcher.UIThread.Post(() => AppendConsole(ev.Data, "#FFAAAA"));
+                    AppendConsole(ev.Data, "#FFAAAA");
                 }
             };
 
@@ -1121,7 +1136,7 @@ public partial class MainWindow : Window
 
             BtnPlay.IsVisible = false;
             BtnStop.IsVisible = true;
-            ConsoleMessages.Clear();
+            _logWindow.ClearLogs();
             AppendConsole("[Emulation] Running in sub-process.");
         }
         catch (Exception ex)
@@ -1160,95 +1175,9 @@ public partial class MainWindow : Window
         InsertConsoleLine(line);
     }
 
-    private ScrollViewer? _consoleScroller;
-
     private void InsertConsoleLine(ConsoleLine line)
     {
-        _logQueue.Enqueue(line);
-    }
-
-    private void OnLogTimerTick(object? sender, EventArgs e)
-    {
-        if (_logQueue.IsEmpty) return;
-
-        bool isAtBottom = true;
-        
-        if (_consoleScroller == null)
-        {
-            _consoleScroller = ConsoleOutput.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
-        }
-        
-        if (_consoleScroller != null)
-        {
-            isAtBottom = _consoleScroller.Offset.Y >= _consoleScroller.Extent.Height - _consoleScroller.Viewport.Height - 10;
-        }
-
-        int count = 0;
-        ConsoleLine? lastLine = null;
-        while (count < 2000 && _logQueue.TryDequeue(out var line))
-        {
-            ConsoleMessages.Add(line);
-            lastLine = line;
-            count++;
-        }
-        
-        while (ConsoleMessages.Count > 10000)
-        {
-            ConsoleMessages.RemoveAt(0);
-        }
-        
-        if (isAtBottom && lastLine != null)
-        {
-            ConsoleOutput.ScrollIntoView(lastLine);
-        }
-    }
-
-    private async void OnBtnCopyConsole(object? sender, RoutedEventArgs e)
-    {
-        var text = string.Join(Environment.NewLine, ConsoleMessages.Select(m => m.Text));
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel?.Clipboard != null)
-        {
-            await topLevel.Clipboard.SetTextAsync(text);
-            AppendConsole("[UI] Console logs copied to clipboard.", "#00FF00");
-        }
-    }
-
-    private void OnBtnClearConsole(object? sender, RoutedEventArgs e)
-    {
-        ConsoleMessages.Clear();
-    }
-
-    private async void OnBtnExportConsole(object? sender, RoutedEventArgs e)
-    {
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel?.StorageProvider != null && topLevel.StorageProvider.CanSave)
-        {
-            var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                Title = "Export Console Logs",
-                DefaultExtension = "txt",
-                SuggestedFileName = $"CraziiEmu_Log_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
-            });
-
-            if (file != null)
-            {
-                // Get last 100 lines
-                var lines = ConsoleMessages.Skip(Math.Max(0, ConsoleMessages.Count - 100)).Select(m => m.Text);
-                var text = string.Join(Environment.NewLine, lines);
-                try
-                {
-                    await using var stream = await file.OpenWriteAsync();
-                    using var writer = new StreamWriter(stream);
-                    await writer.WriteAsync(text);
-                    AppendConsole($"[UI] Logs exported to {file.Name}.", "#00FF00");
-                }
-                catch (Exception ex)
-                {
-                    AppendConsole($"[UI] Failed to export logs: {ex.Message}", "#FF0000");
-                }
-            }
-        }
+        _logWindow.EnqueueLine(line);
     }
 
 
@@ -1504,11 +1433,7 @@ public class ConsoleTextWriter : System.IO.TextWriter
             else if (value.Contains("[TRACE]") || value.Contains("[DEBUG]")) color = "Gray";
 
             var line = new ConsoleLine { Text = value, Color = color };
-            
-            if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
-                _onLine(line);
-            else
-                Avalonia.Threading.Dispatcher.UIThread.Post(() => _onLine(line));
+            _onLine(line);
         }
     }
 }

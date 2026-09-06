@@ -23,6 +23,26 @@ internal static class KernelPthreadState
     [ThreadStatic]
     private static ulong _currentThreadUniqueId;
 
+    private static ulong _mainThreadHandle;
+
+    internal static ulong GetOrRegisterMainThreadHandle()
+    {
+        if (_mainThreadHandle != 0)
+        {
+            return _mainThreadHandle;
+        }
+
+        var handle = AllocateThreadHandle(1, "MainThread");
+        Interlocked.CompareExchange(ref _mainThreadHandle, handle, 0);
+        return _mainThreadHandle;
+    }
+
+    internal static bool IsMainThread(ulong handle) => _mainThreadHandle != 0 && handle == _mainThreadHandle;
+
+    internal static bool IsCurrentMainThread() =>
+        GuestThreadExecution.IsMainThread ||
+        (_mainThreadHandle != 0 && GetCurrentThreadHandle() == _mainThreadHandle);
+
     internal readonly record struct ThreadIdentity(ulong UniqueId, string Name);
 
     internal static ulong GetCurrentThreadHandle()

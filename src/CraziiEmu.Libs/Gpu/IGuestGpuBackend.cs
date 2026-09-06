@@ -56,6 +56,7 @@ internal interface IGuestGpuBackend
         uint pixelInputEnable = 0,
         uint pixelInputAddress = 0,
         IReadOnlyList<uint>? pixelInputCntl = null,
+        uint pixelInputNum = 32,
         ulong storageBufferOffsetAlignment = 1);
 
     bool TryCompileComputeShader(
@@ -176,8 +177,8 @@ internal interface IGuestGpuBackend
         uint height,
         uint pitchInPixel);
 
-    /// <summary>Registers a display buffer with its guest texture format tag.</summary>
-    void RegisterKnownDisplayBuffer(ulong address, uint guestFormat);
+    /// <summary>Registers a display buffer with its guest texture format tag and dimensions.</summary>
+    void RegisterKnownDisplayBuffer(ulong address, uint guestFormat, uint width = 0, uint height = 0);
 
     /// <summary>Format/numberType are raw guest texture descriptor codes.</summary>
     bool IsGpuGuestImageAvailable(ulong address, uint format, uint numberType);
@@ -286,4 +287,10 @@ internal interface IGuestGpuBackend
 
     /// <summary>Asks a running presenter to close its window.</summary>
     void RequestClose();
+
+    /// <summary>
+    /// Unmaps GPU resources (cached images, views, buffers) spanning the given virtual range,
+    /// matching KytyPS5 GpuResourceManager::UnmapMemory.
+    /// </summary>
+    void UnmapGpuRange(ulong address, ulong size);
 }

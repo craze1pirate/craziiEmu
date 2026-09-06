@@ -29,6 +29,9 @@ public interface IHostMemory
     /// <summary>Releases an entire allocation or reservation by its base address.</summary>
     bool Free(ulong address);
 
+    /// <summary>Decommits a range of pages back to the OS while preserving reservation.</summary>
+    bool Decommit(ulong address, ulong size);
+
     /// <summary>
     /// Changes protection on committed pages. <paramref name="rawOldProtection"/> is the
     /// untranslated previous OS protection value (see <see cref="HostRegionInfo.RawProtection"/>).

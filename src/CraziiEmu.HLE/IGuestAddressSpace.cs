@@ -30,4 +30,10 @@ public interface IGuestAddressSpace : IGuestMemoryAllocator
     bool TryAllocateAtOrAbove(ulong desiredAddress, ulong size, bool executable, ulong alignment, out ulong actualAddress);
 
     bool TryProtect(ulong address, ulong size, GuestPageProtection protection);
+
+    /// <summary>
+    /// Decommits host physical memory and pagefile commit backing for a guest virtual range
+    /// (e.g. on sceKernelMunmap / munmap) while retaining address space reservations.
+    /// </summary>
+    bool TryDecommitRange(ulong address, ulong size);
 }

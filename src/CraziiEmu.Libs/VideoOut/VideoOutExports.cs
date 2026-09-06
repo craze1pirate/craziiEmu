@@ -1608,7 +1608,7 @@ public static class VideoOutExports
             {
                 foreach (var address in addresses)
                 {
-                    GuestGpu.Current.RegisterKnownDisplayBuffer(address, guestFormat);
+                    GuestGpu.Current.RegisterKnownDisplayBuffer(address, guestFormat, attribute.Width, attribute.Height);
                 }
             }
 

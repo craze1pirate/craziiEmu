@@ -1,0 +1,180 @@
+<!-- Copyright (C) 2026 CraziiEmu Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:CraziiEmu.UI"
+        x:Class="CraziiEmu.UI.LogWindow"
+        Title="CraziiEmu — Log Console"
+        Width="860" Height="500"
+        MinWidth="520" MinHeight="300"
+        WindowStartupLocation="CenterOwner"
+        Background="#09090C"
+        FontFamily="Inter, Segoe UI, sans-serif"
+        WindowDecorations="None"
+        Icon="avares://CraziiEmu/Assets/CraziiEmu.ico">
+
+    <Window.Styles>
+        <Style Selector="Button.ChromeBtn">
+            <Setter Property="Focusable"       Value="False"/>
+            <Setter Property="Background"      Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground"      Value="#888899"/>
+            <Setter Property="FontSize"        Value="13"/>
+            <Setter Property="Padding"         Value="10,6"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="CornerRadius"    Value="4"/>
+        </Style>
+        <Style Selector="Button.ChromeBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#22222C"/>
+            <Setter Property="TextBlock.Foreground" Value="#FFFFFF"/>
+        </Style>
+        <Style Selector="Button.ChromeBtnClose:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#991B1B"/>
+            <Setter Property="TextBlock.Foreground" Value="#FFFFFF"/>
+        </Style>
+
+        <Style Selector="Button.ToolBtn">
+            <Setter Property="Background" Value="#14141A"/>
+            <Setter Property="BorderBrush" Value="#242430"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style Selector="Button.ToolBtn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#20202A"/>
+            <Setter Property="BorderBrush" Value="#3D3D4E"/>
+            <Setter Property="TextBlock.Foreground" Value="#FFFFFF"/>
+        </Style>
+
+        <Style Selector="CheckBox.ConsoleCheck">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="#AAAAAA"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Styles>
+
+    <Border BorderBrush="#1C1C24" BorderThickness="1">
+        <DockPanel>
+            <!-- ════════════ TITLE BAR ════════════ -->
+            <Border DockPanel.Dock="Top"
+                    x:Name="TitleBar"
+                    Background="#111116"
+                    BorderBrush="#1A1A22"
+                    BorderThickness="0,0,0,1"
+                    Height="36">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <!-- App glyph & title -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0" Spacing="8">
+                        <Border Width="8" Height="8" CornerRadius="4" Background="#38BDF8" VerticalAlignment="Center"/>
+                        <TextBlock Text="CraziiEmu — Log Console"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="#E0E0E6"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Drag handle -->
+                    <Border Grid.Column="1"
+                            x:Name="DragHandle"
+                            Background="Transparent"
+                            Cursor="Arrow"/>
+
+                    <!-- Chrome controls -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
+                        <Button x:Name="BtnMinimize"
+                                Classes="ChromeBtn"
+                                Content="—"
+                                ToolTip.Tip="Minimize"/>
+                        <Button x:Name="BtnClose"
+                                Classes="ChromeBtn ChromeBtnClose"
+                                Content="✕"
+                                ToolTip.Tip="Close (Hide)"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ════════════ TOOLBAR ════════════ -->
+            <Border DockPanel.Dock="Top"
+                    Background="#0D0D12"
+                    BorderBrush="#181820"
+                    BorderThickness="0,0,0,1"
+                    Height="34"
+                    Padding="12,0">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <!-- Status / Line counter -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <Ellipse Width="6" Height="6" Fill="#22C55E"/>
+                            <TextBlock Text="OUTPUT"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       Foreground="#64748B"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock x:Name="TxtLineCount"
+                                   Text="0 lines"
+                                   FontSize="11"
+                                   Foreground="#52525B"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Actions -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
+                        <CheckBox x:Name="ChkAutoScroll"
+                                  Classes="ConsoleCheck"
+                                  Content="Auto-Scroll"
+                                  IsChecked="True"
+                                  ToolTip.Tip="Automatically scroll to latest logs"/>
+                        <Border Width="1" Height="16" Background="#242430" Margin="4,0"/>
+                        <Button x:Name="BtnClear"
+                                Classes="ToolBtn"
+                                Content="🗑 Clear"
+                                ToolTip.Tip="Clear console logs"/>
+                        <Button x:Name="BtnCopy"
+                                Classes="ToolBtn"
+                                Content="📋 Copy"
+                                ToolTip.Tip="Copy all logs to clipboard"/>
+                        <Button x:Name="BtnExport"
+                                Classes="ToolBtn"
+                                Content="💾 Export"
+                                ToolTip.Tip="Export all logs to text file"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ════════════ LOG CONTENT LISTBOX ════════════ -->
+            <ListBox x:Name="ConsoleOutput"
+                     Focusable="True"
+                     Background="#060608"
+                     BorderThickness="0"
+                     Padding="12,6"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListBox.Styles>
+                    <Style Selector="ListBoxItem">
+                        <Setter Property="MinHeight" Value="16"/>
+                        <Setter Property="Padding" Value="0,1"/>
+                        <Setter Property="Margin" Value="0"/>
+                    </Style>
+                    <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+                        <Setter Property="Background" Value="#1A1A2E"/>
+                    </Style>
+                </ListBox.Styles>
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:CompileBindings="False">
+                        <TextBlock Text="{Binding Text}"
+                                   TextWrapping="Wrap"
+                                   FontFamily="Cascadia Mono, Consolas, Courier New, monospace"
+                                   FontSize="11"
+                                   Foreground="{Binding Color}"
+                                   Margin="0"/>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </DockPanel>
+    </Border>
+</Window>

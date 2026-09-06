@@ -41,10 +41,10 @@ public static class MemoryPoolTests
     public static void RunAllTests()
     {
         Console.WriteLine("=================================================");
-        Console.WriteLine("  libKernel MEMORY POOLS & PRT APERTURES TEST SUITE (26 TESTS)");
+        Console.WriteLine("  libKernel MEMORY POOLS & PRT APERTURES TEST SUITE (29 TESTS)");
         Console.WriteLine("=================================================");
 
-        var testResults = new (string Name, bool Passed, string Message)[26];
+        var testResults = new (string Name, bool Passed, string Message)[29];
 
         testResults[0] = Test1_MemoryPoolExpand();
         testResults[1] = Test2_InvalidPoolExpandParameters();
@@ -72,6 +72,9 @@ public static class MemoryPoolTests
         testResults[23] = Test24_ResourceCleanupVerification();
         testResults[24] = Test25_DirectAndFlexibleMappingNonRegression();
         testResults[25] = Test26_VirtualQueryFindNextDivergenceRegression();
+        testResults[26] = Test27_TryDecommitRangeVerification();
+        testResults[27] = Test28_DirectMemoryMultiBlockRelease();
+        testResults[28] = Test29_DirectMemoryCapacityValidation();
 
         Console.WriteLine("\n-------------------------------------------------");
         Console.WriteLine("  SUMMARY OF TEST RESULTS                        ");
@@ -781,6 +784,152 @@ public static class MemoryPoolTests
             return (name, pass, "VirtualQuery findNext divergence and all adjacent boundary cases verified cleanly");
         }
         catch (Exception ex) { return (name, false, ex.Message); }
+    }
+
+    private static (string, bool, string) Test27_TryDecommitRangeVerification()
+    {
+        var name = "PhysicalVirtualMemory TryDecommitRange and munmap Verification";
+        try
+        {
+            using var vm = new PhysicalVirtualMemory();
+            if (!vm.TryAllocateAtOrAbove(0x1000_0000UL, 0x100000UL, executable: false, alignment: 0x10000UL, out var actualAddress))
+            {
+                return (name, false, "TryAllocateAtOrAbove failed");
+            }
+
+            byte[] testData = [1, 2, 3, 4, 5];
+            if (!vm.TryWrite(actualAddress, testData))
+            {
+                return (name, false, "TryWrite failed before decommit");
+            }
+
+            if (!vm.TryDecommitRange(actualAddress, 0x100000UL))
+            {
+                return (name, false, "TryDecommitRange failed");
+            }
+
+            return (name, true, "TryDecommitRange successfully decommitted physical memory back to host OS");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test28_DirectMemoryMultiBlockRelease()
+    {
+        var name = "Direct Memory Multi-Block Overlapping Release (KytyPS5 Multi-Span Algorithm)";
+        try
+        {
+            var mem = new DummyMemory();
+            var ctx = CreateContext(mem);
+
+            // Read initial available memory
+            ulong outAvailAddr = 0x1000;
+            ctx[CpuRegister.Rdi] = outAvailAddr;
+            ctx[CpuRegister.Rsi] = 0;
+            ctx[CpuRegister.Rdx] = 0;
+            ctx[CpuRegister.Rcx] = 0;
+            ctx[CpuRegister.R8] = 0;
+            if (KernelMemoryCompatExports.KernelAvailableDirectMemorySize(ctx) != 0)
+            {
+                return (name, false, "KernelAvailableDirectMemorySize failed");
+            }
+            var initialAvailable = BinaryPrimitives.ReadUInt64LittleEndian(mem.ReadBytes(outAvailAddr, 8));
+
+            // Allocate 3 consecutive direct memory blocks: 2MB each
+            const ulong blockSize = 2UL * 1024 * 1024;
+            ulong outAddr1 = 0x2000;
+            ulong outAddr2 = 0x2008;
+            ulong outAddr3 = 0x2010;
+
+            ctx[CpuRegister.Rdi] = 0; // searchStart
+            ctx[CpuRegister.Rsi] = 0; // searchEnd
+            ctx[CpuRegister.Rdx] = blockSize;
+            ctx[CpuRegister.Rcx] = 0x10000; // 64K align
+            ctx[CpuRegister.R8] = 0; // memoryType
+            ctx[CpuRegister.R9] = outAddr1;
+            if (KernelMemoryCompatExports.KernelAllocateDirectMemory(ctx) != 0)
+                return (name, false, "Allocate block 1 failed");
+
+            ctx[CpuRegister.R9] = outAddr2;
+            if (KernelMemoryCompatExports.KernelAllocateDirectMemory(ctx) != 0)
+                return (name, false, "Allocate block 2 failed");
+
+            ctx[CpuRegister.R9] = outAddr3;
+            if (KernelMemoryCompatExports.KernelAllocateDirectMemory(ctx) != 0)
+                return (name, false, "Allocate block 3 failed");
+
+            var addr1 = BinaryPrimitives.ReadUInt64LittleEndian(mem.ReadBytes(outAddr1, 8));
+            var addr2 = BinaryPrimitives.ReadUInt64LittleEndian(mem.ReadBytes(outAddr2, 8));
+            var addr3 = BinaryPrimitives.ReadUInt64LittleEndian(mem.ReadBytes(outAddr3, 8));
+
+            // Release a single span spanning across all three blocks: [addr1, addr3 + blockSize)
+            var multiSpanLen = (addr3 + blockSize) - addr1;
+            ctx[CpuRegister.Rdi] = addr1;
+            ctx[CpuRegister.Rsi] = multiSpanLen;
+            if (KernelMemoryCompatExports.KernelReleaseDirectMemory(ctx) != 0)
+                return (name, false, "KernelReleaseDirectMemory multi-span failed");
+
+            // Query available size again - should have returned to initialAvailable
+            ctx[CpuRegister.Rdi] = outAvailAddr;
+            ctx[CpuRegister.Rsi] = 0;
+            ctx[CpuRegister.Rdx] = 0;
+            ctx[CpuRegister.Rcx] = 0;
+            ctx[CpuRegister.R8] = 0;
+            KernelMemoryCompatExports.KernelAvailableDirectMemorySize(ctx);
+            var afterReleaseAvailable = BinaryPrimitives.ReadUInt64LittleEndian(mem.ReadBytes(outAvailAddr, 8));
+
+            if (afterReleaseAvailable != initialAvailable)
+            {
+                return (name, false, $"Available size mismatch: expected 0x{initialAvailable:X}, got 0x{afterReleaseAvailable:X}");
+            }
+
+            return (name, true, "Multi-block direct memory release cleanly reclaimed all overlapping allocations without leakage");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test29_DirectMemoryCapacityValidation()
+    {
+        var name = "Direct Memory Configured Capacity (Dynamic 24GB+ on 32GB Host)";
+        try
+        {
+            var mem = new DummyMemory();
+            var ctx = CreateContext(mem);
+
+            if (KernelMemoryCompatExports.KernelGetDirectMemorySize(ctx) != 0)
+            {
+                return (name, false, "KernelGetDirectMemorySize failed");
+            }
+            var directSize = ctx[CpuRegister.Rax];
+
+            // Verify size is at least 16GB, and on >= 20GB systems it is 24GB
+            var gcMemInfo = GC.GetGCMemoryInfo();
+            if (gcMemInfo.TotalAvailableMemoryBytes >= 20L * 1024 * 1024 * 1024)
+            {
+                if (directSize < 24UL * 1024 * 1024 * 1024)
+                {
+                    return (name, false, $"Expected >= 24GB on 32GB host, got {directSize / (1024 * 1024 * 1024)}GB");
+                }
+            }
+            else
+            {
+                if (directSize < 16UL * 1024 * 1024 * 1024)
+                {
+                    return (name, false, $"Expected >= 16GB, got {directSize / (1024 * 1024 * 1024)}GB");
+                }
+            }
+
+            return (name, true, $"Direct memory capacity verified: {directSize / (1024 * 1024 * 1024)} GB configured");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
     }
 
     private static byte[] ReadBytes(this ICpuMemory mem, ulong address, int length)

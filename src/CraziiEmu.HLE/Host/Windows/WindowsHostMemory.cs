@@ -14,6 +14,7 @@ internal sealed unsafe partial class WindowsHostMemory : IHostMemory
 {
     private const uint MEM_COMMIT = 0x1000;
     private const uint MEM_RESERVE = 0x2000;
+    private const uint MEM_DECOMMIT = 0x4000;
     private const uint MEM_RELEASE = 0x8000;
     private const uint MEM_FREE = 0x10000;
 
@@ -44,6 +45,11 @@ internal sealed unsafe partial class WindowsHostMemory : IHostMemory
     public bool Free(ulong address)
     {
         return VirtualFree((void*)address, 0, MEM_RELEASE);
+    }
+
+    public bool Decommit(ulong address, ulong size)
+    {
+        return VirtualFree((void*)address, (nuint)size, MEM_DECOMMIT);
     }
 
     public bool Protect(ulong address, ulong size, HostPageProtection protection, out uint rawOldProtection)

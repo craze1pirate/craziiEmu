@@ -465,6 +465,11 @@ public static class KernelExports
         Console.Error.WriteLine("[LOADER][INFO] abort() called by guest - terminating");
         GuestThreadExecution.RequestCurrentEntryExit("abort", -1);
         ctx[CpuRegister.Rax] = unchecked((ulong)(-1L));
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Thread.Sleep(100);
+            Environment.Exit(1);
+        });
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 

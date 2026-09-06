@@ -65,6 +65,9 @@ public static partial class AgcExports
     private const uint ItSetContextReg = 0x69;
     private const uint ItSetShReg = 0x76;
     private const uint ItSetUconfigReg = 0x79;
+    private const uint ItSetUconfigRegIndirect = 0x9D;
+    private const uint ItSetShRegIndirect = 0x9E;
+    private const uint ItSetContextRegIndirect = 0x9F;
     private const uint RewindValidBit = 1u << 31;
     private const uint RewindOffloadEnableBit = 1u << 24;
     private const uint ItGetLodStats = 0x8E;
@@ -74,9 +77,10 @@ public static partial class AgcExports
         ItNop, ItSetBase, ItIndexBufferSize, ItIndexBase, ItDrawIndirect,
         ItDrawIndexIndirect, ItDrawIndex2, ItIndexType, ItDrawIndexAuto,
         ItNumInstances, ItDrawIndexMultiAuto, ItDrawIndexOffset2, ItWriteData,
-        ItDispatchDirect, ItDispatchIndirect, ItCondExec, ItWaitRegMem,
+        ItDispatchDirect, ItDispatchIndirect, ItSetPredication, ItCondExec, ItWaitRegMem,
         ItIndirectBuffer, ItEventWrite, ItReleaseMem, ItDmaData,
         ItSetContextReg, ItSetShReg, ItSetUconfigReg, ItGetLodStats,
+        ItSetUconfigRegIndirect, ItSetShRegIndirect, ItSetContextRegIndirect,
     ];
 
     private const uint RZero = 0x00;
@@ -1068,6 +1072,7 @@ public static partial class AgcExports
     private const uint ComputeNumThreadY = 0x208;
     private const uint ComputeNumThreadZ = 0x209;
     private const uint SpiPsInputCntl0 = 0x191;
+    private const uint SpiPsInControl = 0x1B6;
     private const uint VgtPrimitiveType = 0x242;
     private const uint VgtIndexType = 0x243;
     // GE_INDX_OFFSET — base vertex for DrawIndexed / firstVertex for
@@ -1076,6 +1081,7 @@ public static partial class AgcExports
     private const uint PaScScreenScissorTl = 0x0C;
     private const uint PaScScreenScissorBr = 0x0D;
     private const uint CbTargetMask = 0x8E;
+    private const uint CbShaderMask = 0x8F;
     private const uint PaScWindowOffset = 0x80;
     private const uint PaScWindowScissorTl = 0x81;
     private const uint PaScWindowScissorBr = 0x82;
@@ -1146,6 +1152,7 @@ public static partial class AgcExports
     private const ulong VideoOutPixelFormat2B10G10R10A2Bt2100Pq = 0x8100070400000000;
     private const uint RegisterDefaultsVersion7 = 7;
     private const uint RegisterDefaultsVersion8 = 8;
+    private const uint RegisterDefaultsVersion9 = 9;
     private const uint RegisterDefaultsVersion10 = 10;
     private const uint RegisterDefaultsVersion13 = 13;
     private const int RegisterDefaultsSize = 0x40;
@@ -1175,6 +1182,7 @@ public static partial class AgcExports
     private const byte HsFrontShaderType = 5;
     private const byte GsBackShaderType = 6;
     private const byte HsBackShaderType = 7;
+    private const byte FsShaderType = 8;
     private const ulong CommandBufferCursorUpOffset = 0x10;
     private const ulong CommandBufferCursorDownOffset = 0x18;
     private const ulong CommandBufferCallbackOffset = 0x20;
@@ -1704,6 +1712,12 @@ public static partial class AgcExports
         if (stateAddress == 0 || !IsSupportedRegisterDefaultsVersion(version))
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        if (!ctx.TryWriteUInt32(stateAddress, version) ||
+            !ctx.TryWriteUInt32(stateAddress + 4, 0))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TraceAgc($"agc.init state=0x{stateAddress:X16} version={version}");
@@ -2341,10 +2355,22 @@ public static partial class AgcExports
         return cntl;
     }
 
-    private static ulong ComputePsInputCntlFingerprint(ReadOnlySpan<uint> cntl)
+    private static uint ReadPsInputNum(IReadOnlyDictionary<uint, uint> cxRegisters)
+    {
+        if (cxRegisters.TryGetValue(SpiPsInControl, out var value))
+        {
+            var num = value & 0x3Fu;
+            return num == 0 ? 32u : num;
+        }
+
+        return 32u;
+    }
+
+    private static ulong ComputePsInputCntlFingerprint(ReadOnlySpan<uint> cntl, uint inputNum = 32)
     {
         const ulong prime = 1099511628211UL;
         var hash = 14695981039346656037UL;
+        hash = (hash ^ inputNum) * prime;
         foreach (var value in cntl)
         {
             hash = (hash ^ value) * prime;
@@ -7802,36 +7828,52 @@ public static partial class AgcExports
             return;
         }
 
-        if (op != ItNop ||
-            register is not (RCxRegsIndirect or RShRegsIndirect or RUcRegsIndirect) ||
-            packetLength < 4 ||
-            !TryReadUInt32(ctx, packetAddress + sizeof(uint), out var registerCount) ||
-            !TryReadUInt64(ctx, packetAddress + 8, out var registersAddress))
+        var isIndirect = op is ItSetContextRegIndirect or ItSetShRegIndirect or ItSetUconfigRegIndirect ||
+            (op == ItNop && register is RCxRegsIndirect or RShRegsIndirect or RUcRegsIndirect);
+        if (!isIndirect)
         {
             return;
         }
 
-        var destination = register switch
+        if (packetLength < 5 ||
+            !TryReadUInt32(ctx, packetAddress + 4, out var addrLow) ||
+            !TryReadUInt32(ctx, packetAddress + 8, out var addrHigh) ||
+            !TryReadUInt32(ctx, packetAddress + 16, out var rawRegisterCount))
         {
-            RCxRegsIndirect => state.CxRegisters,
-            RShRegsIndirect => state.ShRegisters,
-            _ => state.UcRegisters,
+            return;
+        }
+
+        var registersAddress = ((ulong)addrHigh << 32) | (addrLow & 0xFFFF_FFFCul);
+        var registerCount = rawRegisterCount & 0x3FFFu;
+        var destination = op switch
+        {
+            ItSetContextRegIndirect => state.CxRegisters,
+            ItSetShRegIndirect => state.ShRegisters,
+            ItSetUconfigRegIndirect => state.UcRegisters,
+            _ => register switch
+            {
+                RCxRegsIndirect => state.CxRegisters,
+                RShRegsIndirect => state.ShRegisters,
+                _ => state.UcRegisters,
+            },
         };
         for (uint index = 0; index < registerCount; index++)
         {
             var entryAddress = registersAddress + ((ulong)index * 8);
-            if (!TryReadUInt32(ctx, entryAddress, out var registerOffset) ||
+            if (!TryReadUInt32(ctx, entryAddress, out var rawRegisterOffset) ||
                 !TryReadUInt32(ctx, entryAddress + sizeof(uint), out var value))
             {
                 return;
             }
 
-            // The indirect table has an explicit count; offset zero is a real
-            // context-register index (DB_RENDER_CONTROL), not a terminator.
-            // Dropping it leaves stale depth/render-control state active in
-            // later passes.
+            if (rawRegisterOffset == 0xFFFF_FFFFu)
+            {
+                continue;
+            }
+
+            var registerOffset = rawRegisterOffset & ~0x7000_0000u;
             destination[registerOffset] = value;
-            if (register == RUcRegsIndirect)
+            if (destination == state.UcRegisters)
             {
                 ApplyUcIndexTypeIfNeeded(state, registerOffset, value);
             }
@@ -9002,15 +9044,16 @@ public static partial class AgcExports
                 (uint)renderTargetOutputKinds[index]) << (index * 8);
         }
 
-        var attributeCount = GetInterpolatedAttributeCount(pixelState);
+        var psInputCntl = ReadPsInputCntlRegisters(state.CxRegisters);
+        var psInputNum = ReadPsInputNum(state.CxRegisters);
+        var psInputCntlFingerprint = ComputePsInputCntlFingerprint(psInputCntl, psInputNum);
+        var attributeCount = GetInterpolatedAttributeCount(pixelState, psInputCntl, psInputNum);
         var exportStateFingerprint = _bakeScalars
             ? ComputeShaderStateFingerprint(exportEvaluation)
             : ComputeShaderStructuralFingerprint(exportEvaluation);
         var pixelStateFingerprint = _bakeScalars
             ? ComputeShaderStateFingerprint(pixelEvaluation)
             : ComputeShaderStructuralFingerprint(pixelEvaluation);
-        var psInputCntl = ReadPsInputCntlRegisters(state.CxRegisters);
-        var psInputCntlFingerprint = ComputePsInputCntlFingerprint(psInputCntl);
         var shaderKey = (
             exportShaderAddress,
             exportStateFingerprint,
@@ -9096,6 +9139,7 @@ public static partial class AgcExports
                         pixelInputEnable: psInputEna,
                         pixelInputAddress: psInputAddr,
                         pixelInputCntl: psInputCntl,
+                        pixelInputNum: psInputNum,
                         storageBufferOffsetAlignment:
                             _storageBufferOffsetAlignment) ||
                     !GuestGpu.Current.TryCompileVertexShader(
@@ -9107,7 +9151,7 @@ public static partial class AgcExports
                         totalGlobalBufferCount: totalGlobalBuffers,
                         imageBindingBase: pixelEvaluation.ImageBindings.Count,
                         scalarRegisterBufferIndex: _bakeScalars ? -1 : guestGlobalBuffers + 1,
-                        requiredVertexOutputCount: (int)GetInterpolatedAttributeCount(pixelState),
+                        requiredVertexOutputCount: (int)attributeCount,
                         storageBufferOffsetAlignment:
                             _storageBufferOffsetAlignment))
                 {
@@ -9239,7 +9283,7 @@ public static partial class AgcExports
             primitiveType,
             compiled.Vertex,
             compiled.Pixel,
-            GetInterpolatedAttributeCount(pixelState),
+            GetInterpolatedAttributeCount(pixelState, psInputCntl, psInputNum),
             vertexCount,
             state.InstanceCount,
             GetBaseVertex(state),
@@ -9883,18 +9927,27 @@ public static partial class AgcExports
             ? (packedMasks >> (int)(target * 4)) & 0xFu
             : 0;
 
-    private static uint GetInterpolatedAttributeCount(Gen5ShaderState state)
+    private static uint GetInterpolatedAttributeCount(
+        Gen5ShaderState state,
+        IReadOnlyList<uint>? pixelInputCntl = null,
+        uint inputNum = 32)
     {
-        var maxAttribute = -1;
-        foreach (var instruction in state.Program.Instructions)
+        var attributes = state.Program.Instructions
+            .Select(instruction => instruction.Control)
+            .OfType<Gen5InterpolationControl>()
+            .Select(control => control.Attribute)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        var maxLocation = -1;
+        foreach (var attribute in attributes)
         {
-            if (instruction.Control is Gen5InterpolationControl interpolation)
-            {
-                maxAttribute = Math.Max(maxAttribute, (int)interpolation.Attribute);
-            }
+            var location = (int)Gen5SpirvTranslator.GetPixelParameterLocation(attributes, attribute, pixelInputCntl, inputNum);
+            maxLocation = Math.Max(maxLocation, Math.Max((int)attribute, location));
         }
 
-        return (uint)(maxAttribute + 1);
+        return (uint)(maxLocation + 1);
     }
 
     private static readonly bool _bakeScalars = string.Equals(
@@ -10130,7 +10183,7 @@ public static partial class AgcExports
             var address = ((ulong)(baseHigh & 0xFFu) << 40) | ((ulong)baseLow << 8);
             var writeMask = (targetMask >> ((int)slot * 4)) & 0xFu;
             if (address == 0 ||
-                (!includeMaskedTargets && hasTargetMask && writeMask == 0))
+                (!includeMaskedTargets && hasTargetMask && slot != 0 && writeMask == 0))
             {
                 continue;
             }
@@ -14393,6 +14446,16 @@ public static partial class AgcExports
             _ => 0u,
         };
 
+        if (expectedLo == 0)
+        {
+            TraceCreateShader(
+                0,
+                headerAddress,
+                codeAddress,
+                $"skip-pgm-patch type={shaderType} (no program address register)");
+            return true;
+        }
+
         // GTA V Enhanced hull shaders (type 5) put RSRC1/RSRC2 (0x10A/0x10B) at
         // the front of the SH default table; PGM_LO/HI sit elsewhere (or are
         // filled later via SetShRegisterDirect).
@@ -14413,23 +14476,12 @@ public static partial class AgcExports
             // lives at ShaderCodeOffset and later binder paths republish it.
             // GS front headers can likewise start at RSRC1_GS (0x8A) instead of
             // PGM_LO_GS (0x88) - same deal, skip the patch here.
-            if ((shaderType == HsFrontShaderType && firstLo is SpiShaderPgmRsrc1Hs or SpiShaderPgmLoHs) ||
-                (shaderType == GsFrontShaderType && firstLo is SpiShaderPgmRsrc1Gs or SpiShaderPgmLoGs))
-            {
-                TraceCreateShader(
-                    0,
-                    headerAddress,
-                    codeAddress,
-                    $"skip-pgm-patch type={shaderType} first_lo=0x{firstLo:X8}");
-                return true;
-            }
-
             TraceCreateShader(
                 0,
                 headerAddress,
                 codeAddress,
-                $"unexpected-registers type={shaderType} expected_lo=0x{expectedLo:X8} first_lo=0x{firstLo:X8}");
-            return false;
+                $"skip-pgm-patch type={shaderType} expected_lo=0x{expectedLo:X8} first_lo=0x{firstLo:X8}");
+            return true;
         }
 
         var loValue = (uint)((codeAddress >> 8) & 0xFFFF_FFFFUL);
@@ -14584,8 +14636,9 @@ public static partial class AgcExports
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(registersAddress >> 32)))
+        if (!TryReadUInt32(ctx, commandAddress + 4, out var currentLow) ||
+            !TryWriteUInt32(ctx, commandAddress + 4, (currentLow & 0x3u) | ((uint)registersAddress & 0xFFFF_FFFCu)) ||
+            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress >> 32)))
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
@@ -14660,13 +14713,13 @@ public static partial class AgcExports
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!TryReadUInt32(ctx, commandAddress + 4, out var currentCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, currentCount + registerCount))
+        if (!TryReadUInt32(ctx, commandAddress + 16, out var currentCount) ||
+            !TryWriteUInt32(ctx, commandAddress + 16, (currentCount & ~0x3FFFu) | ((currentCount + registerCount) & 0x3FFFu)))
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
-        TraceAgc($"agc.patch_{registerSpace}_add cmd=0x{commandAddress:X16} add={registerCount} total={currentCount + registerCount}");
+        TraceAgc($"agc.patch_{registerSpace}_add cmd=0x{commandAddress:X16} add={registerCount} total={(currentCount & 0x3FFFu) + registerCount}");
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -14681,11 +14734,19 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 4, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(4, ItNop, packetRegister)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, registerCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, (uint)(registersAddress >> 32)))
+        var op = packetRegister switch
+        {
+            RCxRegsIndirect => ItSetContextRegIndirect,
+            RShRegsIndirect => ItSetShRegIndirect,
+            _ => ItSetUconfigRegIndirect,
+        };
+
+        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
+            !TryWriteUInt32(ctx, commandAddress, Pm4(5, op, 0)) ||
+            !TryWriteUInt32(ctx, commandAddress + 4, (uint)(registersAddress & 0xFFFF_FFFCUL)) ||
+            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(registersAddress >> 32)) ||
+            !TryWriteUInt32(ctx, commandAddress + 12, 0x8000_0000u) ||
+            !TryWriteUInt32(ctx, commandAddress + 16, registerCount & 0x3FFFu))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -14944,6 +15005,7 @@ public static partial class AgcExports
         return version is
             RegisterDefaultsVersion7 or
             RegisterDefaultsVersion8 or
+            RegisterDefaultsVersion9 or
             RegisterDefaultsVersion10 or
             RegisterDefaultsVersion13;
     }

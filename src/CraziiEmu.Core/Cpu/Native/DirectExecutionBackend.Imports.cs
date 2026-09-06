@@ -1380,6 +1380,15 @@ public sealed partial class DirectExecutionBackend
 			Volatile.Write(ref activeGuestThreadState.LastReturnRip, returnRip);
 			Volatile.Write(ref activeGuestThreadState.LastImportNid, importStubEntry.Nid);
 		}
+
+		RecordRecentImportTrace(
+			dispatchIndex,
+			importStubEntry.Nid,
+			returnRip,
+			arg0,
+			*(ulong*)(argPackPtr + 8),
+			*(ulong*)(argPackPtr + 16));
+
 		if (_logImportPeriodic && dispatchIndex % 100000 == 0)
 		{
 			Console.Error.WriteLine(
@@ -1541,6 +1550,9 @@ public sealed partial class DirectExecutionBackend
 		var expectedMutexTrylockBusy =
 			(nid is "K-jXhbt2gn4" or "upoVrzMHFeE") &&
 			result == OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
+		var expectedMutexDeadlock =
+			(nid is "9UK1vLZQft4" or "K-jXhbt2gn4" or "upoVrzMHFeE") &&
+			(result == OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK || resultValue == 11);
 		var expectedSemaphoreTrywaitAgain =
 			string.Equals(nid, "H2a+IN9TP0E", StringComparison.Ordinal) &&
 			result == OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
@@ -1563,6 +1575,7 @@ public sealed partial class DirectExecutionBackend
 			!expectedTimedWaitTimeout &&
 			!expectedEqueueTimeout &&
 			!expectedMutexTrylockBusy &&
+			!expectedMutexDeadlock &&
 			!expectedSemaphoreTrywaitAgain &&
 			!expectedPollSemaBusy &&
 			!expectedNetAcceptWouldBlock &&
@@ -1798,6 +1811,12 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe bool TryYieldGuestThreadToHostStub(nint argPackPtr, long dispatchIndex, ulong returnRip, string nid, string reason)
 	{
+		if (unchecked((int)GetCurrentThreadId()) == Volatile.Read(ref _mainHostThreadId) ||
+		    GuestThreadExecution.IsMainThread)
+		{
+			return false;
+		}
+
 		ulong hostExit = ActiveEntryReturnSentinelRip;
 		if (hostExit < 65536 || !TryPatchActiveGuestReturnSlot(hostExit))
 		{

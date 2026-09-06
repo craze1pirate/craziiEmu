@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System;
 using System.Buffers.Binary;
@@ -11,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using CraziiEmu.Core.Cpu;
 using CraziiEmu.Core.Cpu.Debugging;
+using CraziiEmu.Core.Cpu.Disasm;
 using CraziiEmu.Core.Loader;
 using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
@@ -312,6 +314,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private int _recentImportTraceCount;
 
 	private int _recentImportTraceWriteIndex;
+
+	private int _mainHostThreadId;
 
 	private readonly string[] _distinctImportNidHistory = new string[128];
 
@@ -759,6 +763,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private volatile bool _readyDispatchStop;
 
 	private Thread? _readyDispatchThread;
+	private int _readyDispatchHostThreadId;
 
 	private GCHandle _selfHandle;
 
@@ -876,7 +881,17 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		ulong Rax,
 		ulong Rbx,
 		ulong Rcx,
-		ulong Rdx);
+		ulong Rdx,
+		ulong Rsi,
+		ulong Rdi,
+		ulong R8,
+		ulong R9,
+		ulong R10,
+		ulong R11,
+		ulong R12,
+		ulong R13,
+		ulong R14,
+		ulong R15);
 
 	public string BackendName => "native-backend";
 
@@ -2917,7 +2932,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0x85);
 		int hostPauseJump = offset;
 		EmitUInt32(code, ref offset, 0u);
-		EmitByte(code, ref offset, 0xF0); EmitByte(code, ref offset, 0x4C);
+		EmitByte(code, ref offset, 0xF0); EmitByte(code, ref offset, 0x4D);
 		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0xB1); EmitByte(code, ref offset, 0x11); // lock cmpxchg [r9], r10
 		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0x85);
 		int hostRetryJump = offset;
@@ -3000,8 +3015,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0x85);
 		int guestPauseJump = offset;
 		EmitUInt32(code, ref offset, 0u);
-		EmitByte(code, ref offset, 0xF0); EmitByte(code, ref offset, 0x4C);
-		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0xB1); EmitByte(code, ref offset, 0x11);
+		EmitByte(code, ref offset, 0xF0); EmitByte(code, ref offset, 0x4D);
+		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0xB1); EmitByte(code, ref offset, 0x11); // lock cmpxchg [r9], r10
 		EmitByte(code, ref offset, 0x0F); EmitByte(code, ref offset, 0x85);
 		int guestRetryJump = offset;
 		EmitUInt32(code, ref offset, 0u);
@@ -3617,6 +3632,26 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			}
 		}
 
+		if (OperatingSystem.IsWindows() &&
+			address >= 0x10000 &&
+			address < 0x0000800000000000UL)
+		{
+			unsafe
+			{
+				if (VirtualQuery((void*)address, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) != 0 &&
+					mbi.AllocationBase != 0 &&
+					(ulong)mbi.AllocationBase >= 0x10000 &&
+					(ulong)mbi.AllocationBase < 0x0000800000000000UL &&
+					mbi.State == 0x2000 /* MEM_RESERVE */ &&
+					mbi.AllocationProtect != 0 &&
+					mbi.AllocationProtect != 0x01 /* PAGE_NOACCESS */)
+				{
+					owner = $"guest-reserved:0x{(ulong)mbi.AllocationBase:X16}+0x{(ulong)mbi.RegionSize:X}";
+					return true;
+				}
+			}
+		}
+
 		owner = string.Empty;
 		return false;
 	}
@@ -3662,12 +3697,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	public void RegisterGuestThreadContext(ulong threadHandle, CpuContext context)
 	{
-		if (threadHandle == 0)
+		if (threadHandle == 0 || _currentExternalGuestThreadHandle == threadHandle)
 		{
 			return;
 		}
 
-		lock (_guestThreadGate)
+		using (LockGate("RegisterGuestThreadContext"))
 		{
 			_currentExternalGuestThreadHandle = threadHandle;
 			if (_guestThreads.ContainsKey(threadHandle))
@@ -6279,8 +6314,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			StartStallWatchdog();
 			StartReadyThreadDispatcher();
 			int num6 = -1;
+			var mainThreadHandle = CraziiEmu.Libs.Kernel.KernelPthreadState.GetOrRegisterMainThreadHandle();
+			var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(mainThreadHandle, isMainThread: true);
 			try
 			{
+				Volatile.Write(ref _mainHostThreadId, unchecked((int)GetCurrentThreadId()));
 				num6 = CallNativeEntry(ptr);
 				Console.Error.WriteLine($"[LOADER][INFO] Guest returned: {num6}");
 				// A host stop has already invalidated the session. Draining guest
@@ -6306,6 +6344,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				Console.Error.WriteLine("[LOADER][ERROR] Exception during execution: " + ex2.GetType().Name + ": " + ex2.Message);
 				LastError = "Exception during execution: " + ex2.GetType().Name + ": " + ex2.Message;
 				num6 = -1;
+			}
+			finally
+			{
+				GuestThreadExecution.RestoreGuestThread(previousGuestThreadHandle);
 			}
 			if (ActiveForcedGuestExit)
 			{
@@ -6333,6 +6375,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		}
 		finally
 		{
+			Volatile.Write(ref _mainHostThreadId, 0);
 			StopReadyThreadDispatcher();
 			StopStallWatchdog();
 			ActiveEntryReturnSentinelRip = 0uL;
@@ -6560,6 +6603,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_readyDispatchStop = false;
 		_readyDispatchThread = new Thread(new ThreadStart(delegate
 		{
+			Volatile.Write(ref _readyDispatchHostThreadId, unchecked((int)GetCurrentThreadId()));
 			while (!_readyDispatchStop)
 			{
 				Thread.Sleep(1);
@@ -6573,7 +6617,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				DispatchReadyGuestThreads();
 				if (logSnapshots && Stopwatch.GetTimestamp() >= nextSnapshotTimestamp)
 				{
-					lock (_guestThreadGate)
+					using (LockGate("GuestThreadSnapshot"))
 					{
 						foreach (var thread in _guestThreads.Values)
 						{
@@ -6604,6 +6648,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private void StopReadyThreadDispatcher()
 	{
 		_readyDispatchStop = true;
+		Volatile.Write(ref _readyDispatchHostThreadId, 0);
 		Thread? readyDispatchThread = _readyDispatchThread;
 		if (readyDispatchThread == null)
 		{
@@ -6632,7 +6677,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		while (true)
 		{
 			GuestThreadState? thread = null;
-			lock (_guestThreadGate)
+			using (LockGate("DispatchReadyGuestThreads"))
 			{
 				_ = TryClaimReadyGuestThreadLocked(out thread);
 			}
@@ -6748,6 +6793,114 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				Console.Error.WriteLine($"[LOADER][ERROR] Stall stack: [rsp]=0x{value:X16} [rsp+8]=0x{value2:X16}");
 			}
 
+			var trace = _recentImportTrace;
+			if (trace != null && _recentImportTraceCount > 0)
+			{
+				Console.Error.WriteLine($"[LOADER][ERROR] Recent imports ({_recentImportTraceCount}):");
+				int traceStart = (_recentImportTraceWriteIndex - _recentImportTraceCount + trace.Length) % trace.Length;
+				for (int i = 0; i < _recentImportTraceCount; i++)
+				{
+					int idx = (traceStart + i) % trace.Length;
+					var entry = trace[idx];
+					if (!string.IsNullOrEmpty(entry.Nid))
+					{
+						var exportName = _moduleManager.TryGetExport(entry.Nid, out var exp)
+							? $"{exp.LibraryName}:{exp.Name}"
+							: entry.Nid;
+						Console.Error.WriteLine(
+							$"[LOADER][ERROR]   #{entry.DispatchIndex}: {exportName} ({entry.Nid}) ret=0x{entry.ReturnRip:X16} " +
+							$"rdi=0x{entry.Arg0:X16} rsi=0x{entry.Arg1:X16} rdx=0x{entry.Arg2:X16}");
+					}
+				}
+			}
+
+			var mainThreadId = Volatile.Read(ref _mainHostThreadId);
+			if (mainThreadId != 0 && TryCaptureHostThreadContext(mainThreadId, out var mainContext))
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][ERROR] Stall main-thread: tid={mainThreadId} rip=0x{mainContext.Rip:X16}{ResolveHostAddressInfo(mainContext.Rip)} rsp=0x{mainContext.Rsp:X16} " +
+					$"rbp=0x{mainContext.Rbp:X16} rax=0x{mainContext.Rax:X16} rbx=0x{mainContext.Rbx:X16} " +
+					$"rcx=0x{mainContext.Rcx:X16} rdx=0x{mainContext.Rdx:X16} rsi=0x{mainContext.Rsi:X16} rdi=0x{mainContext.Rdi:X16}");
+				Console.Error.WriteLine(
+					$"[LOADER][ERROR] Stall main-thread extra: r8=0x{mainContext.R8:X16} r9=0x{mainContext.R9:X16} " +
+					$"r10=0x{mainContext.R10:X16} r11=0x{mainContext.R11:X16} r12=0x{mainContext.R12:X16} " +
+					$"r13=0x{mainContext.R13:X16} r14=0x{mainContext.R14:X16} r15=0x{mainContext.R15:X16}");
+				if (_vehManagedEntryLock != 0)
+				{
+					ulong vehOwner = *(ulong*)_vehManagedEntryLock;
+					int vehDepth = *(int*)(_vehManagedEntryLock + sizeof(nint));
+					Console.Error.WriteLine($"[LOADER][ERROR] Stall VEH lock status: owner_tid={vehOwner} depth={vehDepth}");
+				}
+				if (mainContext.R13 != 0 &&
+					TryReadProcessUInt64Safe(mainContext.R13, out ulong pExceptionRecord) &&
+					TryReadProcessUInt64Safe(mainContext.R13 + 8, out ulong pContextRecord) &&
+					pExceptionRecord != 0)
+				{
+					TryReadProcessUInt32Safe(pExceptionRecord, out uint excCode);
+					TryReadProcessUInt64Safe(pExceptionRecord + 16, out ulong excAddress);
+					ulong faultRip = 0, faultRsp = 0;
+					if (pContextRecord != 0)
+					{
+						TryReadProcessUInt64Safe(pContextRecord + 248, out faultRip);
+						TryReadProcessUInt64Safe(pContextRecord + 152, out faultRsp);
+					}
+					Console.Error.WriteLine($"[LOADER][ERROR] Stall VEH exception: code=0x{excCode:X8} addr=0x{excAddress:X16} rip=0x{faultRip:X16}{ResolveHostAddressInfo(faultRip)} rsp=0x{faultRsp:X16}");
+				}
+
+				ulong disasmStartRip = mainContext.Rip >= 48 ? mainContext.Rip - 48 : mainContext.Rip;
+				Span<byte> disasmBytes = stackalloc byte[128];
+				if (TryReadProcessMemorySafe(disasmStartRip, disasmBytes))
+				{
+					Console.Error.WriteLine($"[LOADER][ERROR] Stall main-thread disasm window [0x{disasmStartRip:X16}..0x{disasmStartRip + 128:X16}]:");
+					var disasmArray = disasmBytes.ToArray();
+					var reader = new Iced.Intel.ByteArrayCodeReader(disasmArray);
+					var decoder = Iced.Intel.Decoder.Create(64, reader);
+					decoder.IP = disasmStartRip;
+					var formatter = new Iced.Intel.NasmFormatter();
+					var output = new Iced.Intel.StringOutput();
+					while (decoder.IP < disasmStartRip + 128)
+					{
+						var inst = decoder.Decode();
+						if (inst.IsInvalid) break;
+						output.Reset();
+						formatter.Format(inst, output);
+						string marker = inst.IP == mainContext.Rip ? " <--- STALL RIP" : "";
+						Console.Error.WriteLine($"[LOADER][ERROR]     0x{inst.IP:X16}: {output}{marker}");
+						if (inst.IP > mainContext.Rip + 48) break;
+					}
+				}
+
+				if (mainContext.Rsp != 0)
+				{
+					for (int stackOffset = 0; stackOffset < 64 * 8; stackOffset += 8)
+					{
+						var addr = mainContext.Rsp + (ulong)stackOffset;
+						if (cpuContext.TryReadUInt64(addr, out var val) ||
+							TryReadProcessUInt64Safe(addr, out val))
+						{
+							var moduleInfo = ResolveHostAddressInfo(val);
+							Console.Error.WriteLine($"[LOADER][ERROR] Stall main-thread stack: [rsp+0x{stackOffset:X2}]=0x{val:X16}{moduleInfo}");
+						}
+					}
+				}
+			}
+
+			bool isGateEntered = Monitor.IsEntered(_guestThreadGate);
+			string? gateOwner = _gateOwnerSite;
+			int gateOwnerTid = Volatile.Read(ref _gateOwnerManagedThreadId);
+			long gateAcquireTime = Volatile.Read(ref _gateAcquireTimestamp);
+			long gateHoldMs = gateAcquireTime != 0 ? (Stopwatch.GetTimestamp() - gateAcquireTime) * 1000 / Stopwatch.Frequency : 0;
+			Console.Error.WriteLine($"[LOADER][ERROR] Stall gate status: entered={isGateEntered} owner_site='{gateOwner ?? "none"}' owner_managed_tid={gateOwnerTid} hold_ms={gateHoldMs}");
+
+			var readyTid = Volatile.Read(ref _readyDispatchHostThreadId);
+			if (readyTid != 0 && TryCaptureHostThreadContext(readyTid, out var readyCtx))
+			{
+				Console.Error.WriteLine($"[LOADER][ERROR] Stall ready-dispatch thread: tid={readyTid} rip=0x{readyCtx.Rip:X16}{ResolveHostAddressInfo(readyCtx.Rip)} rsp=0x{readyCtx.Rsp:X16}");
+			}
+
+			Console.Error.WriteLine("[LOADER][ERROR] Stall active mutexes:");
+			CraziiEmu.Libs.Kernel.KernelPthreadCompatExports.DumpActiveMutexes(Console.Error.WriteLine);
+
 			var threads = SnapshotGuestThreads();
 			if (threads.Length != 0)
 			{
@@ -6827,7 +6980,17 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				ReadCtxU64(contextRecord, 120),
 				ReadCtxU64(contextRecord, 144),
 				ReadCtxU64(contextRecord, 128),
-				ReadCtxU64(contextRecord, 136));
+				ReadCtxU64(contextRecord, 136),
+				ReadCtxU64(contextRecord, 168),
+				ReadCtxU64(contextRecord, 176),
+				ReadCtxU64(contextRecord, 184),
+				ReadCtxU64(contextRecord, 192),
+				ReadCtxU64(contextRecord, 200),
+				ReadCtxU64(contextRecord, 208),
+				ReadCtxU64(contextRecord, 216),
+				ReadCtxU64(contextRecord, 224),
+				ReadCtxU64(contextRecord, 232),
+				ReadCtxU64(contextRecord, 240));
 			return true;
 		}
 		finally
@@ -6907,6 +7070,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	[DllImport("kernel32.dll", EntryPoint = "SetUnhandledExceptionFilter")]
 	private static extern IntPtr Win32SetUnhandledExceptionFilter(IntPtr lpTopLevelExceptionFilter);
 
+	[DllImport("kernel32.dll", EntryPoint = "ExitProcess")]
+	private static extern void Win32ExitProcess(uint uExitCode);
+
 	[DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
 	private static extern uint Win32GetCurrentThreadId();
 
@@ -6932,6 +7098,95 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	[DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	private static extern bool Win32CloseHandle(nint hObject);
+
+	[DllImport("kernel32.dll", EntryPoint = "ReadProcessMemory", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private unsafe static extern bool Win32ReadProcessMemory(nint hProcess, void* lpBaseAddress, void* lpBuffer, nuint nSize, nuint* lpNumberOfBytesRead);
+
+	[DllImport("kernel32.dll", EntryPoint = "GetModuleHandleExW", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	private static extern bool Win32GetModuleHandleExW(uint dwFlags, nint lpModuleName, out nint phModule);
+
+	[DllImport("kernel32.dll", EntryPoint = "GetModuleFileNameW", SetLastError = true, CharSet = CharSet.Unicode)]
+	private static extern uint Win32GetModuleFileNameW(nint hModule, [Out] char[] lpFilename, uint nSize);
+
+	private static string ResolveHostAddressInfo(ulong address)
+	{
+		if (address >= 0x0000000800000000UL && address < 0x0000000810000000UL)
+		{
+			return $" (eboot+0x{address - 0x0000000800000000UL:X})";
+		}
+		if (address >= 0x0000700000000000UL && address < 0x0000700010000000UL)
+		{
+			return $" (import_stub+0x{address - 0x0000700000000000UL:X})";
+		}
+		try
+		{
+			if (Win32GetModuleHandleExW(6u, (nint)address, out var hModule) && hModule != 0)
+			{
+				char[] nameBuf = new char[260];
+				uint len = Win32GetModuleFileNameW(hModule, nameBuf, (uint)nameBuf.Length);
+				if (len > 0)
+				{
+					string fullPath = new string(nameBuf, 0, (int)len);
+					string fileName = System.IO.Path.GetFileName(fullPath);
+					ulong offset = address - unchecked((ulong)hModule.ToInt64());
+					return $" ({fileName}+0x{offset:X})";
+				}
+			}
+		}
+		catch
+		{
+		}
+		return string.Empty;
+	}
+
+	private unsafe static bool TryReadProcessMemorySafe(ulong address, Span<byte> destination)
+	{
+		if (address == 0)
+		{
+			return false;
+		}
+
+		fixed (byte* p = destination)
+		{
+			nuint bytesRead = 0;
+			return Win32ReadProcessMemory(-1, (void*)address, p, (nuint)destination.Length, &bytesRead) &&
+				bytesRead == (nuint)destination.Length;
+		}
+	}
+
+	private unsafe static bool TryReadProcessUInt32Safe(ulong address, out uint value)
+	{
+		value = 0;
+		if (address == 0)
+		{
+			return false;
+		}
+
+		fixed (uint* p = &value)
+		{
+			nuint bytesRead = 0;
+			return Win32ReadProcessMemory(-1, (void*)address, p, sizeof(uint), &bytesRead) &&
+				bytesRead == sizeof(uint);
+		}
+	}
+
+	private unsafe static bool TryReadProcessUInt64Safe(ulong address, out ulong value)
+	{
+		value = 0;
+		if (address == 0)
+		{
+			return false;
+		}
+
+		fixed (ulong* p = &value)
+		{
+			nuint bytesRead = 0;
+			return Win32ReadProcessMemory(-1, (void*)address, p, sizeof(ulong), &bytesRead) &&
+				bytesRead == sizeof(ulong);
+		}
+	}
 
 	/// <summary>
 	/// Set when <see cref="Dispose"/> intentionally left the native session

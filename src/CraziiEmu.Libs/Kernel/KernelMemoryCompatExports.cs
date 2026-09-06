@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Ampr;
@@ -51,7 +52,34 @@ public static partial class KernelMemoryCompatExports
     private const int SeekSet = 0;
     private const int SeekCur = 1;
     private const int SeekEnd = 2;
-    private const ulong DirectMemorySizeBytes = 16384UL * 1024 * 1024;
+    private static readonly ulong DirectMemorySizeBytes = GetConfiguredDirectMemorySizeBytes();
+
+    private static ulong GetConfiguredDirectMemorySizeBytes()
+    {
+        var env = Environment.GetEnvironmentVariable("CRAZIIEMU_DIRECT_MEMORY_MB");
+        if (!string.IsNullOrEmpty(env) && ulong.TryParse(env, NumberStyles.None, CultureInfo.InvariantCulture, out var mb) && mb >= 8192)
+        {
+            return mb * 1024UL * 1024UL;
+        }
+
+        // On host systems with >= 20 GB available memory, provide a 24 GB direct pool ceiling
+        // so games requesting large render/streaming buffers (e.g. Unreal Engine 4 VT pools)
+        // do not run out of physical memory after initial allocations.
+        // Memory is committed on demand (lazy commit), so unaccessed pages cost no physical RAM.
+        try
+        {
+            var gcMemInfo = GC.GetGCMemoryInfo();
+            if (gcMemInfo.TotalAvailableMemoryBytes >= 20L * 1024 * 1024 * 1024)
+            {
+                return 24576UL * 1024 * 1024; // 24 GB
+            }
+        }
+        catch
+        {
+        }
+
+        return 16384UL * 1024 * 1024;
+    }
     private const ulong UnsetMainDirectMemoryPoolBase = ulong.MaxValue;
     private const ulong FlexibleMemorySizeBytes = 448UL * 1024 * 1024;
     private const ulong PrtAreaStartAddress = 0x0000001000000000UL;
@@ -2744,6 +2772,12 @@ public static partial class KernelMemoryCompatExports
             ? 0UL
             : DirectMemorySizeBytes - used;
 
+        if (ShouldTraceDirectMemory())
+        {
+            Console.Error.WriteLine(
+                $"[LOADER][TRACE] sceKernelAvailableDirectMemorySize: total=0x{DirectMemorySizeBytes:X16} ({DirectMemorySizeBytes / (1024 * 1024)}MB) used=0x{used:X16} ({used / (1024 * 1024)}MB) available=0x{totalAvailable:X16} ({totalAvailable / (1024 * 1024)}MB)");
+        }
+
         if (arg1 != 0 || arg2 != 0 || arg3 != 0 || arg4 != 0)
         {
             var searchStartRaw = unchecked((long)arg0);
@@ -3483,7 +3517,12 @@ public static partial class KernelMemoryCompatExports
 
         if (physicallyBacked || removedAny)
         {
+            CraziiEmu.Libs.Gpu.GuestGpu.Current.UnmapGpuRange(address, length);
             KernelRuntimeCompatExports.RegisterReleasedVirtualRange(address, length);
+            if (KernelVirtualRangeAllocator.TryResolveAddressSpace(ctx.Memory, out var addressSpace))
+            {
+                addressSpace.TryDecommitRange(address, length);
+            }
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -6463,45 +6502,50 @@ public static partial class KernelMemoryCompatExports
 
     private static bool TryReleaseDirectMemoryRangeLocked(ulong start, ulong length)
     {
-        if (!TryAddU64(start, length, out var releaseEnd))
+        if (!TryAddU64(start, length, out var releaseEnd) || length == 0)
         {
             return false;
         }
 
-        DirectAllocation? owner = null;
-        ulong ownerEnd = 0;
+        // Collect all allocations that overlap with [start, releaseEnd).
+        // Referred from KytyPS5 PhysicalMemory::Release / GetAllocatedSpan
+        var overlapping = new List<DirectAllocation>();
         foreach (var allocation in _directAllocations.Values)
         {
             if (TryAddU64(allocation.Start, allocation.Length, out var allocationEnd) &&
-                start >= allocation.Start &&
-                releaseEnd <= allocationEnd)
+                Math.Max(start, allocation.Start) < Math.Min(releaseEnd, allocationEnd))
             {
-                owner = allocation;
-                ownerEnd = allocationEnd;
-                break;
+                overlapping.Add(allocation);
             }
         }
 
-        if (owner is not { } releasedFrom)
+        if (overlapping.Count == 0)
         {
             return false;
         }
 
-        _directAllocations.Remove(releasedFrom.Start);
-        if (start > releasedFrom.Start)
+        foreach (var alloc in overlapping)
         {
-            _directAllocations[releasedFrom.Start] = releasedFrom with
-            {
-                Length = start - releasedFrom.Start,
-            };
-        }
+            var allocEnd = alloc.Start + alloc.Length;
+            _directAllocations.Remove(alloc.Start);
 
-        if (releaseEnd < ownerEnd)
-        {
-            _directAllocations[releaseEnd] = new DirectAllocation(
-                releaseEnd,
-                ownerEnd - releaseEnd,
-                releasedFrom.MemoryType);
+            // Left remainder before the release range
+            if (start > alloc.Start)
+            {
+                var leftLen = start - alloc.Start;
+                _directAllocations[alloc.Start] = alloc with { Length = leftLen };
+            }
+
+            // Right remainder after the release range
+            if (releaseEnd < allocEnd)
+            {
+                var rightStart = releaseEnd;
+                var rightLen = allocEnd - releaseEnd;
+                _directAllocations[rightStart] = new DirectAllocation(
+                    rightStart,
+                    rightLen,
+                    alloc.MemoryType);
+            }
         }
 
         _nextPhysicalAddress = GetDirectMemoryHighWaterMarkLocked();

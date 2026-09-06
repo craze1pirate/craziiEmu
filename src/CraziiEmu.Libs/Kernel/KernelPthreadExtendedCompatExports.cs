@@ -1498,7 +1498,9 @@ public static class KernelPthreadExtendedCompatExports
                 var transferredToScheduler = false;
                 try
                 {
-                    if (GuestThreadExecution.IsGuestThread &&
+                    if (!GuestThreadExecution.IsMainThread &&
+                        !KernelPthreadState.IsCurrentMainThread() &&
+                        GuestThreadExecution.IsGuestThread &&
                         GuestThreadExecution.TryGetCurrentImportCallFrame(out _) &&
                         GuestThreadExecution.RequestCurrentThreadBlock(
                             ctx,
@@ -1534,7 +1536,9 @@ public static class KernelPthreadExtendedCompatExports
 
                 while (ReaderMustWaitForRwlock(rwlock, currentThreadId))
                 {
-                    if (GuestThreadExecution.IsGuestThread &&
+                    if (!GuestThreadExecution.IsMainThread &&
+                        !KernelPthreadState.IsCurrentMainThread() &&
+                        GuestThreadExecution.IsGuestThread &&
                         GuestThreadExecution.TryGetCurrentImportCallFrame(out _) &&
                         GuestThreadExecution.RequestCurrentThreadBlock(
                             ctx,

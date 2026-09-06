@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System;
 using System.Buffers.Binary;
@@ -83,13 +84,15 @@ public sealed partial class DirectExecutionBackend
 			Console.Error.WriteLine($"[LOADER][FATAL]   Exception Address: 0x{(ulong)(nint)exceptionRecord->ExceptionAddress:X16}");
 			Console.Error.WriteLine($"[LOADER][FATAL]   RIP: 0x{rip:X16}");
 			Console.Error.WriteLine($"[LOADER][FATAL]   RSP: 0x{rsp:X16}");
+			Console.Error.WriteLine("[LOADER][FATAL] Terminating process immediately to prevent DWM composition deadlock (KytyPS5 pattern).");
 			Console.Error.Flush();
+			Win32ExitProcess(1);
 		}
 		catch
 		{
 		}
 
-		return 0;
+		return 1;
 	}
 
 	private unsafe int VectoredHandler(void* exceptionInfo)
@@ -632,36 +635,200 @@ public sealed partial class DirectExecutionBackend
 				StringComparison.Ordinal) ||
 			exceptionRecord->NumberParameters < 2 ||
 			exceptionRecord->ExceptionInformation[0] != 0 ||
-			exceptionRecord->ExceptionInformation[1] != 8 ||
-			ReadCtxU64(contextRecord, CTX_RDI) != 0 ||
 			rip < 0x10000)
 		{
 			return false;
 		}
 
-		// Demon's Souls occasionally leaves an empty payload in a locked pool
+		// 1. Demon's Souls occasionally leaves an empty payload in a locked pool
 		// tree node. The allocator dereferences payload+8 before reaching its
 		// existing empty-pool fallback. Match the instruction stream instead of
 		// a title-specific absolute address, then resume at that fallback so the
 		// lock is released and the allocator can try its next backing pool.
 		const ulong allocatorHoleSignature = 0x634CFF568D08778BUL;
-		if (*(ulong*)rip != allocatorHoleSignature || *((byte*)rip + 8) != 0xF2)
+		if (exceptionRecord->ExceptionInformation[1] == 8 &&
+			ReadCtxU64(contextRecord, CTX_RDI) == 0 &&
+			*(ulong*)rip == allocatorHoleSignature &&
+			*((byte*)rip + 8) == 0xF2)
 		{
-			return false;
+			const ulong emptyPoolFallbackDelta = 0x8E;
+			WriteCtxU64(contextRecord, CTX_RIP, rip + emptyPoolFallbackDelta);
+			var recovery = Interlocked.Increment(ref _guestAllocatorHoleRecoveries);
+			if (recovery <= 16 || (recovery & (recovery - 1)) == 0)
+			{
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] Guest allocator empty-node adapter recovery #{recovery}: " +
+					$"rip=0x{rip:X16} -> 0x{rip + emptyPoolFallbackDelta:X16}");
+				Console.Error.Flush();
+			}
+			return true;
 		}
 
-		const ulong emptyPoolFallbackDelta = 0x8E;
-		WriteCtxU64(contextRecord, CTX_RIP, rip + emptyPoolFallbackDelta);
-		var recovery = Interlocked.Increment(ref _guestAllocatorHoleRecoveries);
-		if (recovery <= 16 || (recovery & (recovery - 1)) == 0)
+		// 2. Unreal Engine 4 FMallocBinned2 fast-path bin pop:
+		// mov rax, [rcx]; mov [rsi], rax; mov rax, rcx; add rsp, 8; pop rbx; pop r14; pop r15; pop rbp; ret
+		// Followed immediately at +0x14 by the existing fallback:
+		// mov rdi, r15; mov rsi, rbx; mov edx, r14d; ... jmp backing_allocator
+		// If [rcx] faults because the bin head pointer is invalid/stale/uncommitted,
+		// reset the bin so future allocations don't re-touch it and divert RIP to +0x14.
+		const ulong ue4FastPathSig0 = 0x8948068948018B48UL;
+		const ulong ue4FastPathSig1 = 0x5E415B08C48348C8UL;
+		if (*(ulong*)rip == ue4FastPathSig0 &&
+			*(ulong*)((byte*)rip + 8) == ue4FastPathSig1 &&
+			*(byte*)((byte*)rip + 16) == 0x41 &&
+			*(byte*)((byte*)rip + 17) == 0x5F &&
+			*(byte*)((byte*)rip + 18) == 0x5D &&
+			*(byte*)((byte*)rip + 19) == 0xC3 &&
+			*(byte*)((byte*)rip + 20) == 0x4C &&
+			*(byte*)((byte*)rip + 21) == 0x89 &&
+			*(byte*)((byte*)rip + 22) == 0xFF)
 		{
-			Console.Error.WriteLine(
-				$"[LOADER][WARN] Guest allocator empty-node adapter recovery #{recovery}: " +
-				$"rip=0x{rip:X16} -> 0x{rip + emptyPoolFallbackDelta:X16}");
-			Console.Error.Flush();
+			ulong rsi = ReadCtxU64(contextRecord, CTX_RSI);
+			if (rsi >= 0x10000 && rsi < 0x0000800000000000UL)
+			{
+				try
+				{
+					*(ulong*)rsi = 0;
+					*(uint*)(rsi + 8) = 0;
+				}
+				catch
+				{
+				}
+			}
+
+			const ulong ue4FallbackDelta = 0x14;
+			WriteCtxU64(contextRecord, CTX_RIP, rip + ue4FallbackDelta);
+			var recovery = Interlocked.Increment(ref _guestAllocatorHoleRecoveries);
+			if (recovery <= 16 || (recovery & (recovery - 1)) == 0)
+			{
+				ulong faultAddress = exceptionRecord->ExceptionInformation[1];
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] UE4 allocator empty-bin fallback recovery #{recovery}: " +
+					$"rip=0x{rip:X16} -> 0x{rip + ue4FallbackDelta:X16} fault_rcx=0x{faultAddress:X16} rsi=0x{rsi:X16}");
+				Console.Error.Flush();
+			}
+			return true;
 		}
 
-		return true;
+		// 3. Unreal Engine 4 FMallocBinned2 fast-path bin pop (Allocate):
+		// 0x8011FF47E: mov rdx, [rax]; mov [rcx], rdx; test r14, r14; je near ...
+		// Preceded by:
+		// dec dword [r10+rdi*1+8]
+		// At 0x8011FF473: je near +0xC4 (which lands at 0x8011FF53D)
+		// At 0x8011FF53D: (UE4's backing allocator fallback path)
+		// mov rdi, r12; mov rsi, r14; mov rdx, r13; mov ecx, ebx; add rsp, 8; pop rbx..rbp; jmp backing_allocator
+		// When [rax] faults because the bin's free list head points to an uncommitted/invalid address,
+		// zero the bin free list head [rcx], reset the bin item count [r10+rdi+8], and divert RIP by +0xBF to 0x8011FF53D.
+		const ulong ue4AllocFastPathSig0 = 0x854D118948108B48UL; // mov rdx, [rax]; mov [rcx], rdx; test r14, r14
+		if (*(ulong*)rip == ue4AllocFastPathSig0 &&
+			*(byte*)((byte*)rip + 8) == 0xF6 &&
+			*(byte*)((byte*)rip + 9) == 0x0F &&
+			*(byte*)((byte*)rip + 10) == 0x84)
+		{
+			ulong rcx = ReadCtxU64(contextRecord, CTX_RCX);
+			if (rcx >= 0x10000 && rcx < 0x0000800000000000UL)
+			{
+				try
+				{
+					*(ulong*)rcx = 0;
+				}
+				catch
+				{
+				}
+			}
+
+			ulong r10 = ReadCtxU64(contextRecord, CTX_R10);
+			ulong rdi = ReadCtxU64(contextRecord, CTX_RDI);
+			ulong countAddr = r10 + rdi + 8;
+			if (countAddr >= 0x10000 && countAddr < 0x0000800000000000UL)
+			{
+				try
+				{
+					*(uint*)countAddr = 0;
+				}
+				catch
+				{
+				}
+			}
+
+			const ulong ue4AllocFallbackDelta = 0xBF;
+			WriteCtxU64(contextRecord, CTX_RIP, rip + ue4AllocFallbackDelta);
+			var recovery = Interlocked.Increment(ref _guestAllocatorHoleRecoveries);
+			if (recovery <= 16 || (recovery & (recovery - 1)) == 0)
+			{
+				ulong faultAddress = exceptionRecord->ExceptionInformation[1];
+				Console.Error.WriteLine(
+					$"[LOADER][WARN] UE4 allocator allocate-path fallback recovery #{recovery}: " +
+					$"rip=0x{rip:X16} -> 0x{rip + ue4AllocFallbackDelta:X16} fault_rax=0x{faultAddress:X16} rcx=0x{rcx:X16}");
+				Console.Error.Flush();
+			}
+			return true;
+		}
+
+		// 4. Unreal Engine 4/5 FMallocBinned3 free-path invalid table/canary recovery:
+		// In FMallocBinned3::FreeInternal, the block canary or pool table pointer dereference:
+		// 0x8011F8358: mov edx, [r12+rbx*4]  (41 8B 14 9C)
+		// 0x8011F835C: mov ecx, edx          (89 D1)
+		// 0x8011F835E: and ecx, 3            (83 E1 03)
+		// 0x8011F8361: cmp ecx, 1            (83 F9 01)
+		// 0x8011F8364: je short ...          (74 xx)
+		// Or the table pointer dereference at 0x8011F8317:
+		// 0x8011F8317: mov r12, [rsi+rax*8]  (4C 8B 24 C6)
+		// 0x8011F831B: test r12, r12         (4D 85 E4)
+		// 0x8011F831E: jne short ...         (75 xx)
+		// When [r12+rbx*4] or [rsi+rax*8] faults due to an uncommitted or corrupted table pointer,
+		// scanning ahead finds the function epilogue:
+		// add rsp, 48h; pop rbx; pop r12; pop r13; pop r14; pop r15; pop rbp; ret
+		// Divert RIP to that epilogue so non-volatile registers are restored, the stack frame is unwound,
+		// and execution cleanly returns to the caller which releases the pool mutex and continues.
+		const ulong ue4Binned3FreeCanarySig0 = 0xE183D1899C148B41UL; // mov edx, [r12+rbx*4]; mov ecx, edx; and ecx, 3
+		const ulong ue4Binned3FreeTableSig0 = 0x75E4854DC6248B4CUL;  // mov r12, [rsi+rax*8]; test r12, r12; jne ...
+		if ((*(ulong*)rip == ue4Binned3FreeCanarySig0 &&
+			 *(byte*)((byte*)rip + 8) == 0x03 &&
+			 *(byte*)((byte*)rip + 9) == 0x83 &&
+			 *(byte*)((byte*)rip + 10) == 0xF9 &&
+			 *(byte*)((byte*)rip + 11) == 0x01 &&
+			 *(byte*)((byte*)rip + 12) == 0x74) ||
+			*(ulong*)rip == ue4Binned3FreeTableSig0)
+		{
+			const uint epilogueAddRsp = 0x48C48348; // add rsp, 48h
+			ulong epilogueRip = 0;
+			byte* p = (byte*)rip;
+			for (int i = 0; i < 0x300; i++)
+			{
+				if (*(uint*)(p + i) == epilogueAddRsp &&
+					p[i + 4] == 0x5B &&
+					p[i + 5] == 0x41 && p[i + 6] == 0x5C &&
+					p[i + 7] == 0x41 && p[i + 8] == 0x5D &&
+					p[i + 9] == 0x41 && p[i + 10] == 0x5E &&
+					p[i + 11] == 0x41 && p[i + 12] == 0x5F &&
+					p[i + 13] == 0x5D &&
+					p[i + 14] == 0xC3)
+				{
+					epilogueRip = rip + (ulong)i;
+					break;
+				}
+			}
+
+			if (epilogueRip != 0)
+			{
+				WriteCtxU64(contextRecord, CTX_RIP, epilogueRip);
+				WriteCtxU64(contextRecord, CTX_RAX, 0);
+				var recovery = Interlocked.Increment(ref _guestAllocatorHoleRecoveries);
+				if (recovery <= 16 || (recovery & (recovery - 1)) == 0)
+				{
+					ulong faultAddress = exceptionRecord->ExceptionInformation[1];
+					ulong r12 = ReadCtxU64(contextRecord, CTX_R12);
+					ulong rbx = ReadCtxU64(contextRecord, CTX_RBX);
+					Console.Error.WriteLine(
+						$"[LOADER][WARN] UE4 FMallocBinned3 free-path canary table recovery #{recovery}: " +
+						$"rip=0x{rip:X16} -> 0x{epilogueRip:X16} fault_addr=0x{faultAddress:X16} r12=0x{r12:X16} rbx=0x{rbx:X16}");
+					Console.Error.Flush();
+				}
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static bool IsBenignHostDebugException(uint exceptionCode)

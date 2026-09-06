@@ -68,6 +68,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         uint pixelInputEnable = 0,
         uint pixelInputAddress = 0,
         IReadOnlyList<uint>? pixelInputCntl = null,
+        uint pixelInputNum = 32,
         ulong storageBufferOffsetAlignment = 1)
     {
         shader = null;
@@ -84,6 +85,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
                 pixelInputEnable,
                 pixelInputAddress,
                 pixelInputCntl,
+                pixelInputNum,
                 storageBufferOffsetAlignment))
         {
             return false;
@@ -319,8 +321,8 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
             height,
             pitchInPixel);
 
-    public void RegisterKnownDisplayBuffer(ulong address, uint guestFormat) =>
-        VulkanVideoPresenter.RegisterKnownDisplayBuffer(address, guestFormat);
+    public void RegisterKnownDisplayBuffer(ulong address, uint guestFormat, uint width = 0, uint height = 0) =>
+        VulkanVideoPresenter.RegisterKnownDisplayBuffer(address, guestFormat, width, height);
 
     public bool IsGpuGuestImageAvailable(ulong address, uint format, uint numberType) =>
         VulkanVideoPresenter.IsGpuGuestImageAvailable(address, format, numberType);
@@ -418,6 +420,9 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
 
     public void RequestClose() =>
         VulkanVideoPresenter.RequestClose();
+
+    public void UnmapGpuRange(ulong address, ulong size) =>
+        VulkanVideoPresenter.UnmapGpuRange(address, size);
 
     private static byte[] Spirv(IGuestCompiledShader shader) =>
         shader is VulkanCompiledGuestShader vulkanShader

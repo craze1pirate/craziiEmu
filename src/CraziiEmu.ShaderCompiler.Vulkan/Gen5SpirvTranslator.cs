@@ -34,6 +34,7 @@ public static partial class Gen5SpirvTranslator
         uint pixelInputEnable = 0,
         uint pixelInputAddress = 0,
         IReadOnlyList<uint>? pixelInputCntl = null,
+        uint pixelInputNum = 32,
         ulong storageBufferOffsetAlignment = 1) =>
         TryCompilePixelShader(
             state,
@@ -48,6 +49,7 @@ public static partial class Gen5SpirvTranslator
             pixelInputEnable,
             pixelInputAddress,
             pixelInputCntl,
+            pixelInputNum,
             storageBufferOffsetAlignment);
 
     public static bool TryCompilePixelShader(
@@ -63,6 +65,7 @@ public static partial class Gen5SpirvTranslator
         uint pixelInputEnable = 0,
         uint pixelInputAddress = 0,
         IReadOnlyList<uint>? pixelInputCntl = null,
+        uint pixelInputNum = 32,
         ulong storageBufferOffsetAlignment = 1)
     {
         if (outputs.Count > 8 || outputs.Any(output => output.GuestSlot > 7))
@@ -105,6 +108,7 @@ public static partial class Gen5SpirvTranslator
             pixelInputEnable: pixelInputEnable,
             pixelInputAddress: pixelInputAddress,
             pixelInputCntl: pixelInputCntl,
+            pixelInputNum: pixelInputNum,
             storageBufferOffsetAlignment: storageBufferOffsetAlignment);
         return context.TryCompile(out shader, out error);
     }
@@ -173,6 +177,58 @@ public static partial class Gen5SpirvTranslator
         uint numberType) =>
         CompilationContext.DecodeStorageImageFormat(dataFormat, numberType);
 
+    public static uint GetPixelParameterLocation(
+        IReadOnlyList<uint> activeInputs,
+        uint input,
+        IReadOnlyList<uint>? interpolatorSettings,
+        uint inputNum = 32)
+    {
+        Span<bool> usedLocations = stackalloc bool[32];
+        foreach (var activeInput in activeInputs)
+        {
+            var mappedLocation = activeInput < inputNum && interpolatorSettings != null && activeInput < (uint)interpolatorSettings.Count
+                ? interpolatorSettings[(int)activeInput] & 0x1Fu
+                : activeInput;
+
+            var location = mappedLocation;
+            if (location < 32 && usedLocations[(int)location])
+            {
+                location = activeInput;
+                while (location < 32 && usedLocations[(int)location])
+                {
+                    location++;
+                }
+            }
+
+            if (activeInput == input)
+            {
+                return location < 32 ? location : activeInput;
+            }
+
+            if (location < 32)
+            {
+                usedLocations[(int)location] = true;
+            }
+        }
+
+        return input < inputNum && interpolatorSettings != null && input < (uint)interpolatorSettings.Count
+            ? interpolatorSettings[(int)input] & 0x1Fu
+            : input;
+    }
+
+    public static bool IsPixelParameterFlat(
+        uint input,
+        IReadOnlyList<uint>? interpolatorSettings,
+        uint inputNum = 32)
+    {
+        if (input < inputNum && interpolatorSettings != null && input < (uint)interpolatorSettings.Count)
+        {
+            return (interpolatorSettings[(int)input] & 0x400u) != 0;
+        }
+
+        return false;
+    }
+
     private sealed partial class CompilationContext
     {
         private const uint ImageDescriptorDwords = 8;
@@ -238,6 +294,7 @@ public static partial class Gen5SpirvTranslator
         private readonly uint _pixelInputEnable;
         private readonly uint _pixelInputAddress;
         private readonly uint[] _pixelInputCntl;
+        private readonly uint _pixelInputNum;
         private readonly ulong _storageBufferOffsetAlignment;
         private readonly List<uint> _interfaces = [];
         private readonly Dictionary<uint, uint> _pixelInputs = [];
@@ -351,6 +408,7 @@ public static partial class Gen5SpirvTranslator
             uint pixelInputEnable = 0,
             uint pixelInputAddress = 0,
             IReadOnlyList<uint>? pixelInputCntl = null,
+            uint pixelInputNum = 32,
             int requiredVertexOutputCount = 0,
             uint waveLaneCount = 32,
             ulong storageBufferOffsetAlignment = 1)
@@ -376,6 +434,7 @@ public static partial class Gen5SpirvTranslator
             _initialScalarBufferIndex = initialScalarBufferIndex;
             _pixelInputEnable = pixelInputEnable;
             _pixelInputAddress = pixelInputAddress;
+            _pixelInputNum = pixelInputNum == 0 ? 32u : Math.Min(pixelInputNum, 32u);
             _pixelInputCntl = new uint[32];
             for (uint i = 0; i < 32u; i++)
             {
@@ -1257,12 +1316,9 @@ public static partial class Gen5SpirvTranslator
                         SpirvStorageClass.Input);
                     // VINTRP ATTR selects the PS input slot. SPI_PS_INPUT_CNTL
                     // maps that slot to a VS parameter export location.
-                    var cntl = attribute < (uint)_pixelInputCntl.Length
-                        ? _pixelInputCntl[attribute]
-                        : attribute;
-                    var location = cntl & 0x1Fu;
+                    var location = GetPixelParameterLocation(attributes, attribute, _pixelInputCntl, _pixelInputNum);
                     _module.AddDecoration(variable, SpirvDecoration.Location, location);
-                    if ((cntl & 0x400u) != 0)
+                    if (IsPixelParameterFlat(attribute, _pixelInputCntl, _pixelInputNum))
                     {
                         _module.AddDecoration(variable, SpirvDecoration.Flat);
                     }
@@ -1795,8 +1851,7 @@ public static partial class Gen5SpirvTranslator
                 // NGG shaders bracket their exports with s_sendmsg
                 // (GS_ALLOC_REQ/DEALLOC) to reserve hardware export space;
                 // exports are translated directly, so the message is moot.
-                "SSendmsg" or
-                "VInterpMovF32")
+                "SSendmsg")
             {
                 return true;
             }

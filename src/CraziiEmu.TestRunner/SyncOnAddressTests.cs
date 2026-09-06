@@ -39,10 +39,10 @@ public static class SyncOnAddressTests
     public static void RunAllTests()
     {
         Console.WriteLine("=================================================");
-        Console.WriteLine("  _sync_on_address_v1 VERIFICATION TEST SUITE   ");
+        Console.WriteLine("  _sync_on_address_v1 & HLE VERIFICATION TEST SUITE   ");
         Console.WriteLine("=================================================");
 
-        var testResults = new (string Name, bool Passed, string Message)[9];
+        var testResults = new (string Name, bool Passed, string Message)[13];
 
         testResults[0] = Test1_OneWaiter_OneWake();
         testResults[1] = Test2_MultipleWaiters_WakeOne();
@@ -53,6 +53,10 @@ public static class SyncOnAddressTests
         testResults[6] = Test7_ConcurrentIndependentAddresses();
         testResults[7] = Test8_SchedulerNonBlocking();
         testResults[8] = Test9_ZeroActivePolling();
+        testResults[9] = Test10_Wait32FastPathWhenValueDiffers();
+        testResults[10] = Test11_Wait64FastPathWhenValueDiffers();
+        testResults[11] = Test12_Wait32ImmediateTimeoutWhenTimeoutZero();
+        testResults[12] = Test13_Wait32Wake();
 
         Console.WriteLine("\n-------------------------------------------------");
         Console.WriteLine("  SUMMARY OF TEST RESULTS                        ");
@@ -66,7 +70,7 @@ public static class SyncOnAddressTests
             if (!res.Passed) allPassed = false;
         }
         Console.WriteLine("-------------------------------------------------");
-        Console.WriteLine(allPassed ? "OVERALL RESULT: ALL 9 TESTS PASSED SUCCESSFUL!" : "OVERALL RESULT: TEST FAILURES DETECTED!");
+        Console.WriteLine(allPassed ? "OVERALL RESULT: ALL 13 TESTS PASSED SUCCESSFUL!" : "OVERALL RESULT: TEST FAILURES DETECTED!");
         Console.WriteLine("=================================================\n");
     }
 
@@ -341,6 +345,136 @@ public static class SyncOnAddressTests
 
             bool pass = sw.ElapsedMilliseconds < 10;
             return (name, pass, pass ? $"100 non-polling setup calls completed in {sw.Elapsed.TotalMicroseconds:F1} µs (0 Thread.Sleep used)" : $"Spinning detected: {sw.ElapsedMilliseconds} ms");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test10_Wait32FastPathWhenValueDiffers()
+    {
+        var name = "SyncOnAddressWait32: Fast Path When Memory != Expected";
+        try
+        {
+            var mem = new DummyMemory();
+            ulong addr = 0x5000;
+            mem.TryWrite(addr, BitConverter.GetBytes(100u));
+
+            var ctx = CreateContext(mem);
+            ctx[CpuRegister.Rdi] = addr;
+            ctx[CpuRegister.Rsi] = 200u; // expected is 200, but memory has 100
+            ctx[CpuRegister.Rdx] = 0;
+
+            var sw = Stopwatch.StartNew();
+            int res = KernelSyncOnAddressCompatExports.SyncOnAddressWait32(ctx);
+            sw.Stop();
+
+            bool pass = res == (int)OrbisGen2Result.ORBIS_GEN2_OK && sw.ElapsedMilliseconds < 5;
+            return (name, pass, pass ? $"Returned OK immediately in {sw.Elapsed.TotalMicroseconds:F1} µs without blocking" : $"Failed res={res} elapsed={sw.ElapsedMilliseconds}ms");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test11_Wait64FastPathWhenValueDiffers()
+    {
+        var name = "SyncOnAddressWait64: Fast Path When Memory != Expected";
+        try
+        {
+            var mem = new DummyMemory();
+            ulong addr = 0x6000;
+            mem.TryWrite(addr, BitConverter.GetBytes(0x1234567890ABCDEFul));
+
+            var ctx = CreateContext(mem);
+            ctx[CpuRegister.Rdi] = addr;
+            ctx[CpuRegister.Rsi] = 0x9999999999999999ul; // expected differs
+            ctx[CpuRegister.Rdx] = 0;
+
+            var sw = Stopwatch.StartNew();
+            int res = KernelSyncOnAddressCompatExports.SyncOnAddressWait64(ctx);
+            sw.Stop();
+
+            bool pass = res == (int)OrbisGen2Result.ORBIS_GEN2_OK && sw.ElapsedMilliseconds < 5;
+            return (name, pass, pass ? $"Returned OK immediately in {sw.Elapsed.TotalMicroseconds:F1} µs without blocking" : $"Failed res={res} elapsed={sw.ElapsedMilliseconds}ms");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test12_Wait32ImmediateTimeoutWhenTimeoutZero()
+    {
+        var name = "SyncOnAddressWait32: Immediate Timeout When Timeout Pointer Is Zero";
+        try
+        {
+            var mem = new DummyMemory();
+            ulong addr = 0x7000;
+            ulong timeoutPtr = 0x7010;
+            mem.TryWrite(addr, BitConverter.GetBytes(555u));
+            mem.TryWrite(timeoutPtr, BitConverter.GetBytes(0u)); // timeout = 0 us
+
+            var ctx = CreateContext(mem);
+            ctx[CpuRegister.Rdi] = addr;
+            ctx[CpuRegister.Rsi] = 555u; // matches memory
+            ctx[CpuRegister.Rdx] = timeoutPtr;
+
+            var sw = Stopwatch.StartNew();
+            int res = KernelSyncOnAddressCompatExports.SyncOnAddressWait32(ctx);
+            sw.Stop();
+
+            bool pass = res == (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT && sw.ElapsedMilliseconds < 5;
+            return (name, pass, pass ? $"Returned TIMED_OUT immediately in {sw.Elapsed.TotalMicroseconds:F1} µs" : $"Failed res=0x{res:X} elapsed={sw.ElapsedMilliseconds}ms");
+        }
+        catch (Exception ex)
+        {
+            return (name, false, ex.Message);
+        }
+    }
+
+    private static (string, bool, string) Test13_Wait32Wake()
+    {
+        var name = "SyncOnAddressWait32: Wait and Wake Sequence";
+        try
+        {
+            var mem = new DummyMemory();
+            ulong addr = 0x8000;
+            mem.TryWrite(addr, BitConverter.GetBytes(777u));
+
+            var waitCtx = CreateContext(mem);
+            waitCtx[CpuRegister.Rdi] = addr;
+            waitCtx[CpuRegister.Rsi] = 777u;
+            waitCtx[CpuRegister.Rdx] = 0; // infinite wait
+
+            var waitStarted = new ManualResetEventSlim(false);
+            int waitResult = -1;
+
+            var waitThread = new Thread(() =>
+            {
+                waitStarted.Set();
+                waitResult = KernelSyncOnAddressCompatExports.SyncOnAddressWait32(waitCtx);
+            })
+            {
+                IsBackground = true
+            };
+            waitThread.Start();
+
+            waitStarted.Wait(1000);
+            Thread.Sleep(20);
+
+            // Change memory and wake
+            mem.TryWrite(addr, BitConverter.GetBytes(888u));
+            var wakeCtx = CreateContext(mem);
+            wakeCtx[CpuRegister.Rdi] = addr;
+            wakeCtx[CpuRegister.Rsi] = 1; // wake 1
+            KernelSyncOnAddressCompatExports.SyncOnAddressWake(wakeCtx);
+
+            bool joined = waitThread.Join(1000);
+            bool pass = joined && waitResult == (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (name, pass, pass ? "Wait thread was woken cleanly" : $"Joined={joined}, waitResult={waitResult}");
         }
         catch (Exception ex)
         {

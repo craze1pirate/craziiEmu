@@ -160,6 +160,9 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         public bool Free(ulong address) =>
             HostMemory.Free((void*)address, 0, HostMemory.MEM_RELEASE);
 
+        public bool Decommit(ulong address, ulong size) =>
+            HostMemory.Free((void*)address, (nuint)size, HostMemory.MEM_DECOMMIT);
+
         public bool Protect(
             ulong address,
             ulong size,
@@ -945,6 +948,122 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         }
 
         return _hostMemory.Protect(address, size, ResolveProtection(protection), out _);
+    }
+
+    public bool TryDecommitRange(ulong address, ulong size)
+    {
+        if (size == 0)
+        {
+            return false;
+        }
+
+        var start = AlignDown(address, PageSize);
+        var end = AlignUp(address + size, PageSize);
+        if (end <= start)
+        {
+            return false;
+        }
+
+        var length = end - start;
+
+        _gate.EnterWriteLock();
+        try
+        {
+            var newRegions = new List<MemoryRegion>();
+            for (var i = _regions.Count - 1; i >= 0; i--)
+            {
+                var region = _regions[i];
+                var regionEnd = region.VirtualAddress + region.Size;
+
+                if (regionEnd <= start || region.VirtualAddress >= end)
+                {
+                    continue;
+                }
+
+                if (region.VirtualAddress >= start && regionEnd <= end)
+                {
+                    region.IsReservedOnly = true;
+                    continue;
+                }
+
+                if (start <= region.VirtualAddress && end < regionEnd)
+                {
+                    var decommitLen = end - region.VirtualAddress;
+                    var remainingLen = regionEnd - end;
+
+                    region.VirtualAddress = end;
+                    region.Size = remainingLen;
+
+                    newRegions.Add(new MemoryRegion
+                    {
+                        VirtualAddress = end - decommitLen,
+                        Size = decommitLen,
+                        IsExecutable = region.IsExecutable,
+                        IsReservedOnly = true,
+                        Protection = region.Protection,
+                    });
+                    continue;
+                }
+
+                if (region.VirtualAddress < start && end >= regionEnd)
+                {
+                    var keptLen = start - region.VirtualAddress;
+                    var decommitLen = regionEnd - start;
+
+                    region.Size = keptLen;
+
+                    newRegions.Add(new MemoryRegion
+                    {
+                        VirtualAddress = start,
+                        Size = decommitLen,
+                        IsExecutable = region.IsExecutable,
+                        IsReservedOnly = true,
+                        Protection = region.Protection,
+                    });
+                    continue;
+                }
+
+                if (region.VirtualAddress < start && end < regionEnd)
+                {
+                    var leftLen = start - region.VirtualAddress;
+                    var midLen = end - start;
+                    var rightLen = regionEnd - end;
+
+                    region.Size = leftLen;
+
+                    newRegions.Add(new MemoryRegion
+                    {
+                        VirtualAddress = start,
+                        Size = midLen,
+                        IsExecutable = region.IsExecutable,
+                        IsReservedOnly = true,
+                        Protection = region.Protection,
+                    });
+
+                    newRegions.Add(new MemoryRegion
+                    {
+                        VirtualAddress = end,
+                        Size = rightLen,
+                        IsExecutable = region.IsExecutable,
+                        IsReservedOnly = region.IsReservedOnly,
+                        Protection = region.Protection,
+                    });
+                    continue;
+                }
+            }
+
+            foreach (var r in newRegions)
+            {
+                InsertRegionSorted(r);
+            }
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+
+        Interlocked.Increment(ref _mappingGeneration);
+        return _hostMemory.Decommit(start, length);
     }
 
     // Reproduces the decomposition KernelMemoryCompatExports.ResolveHostProtection

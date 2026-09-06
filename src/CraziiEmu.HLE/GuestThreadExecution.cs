@@ -173,6 +173,9 @@ public static class GuestThreadExecution
     private static ulong _currentGuestThreadHandle;
 
     [ThreadStatic]
+    private static bool _isMainThread;
+
+    [ThreadStatic]
     private static ulong _currentFiberAddress;
 
     [ThreadStatic]
@@ -247,14 +250,17 @@ public static class GuestThreadExecution
 
     public static bool IsGuestThread => _currentGuestThreadHandle != 0;
 
+    public static bool IsMainThread => _isMainThread;
+
     public static ulong CurrentGuestThreadHandle => _currentGuestThreadHandle;
 
     public static ulong CurrentFiberAddress => _currentFiberAddress;
 
-    public static ulong EnterGuestThread(ulong threadHandle)
+    public static ulong EnterGuestThread(ulong threadHandle, bool isMainThread = false)
     {
         var previous = _currentGuestThreadHandle;
         _currentGuestThreadHandle = threadHandle;
+        _isMainThread = isMainThread;
         _pendingBlockReason = null;
         _pendingBlockContinuationValid = false;
         _pendingBlockContinuation = default;
@@ -276,6 +282,7 @@ public static class GuestThreadExecution
     public static void RestoreGuestThread(ulong previousThreadHandle)
     {
         _currentGuestThreadHandle = previousThreadHandle;
+        _isMainThread = false;
         _pendingBlockReason = null;
         _pendingBlockContinuationValid = false;
         _pendingBlockContinuation = default;
@@ -314,7 +321,7 @@ public static class GuestThreadExecution
         IGuestThreadBlockWaiter? waiter = null,
         long blockDeadlineTimestamp = 0)
     {
-        if (!IsGuestThread)
+        if (!IsGuestThread || _isMainThread)
         {
             return false;
         }

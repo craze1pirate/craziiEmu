@@ -1,7 +1,11 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
+using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using CraziiEmu.HLE;
 
@@ -9,42 +13,21 @@ namespace CraziiEmu.Libs.Kernel;
 
 // libKernel's address-wait primitives (sceKernelSyncOnAddress*) are the PS5's
 // futex-style wait/wake: a thread parks on a guest address until another thread
-// wakes that address. Guest runtimes (seen driving Juicy Realm, PPSA19268)
-// build their own spinlocks/queues on top of it and call the wait in a hot
-// loop; left unimplemented, every wait returns immediately and the runtime
-// busy-spins forever (millions of calls, no forward progress).
+// wakes that address. Guest runtimes and game engines (including Unreal Engine 4
+// and Unity) build their own spinlocks/queues on top of it.
 //
-// This implements wait/wake over the existing cooperative-block scheduler,
-// keyed on the address. The real primitive takes a compare value so the wait
-// only sleeps while the address still holds the expected value; that exact
-// value is not recovered here, so each wait is given a bounded deadline and
-// treated as a spurious-wakeup-tolerant park: a genuinely missed wake
-// self-heals when the deadline expires and the guest re-checks its own
-// condition, which futex callers already tolerate. A matching wake releases
-// waiters immediately through the same key.
+// In KytyPS5 (src/kernel/syncOnAddress.cpp), if the memory value at the address
+// no longer matches the expected value, the wait returns OK (0) immediately
+// without blocking. Only when *address == expected does it block until woken
+// or until the microsecond timeout expires.
 public static class KernelSyncOnAddressCompatExports
 {
-    // Safety-net poll interval. Real releases come from the wake side (generation
-    // bump + WakeBlockedThreads); this only bounds how long a wait that genuinely
-    // raced/missed its wake stays parked before the guest re-evaluates. Kept
-    // large: a short interval turns every parked waiter into a hot re-poll that
-    // steals scheduler bandwidth from the threads that actually make progress
-    // (including the ones that would issue the wake), so it must be a rare last
-    // resort, not a spin substitute.
-    private static readonly TimeSpan WaitSelfHealTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan WaitSelfHealTimeout = TimeSpan.FromMilliseconds(200);
 
-    // Per-address host gate for the non-cooperative (host main thread) fallback,
-    // which cannot use the guest-thread scheduler's block mechanism.
+    // Per-address host gate for non-cooperative threads.
     private static readonly ConcurrentDictionary<ulong, object> _hostAddressGates = new();
 
-    // Per-address wake generation. A wait captures the current generation and
-    // its wake predicate stays unsatisfied (keeps the thread parked) until a
-    // wake bumps it. This is what actually holds the thread blocked: a bare
-    // "always satisfied" predicate is treated as an immediate late-arrival by
-    // the dispatcher's race guard and never yields, leaving the guest to
-    // busy-spin. The generation also closes the register-vs-park race for free:
-    // a wake landing in that window bumps the generation, so the predicate is
-    // already satisfied and the guest correctly resumes at once.
+    // Per-address wake generation counter to track wake events across threads.
     private static readonly ConcurrentDictionary<ulong, long> _wakeGenerations = new();
 
     private static long CurrentGeneration(ulong address) =>
@@ -59,41 +42,245 @@ public static class KernelSyncOnAddressCompatExports
         LibraryName = "libKernel")]
     public static int SyncOnAddressWait(CpuContext ctx)
     {
+        return SyncOnAddressWait32Core(ctx, "sceKernelSyncOnAddressWait");
+    }
+
+    [SysAbiExport(
+        Nid = "B2n8aDorSH4",
+        ExportName = "sceKernelSyncOnAddressWait32",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int SyncOnAddressWait32(CpuContext ctx)
+    {
+        return SyncOnAddressWait32Core(ctx, "sceKernelSyncOnAddressWait32");
+    }
+
+    [SysAbiExport(
+        Nid = "PZQhiiLXRFs",
+        ExportName = "sceKernelSyncOnAddressWait64",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int SyncOnAddressWait64(CpuContext ctx)
+    {
+        return SyncOnAddressWait64Core(ctx, "sceKernelSyncOnAddressWait64");
+    }
+
+    private static int SyncOnAddressWait32Core(CpuContext ctx, string opName)
+    {
         var address = ctx[CpuRegister.Rdi];
-        if (address == 0)
+        if (address == 0 || (address & 3) != 0)
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        var observedGeneration = CurrentGeneration(address);
-        var deadline = GuestThreadExecution.ComputeDeadlineTimestamp(WaitSelfHealTimeout);
+        var expected = (uint)ctx[CpuRegister.Rsi];
+        var timeoutPtr = ctx[CpuRegister.Rdx];
 
-        // Cooperative path: stay parked until a wake bumps this address's
-        // generation (or the deadline expires as a self-heal). The guest
-        // re-evaluates its own condition after resuming.
-        if (GuestThreadExecution.RequestCurrentThreadBlock(
-                ctx,
-                "sceKernelSyncOnAddressWait",
-                WakeKey(address),
-                resumeHandler: () => (int)OrbisGen2Result.ORBIS_GEN2_OK,
-                wakeHandler: () => CurrentGeneration(address) != observedGeneration,
-                deadline))
+        if (!ctx.TryReadUInt32(address, out var currentVal))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        // Fast path: if the value already changed, return OK immediately (no blocking)
+        if (currentVal != expected)
         {
             return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
         }
 
-        // Non-cooperative caller (host main thread): bounded host wait so a
-        // missed wake self-heals instead of hanging.
+        long deadline = 0;
+        var hasFiniteTimeout = false;
+        uint timeoutUs = 0;
+        if (timeoutPtr != 0)
+        {
+            if (!ctx.TryReadUInt32(timeoutPtr, out timeoutUs))
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            if (timeoutUs == 0)
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
+            }
+
+            hasFiniteTimeout = true;
+            deadline = GuestThreadExecution.ComputeDeadlineTimestamp(TimeSpan.FromTicks((long)timeoutUs * 10));
+        }
+        else
+        {
+            deadline = GuestThreadExecution.ComputeDeadlineTimestamp(WaitSelfHealTimeout);
+        }
+
+        var observedGen = CurrentGeneration(address);
+
+        // Cooperative scheduler path
+        if (GuestThreadExecution.RequestCurrentThreadBlock(
+                ctx,
+                opName,
+                WakeKey(address),
+                resumeHandler: () =>
+                {
+                    if (ctx.TryReadUInt32(address, out var val) && val != expected)
+                    {
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+                    if (CurrentGeneration(address) != observedGen)
+                    {
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+                    return hasFiniteTimeout
+                        ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT
+                        : (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                },
+                wakeHandler: () =>
+                {
+                    if (ctx.TryReadUInt32(address, out var val) && val != expected)
+                    {
+                        return true;
+                    }
+                    return CurrentGeneration(address) != observedGen;
+                },
+                deadline))
+        {
+            return (int)ctx[CpuRegister.Rax];
+        }
+
+        // Non-cooperative host thread fallback
         var gate = _hostAddressGates.GetOrAdd(address, static _ => new object());
         lock (gate)
         {
-            if (CurrentGeneration(address) == observedGeneration)
+            var waitDuration = hasFiniteTimeout
+                ? TimeSpan.FromTicks((long)timeoutUs * 10)
+                : WaitSelfHealTimeout;
+
+            if (ctx.TryReadUInt32(address, out var val) && val == expected &&
+                CurrentGeneration(address) == observedGen)
             {
-                Monitor.Wait(gate, WaitSelfHealTimeout);
+                Monitor.Wait(gate, waitDuration);
             }
         }
 
-        return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        if (ctx.TryReadUInt32(address, out var finalVal) && finalVal != expected)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        if (CurrentGeneration(address) != observedGen)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        return SetReturn(ctx, hasFiniteTimeout
+            ? OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT
+            : OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    private static int SyncOnAddressWait64Core(CpuContext ctx, string opName)
+    {
+        var address = ctx[CpuRegister.Rdi];
+        if (address == 0 || (address & 7) != 0)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+        }
+
+        var expected = ctx[CpuRegister.Rsi];
+        var timeoutPtr = ctx[CpuRegister.Rdx];
+
+        if (!ctx.TryReadUInt64(address, out var currentVal))
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        // Fast path: if the value already changed, return OK immediately (no blocking)
+        if (currentVal != expected)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        long deadline = 0;
+        var hasFiniteTimeout = false;
+        uint timeoutUs = 0;
+        if (timeoutPtr != 0)
+        {
+            if (!ctx.TryReadUInt32(timeoutPtr, out timeoutUs))
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            }
+
+            if (timeoutUs == 0)
+            {
+                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
+            }
+
+            hasFiniteTimeout = true;
+            deadline = GuestThreadExecution.ComputeDeadlineTimestamp(TimeSpan.FromTicks((long)timeoutUs * 10));
+        }
+        else
+        {
+            deadline = GuestThreadExecution.ComputeDeadlineTimestamp(WaitSelfHealTimeout);
+        }
+
+        var observedGen = CurrentGeneration(address);
+
+        // Cooperative scheduler path
+        if (GuestThreadExecution.RequestCurrentThreadBlock(
+                ctx,
+                opName,
+                WakeKey(address),
+                resumeHandler: () =>
+                {
+                    if (ctx.TryReadUInt64(address, out var val) && val != expected)
+                    {
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+                    if (CurrentGeneration(address) != observedGen)
+                    {
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+                    return hasFiniteTimeout
+                        ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT
+                        : (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                },
+                wakeHandler: () =>
+                {
+                    if (ctx.TryReadUInt64(address, out var val) && val != expected)
+                    {
+                        return true;
+                    }
+                    return CurrentGeneration(address) != observedGen;
+                },
+                deadline))
+        {
+            return (int)ctx[CpuRegister.Rax];
+        }
+
+        // Non-cooperative host thread fallback
+        var gate = _hostAddressGates.GetOrAdd(address, static _ => new object());
+        lock (gate)
+        {
+            var waitDuration = hasFiniteTimeout
+                ? TimeSpan.FromTicks((long)timeoutUs * 10)
+                : WaitSelfHealTimeout;
+
+            if (ctx.TryReadUInt64(address, out var val) && val == expected &&
+                CurrentGeneration(address) == observedGen)
+            {
+                Monitor.Wait(gate, waitDuration);
+            }
+        }
+
+        if (ctx.TryReadUInt64(address, out var finalVal) && finalVal != expected)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        if (CurrentGeneration(address) != observedGen)
+        {
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+        }
+
+        return SetReturn(ctx, hasFiniteTimeout
+            ? OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT
+            : OrbisGen2Result.ORBIS_GEN2_OK);
     }
 
     [SysAbiExport(
@@ -138,3 +325,4 @@ public static class KernelSyncOnAddressCompatExports
         return value;
     }
 }
+
