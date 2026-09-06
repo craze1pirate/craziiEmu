@@ -48,11 +48,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
-  <Target Name="RemovePdbsFromPublish" AfterTargets="Publish">
+  <Target Name="RemovePdbsFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <ItemGroup>
-      <PdbsToDelete Include="$(PublishDir)\**\*.pdb" />
+      <PdbsToDelete Include="$([MSBuild]::EnsureTrailingSlash('$(PublishDir)'))**\*.pdb" />
     </ItemGroup>
-    <Delete Files="@(PdbsToDelete)" />
+    <Delete Files="@(PdbsToDelete)" ContinueOnError="true" />
   </Target>
 
 </Project>
