@@ -306,9 +306,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )",
-          "CraziiEmu.Libs": "[0.30.0-alpha, )",
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
+          "CraziiEmu.HLE": "[0.31.0-alpha, )",
+          "CraziiEmu.Libs": "[0.31.0-alpha, )",
+          "CraziiEmu.Logging": "[0.31.0-alpha, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Maths": "[2.23.0, )",
@@ -319,7 +319,7 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
+          "CraziiEmu.Logging": "[0.31.0-alpha, )",
           "ppy.SDL3-CS": "[2026.629.0, )"
         }
       },
@@ -329,11 +329,11 @@
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )",
-          "CraziiEmu.LibAtrac9": "[0.30.0-alpha, )",
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.30.0-alpha, )",
+          "CraziiEmu.HLE": "[0.31.0-alpha, )",
+          "CraziiEmu.LibAtrac9": "[0.31.0-alpha, )",
+          "CraziiEmu.Logging": "[0.31.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.31.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.31.0-alpha, )",
           "FFmpeg.AutoGen": "[7.1.1, )",
           "NLayer": "[1.14.0, )",
           "Silk.NET.Input": "[2.23.0, )",
@@ -350,13 +350,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )"
+          "CraziiEmu.HLE": "[0.31.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.31.0-alpha, )"
         }
       },
       "FFmpeg.AutoGen": {

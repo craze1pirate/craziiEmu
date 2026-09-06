@@ -50,6 +50,7 @@ public class CraziiEmuConfig
     public string GraphicsApi { get; set; } = "Vulkan";
     public float ResolutionScale { get; set; } = 1.0f;
     public string DisplayScaling { get; set; } = "Fit";
+    public string HdrMode { get; set; } = "Disable";
     public bool UiFullscreenOnStartup { get; set; } = false;
     public bool EnableRenderDocCapture { get; set; } = false;
 
@@ -90,6 +91,7 @@ public class CraziiEmuConfig
                         HotkeyMetricsOverlay = updated.HotkeyMetricsOverlay;
                         HotkeyVerboseConsole = updated.HotkeyVerboseConsole;
                         DisplayScaling = updated.DisplayScaling;
+                        HdrMode = updated.HdrMode;
                         EnableRenderDocCapture = updated.EnableRenderDocCapture;
                     }
                 }
@@ -100,22 +102,26 @@ public class CraziiEmuConfig
 
     public int GetResolutionScaleIndex()
     {
-        if (ResolutionScale < 0.75f) return 0;       // 0.66x (720p)
-        if (ResolutionScale < 0.90f) return 1;       // 0.83x (900p)
-        if (ResolutionScale < 1.15f) return 2;       // 1.0x (1080p) [Native]
-        if (ResolutionScale < 1.65f) return 3;       // 1.33x (1440p / 2K)
-        return 4;                                    // 2.0x (4K)
+        if (ResolutionScale < 0.38f) return 0;       // 0.33x (360p)
+        if (ResolutionScale < 0.55f) return 1;       // 0.44x (480p)
+        if (ResolutionScale < 0.75f) return 2;       // 0.66x (720p)
+        if (ResolutionScale < 0.90f) return 3;       // 0.83x (900p)
+        if (ResolutionScale < 1.15f) return 4;       // 1.0x (1080p) [Native]
+        if (ResolutionScale < 1.65f) return 5;       // 1.33x (1440p / 2K)
+        return 6;                                    // 2.0x (4K)
     }
 
     public void SetResolutionScaleFromIndex(int index)
     {
         ResolutionScale = index switch
         {
-            0 => 0.666667f,
-            1 => 0.833333f,
-            2 => 1.0f,
-            3 => 1.333333f,
-            4 => 2.0f,
+            0 => 0.333333f,
+            1 => 0.444444f,
+            2 => 0.666667f,
+            3 => 0.833333f,
+            4 => 1.0f,
+            5 => 1.333333f,
+            6 => 2.0f,
             _ => 1.0f,
         };
     }
@@ -139,6 +145,26 @@ public class CraziiEmuConfig
             2 => "Stretch",
             3 => "Integer",
             _ => "Fit",
+        };
+    }
+
+    public int GetHdrModeIndex()
+    {
+        return HdrMode?.ToLowerInvariant() switch
+        {
+            "enable" => 1,
+            "auto" => 2,
+            _ => 0, // "Disable" default
+        };
+    }
+
+    public void SetHdrModeFromIndex(int index)
+    {
+        HdrMode = index switch
+        {
+            1 => "Enable",
+            2 => "Auto",
+            _ => "Disable",
         };
     }
     public static void Load()

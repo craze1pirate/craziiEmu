@@ -233,6 +233,24 @@ internal static partial class Program
                 continue;
             }
 
+            const string hdrPrefix = "--hdr=";
+            if (argument.StartsWith(hdrPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var valueText = argument[hdrPrefix.Length..];
+                var hdrMode = valueText.ToLowerInvariant() switch
+                {
+                    "enable" or "on" => CraziiEmu.Libs.VideoOut.HostHdrMode.On,
+                    "auto" => CraziiEmu.Libs.VideoOut.HostHdrMode.Auto,
+                    _ => CraziiEmu.Libs.VideoOut.HostHdrMode.Off,
+                };
+                var videoOptions = new CraziiEmu.Libs.VideoOut.HostVideoOptions
+                {
+                    HdrMode = hdrMode,
+                };
+                CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
+                continue;
+            }
+
             if (argument.StartsWith("--", StringComparison.Ordinal))
             {
                 ebootPath = string.Empty;

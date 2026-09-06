@@ -108,6 +108,8 @@ jobs:
         run: |
           # Remove third-party .pdb files shipped by NuGet native packages
           Get-ChildItem -Path $env:PUBLISH_DIR -Filter '*.pdb' -Recurse | Remove-Item -Force
+          # Ensure CLI executables are never included in the GUI release package
+          Get-ChildItem -Path $env:PUBLISH_DIR -Filter '*cli*.exe' -Recurse | Remove-Item -Force
 
       - name: Create release archive
         run: |
@@ -167,6 +169,7 @@ jobs:
             gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
           else
             gh release create "${RELEASE_TAG}" "${assets[@]}" \
+              --prerelease \
               --verify-tag \
               --title "${RELEASE_NAME}" \
               --notes "${notes}"

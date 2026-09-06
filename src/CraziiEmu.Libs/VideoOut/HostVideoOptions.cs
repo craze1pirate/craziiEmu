@@ -44,7 +44,7 @@ public sealed record HostVideoOptions
 
     public bool VSync { get; init; } = true;
 
-    public HostHdrMode HdrMode { get; init; } = HostHdrMode.Auto;
+    public HostHdrMode HdrMode { get; init; } = HostHdrMode.Off;
 
     public float ResolutionScale { get; init; } = 1.0f;
 
@@ -56,7 +56,7 @@ public sealed record HostVideoOptions
         RefreshRate = Math.Clamp(RefreshRate, 0, 1000),
         ResolutionScale = ResolutionScale > 0f ? Math.Clamp(ResolutionScale, 0.25f, 4.0f) : 1.0f,
         ScalingMode = Enum.IsDefined(ScalingMode) ? ScalingMode : HostScalingMode.Fit,
-        HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Auto,
+        HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Off,
     };
 }
 

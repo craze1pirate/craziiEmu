@@ -40,6 +40,12 @@ internal static class Program
                     WindowMode = config.UiFullscreenOnStartup
                         ? CraziiEmu.Libs.VideoOut.HostWindowMode.Borderless
                         : CraziiEmu.Libs.VideoOut.HostWindowMode.Windowed,
+                    HdrMode = config.HdrMode?.ToLowerInvariant() switch
+                    {
+                        "enable" => CraziiEmu.Libs.VideoOut.HostHdrMode.On,
+                        "auto" => CraziiEmu.Libs.VideoOut.HostHdrMode.Auto,
+                        _ => CraziiEmu.Libs.VideoOut.HostHdrMode.Off,
+                    },
                 };
                 CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
 

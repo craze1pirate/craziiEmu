@@ -1227,6 +1227,16 @@ public partial class MainWindow : Window
             }
         };
 
+        CmbHdrMode.SelectedIndex = config.GetHdrModeIndex();
+        CmbHdrMode.SelectionChanged += (s, e) =>
+        {
+            if (CmbHdrMode.SelectedIndex >= 0)
+            {
+                config.SetHdrModeFromIndex(CmbHdrMode.SelectedIndex);
+                config.Save();
+            }
+        };
+
         ChkAudio.IsChecked = config.EnableAudio;
         SldVolume.IsEnabled = config.EnableAudio;
         ChkAudio.IsCheckedChanged += (s, e) => 
