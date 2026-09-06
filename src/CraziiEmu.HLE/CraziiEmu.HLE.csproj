@@ -39,9 +39,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
        scripts/generate_aerolib_binary.py. -->
   <PropertyGroup>
     <CraziiEmuAerolibNamesFile>$(MSBuildThisFileDirectory)..\..\scripts\ps5_names.txt</CraziiEmuAerolibNamesFile>
-    <!-- SourceGenerators is a Roslyn component (IsRoslynComponent=true) and always
-         outputs to Debug regardless of the solution-level configuration. -->
-    <CraziiEmuAerolibTaskAssembly>$(MSBuildThisFileDirectory)..\..\artifacts\bin\Debug\netstandard2.0\CraziiEmu.SourceGenerators.dll</CraziiEmuAerolibTaskAssembly>
+    <CraziiEmuAerolibTaskAssembly>$(MSBuildThisFileDirectory)..\..\artifacts\bin\$(Configuration)\netstandard2.0\CraziiEmu.SourceGenerators.dll</CraziiEmuAerolibTaskAssembly>
   </PropertyGroup>
 
   <UsingTask TaskName="CraziiEmu.SourceGenerators.GenerateAerolibBinaryTask"
