@@ -1103,15 +1103,20 @@ public static partial class AgcExports
     private const uint CbColor0Base = 0x318;
     private const uint CbColorRegisterStride = 15;
     private const uint CbColor0Info = 0x31C;
+    private const uint CbColor0Cmask = 0x31F;
     private const uint CbColor0ClearWord0 = 0x323;
     private const uint CbColor0ClearWord1 = 0x324;
+    private const uint CbColor0DccBase = 0x325;
     private const uint CbColor0BaseExt = 0x390;
+    private const uint CbColor0CmaskBaseExt = 0x398;
+    private const uint CbColor0DccBaseExt = 0x3A8;
     private const uint CbColor0Attrib2 = 0x3B0;
     private const uint CbColor0Attrib3 = 0x3B8;
     // CB_COLORn_INFO.DCC_ENABLE (gc_10_1_0_sh_mask.h). On GFX10 the legacy
     // FAST_CLEAR and COMPRESSION bits stay clear because DCC, not CMASK,
     // carries the compression.
     private const uint CbColorInfoDccEnableMask = 1u << 28;
+    private const uint CbColorInfoFastClearEnableMask = 1u << 12;
     private const uint CbBlend0Control = 0x1E0;
     private const uint PaScModeCntl0 = 0x292;
     // GFX10 DB context registers (register byte address minus 0x28000, / 4).
@@ -1131,8 +1136,8 @@ public static partial class AgcExports
     private const uint EsUserDataRegister = 0xCC;
     private const uint ComputeUserDataRegister = 0x240;
     private const uint NggUserDataScalarRegisterBase = 8;
-    private const uint Gen5TextureFormatR8G8B8A8Unorm = 10;
-    private const uint Gen5TextureFormatR16G16B16A16Float = 12;
+    internal const uint Gen5TextureFormatR8G8B8A8Unorm = 10;
+    internal const uint Gen5TextureFormatR16G16B16A16Float = 12;
     private const uint Gen5TextureType1D = 8;
     private const uint Gen5TextureType2D = 9;
     private const uint Gen5TextureType3D = 10;
@@ -5275,6 +5280,7 @@ public static partial class AgcExports
             {
                 TraceFramePacketSummary(state);
                 SyncCpuWrittenGuestImages(ctx);
+                GpuWaitRegistry.AdvanceFrame();
                 if (!TryReadUInt32(ctx, currentAddress + 4, out var videoOutHandle) ||
                     !TryReadUInt32(ctx, currentAddress + 8, out var displayBufferIndexRaw) ||
                     !TryReadUInt32(ctx, currentAddress + 12, out var flipMode) ||
@@ -7086,7 +7092,13 @@ public static partial class AgcExports
 
         if (hasCurrent && GpuWaitRegistry.Compare(waiter, currentValue))
         {
-            return false; // already satisfied — keep parsing
+            // Value satisfies the condition, but only bypass if the label was
+            // written in the current frame. A stale label from a previous frame
+            // means the producer hasn't written yet this frame — must wait.
+            if (GpuWaitRegistry.IsLabelFresh(ctx.Memory, waitAddress))
+            {
+                return false; // satisfied by current-frame write — keep parsing
+            }
         }
 
         if (!_gpuWaitSuspendEnabled)
@@ -8343,6 +8355,34 @@ public static partial class AgcExports
                 return;
             }
 
+            // DbRenderControl CLEARON (bit0): when set, the CB clears color
+            // targets on first draw. Handle color targets (depth is already
+            // handled by DecodeDepthState).
+            if (state.CxRegisters.TryGetValue(DbRenderControl, out var rc) && (rc & 0x1u) != 0)
+            {
+                foreach (var rt in translatedDraw.RenderTargets)
+                {
+                    if (rt.Address != 0)
+                    {
+                        VulkanVideoPresenter.RequestGuestColorClear(rt.Address);
+                    }
+                }
+            }
+
+            // CMASK fast clear: CB_COLORn_INFO.FAST_CLEAR (bit12) set on
+            // one or more targets. The CB clears via CMASK before the draw
+            // writes; mark targets for clear-on-first-use.
+            if (IsCmaskFastClearDraw(state.CxRegisters, translatedDraw.RenderTargets))
+            {
+                foreach (var rt in translatedDraw.RenderTargets)
+                {
+                    if (rt.Address != 0)
+                    {
+                        VulkanVideoPresenter.RequestGuestColorClear(rt.Address);
+                    }
+                }
+            }
+
             var firstTarget = translatedDraw.RenderTargets.FirstOrDefault();
             if (firstTarget.Address != 0)
             {
@@ -9047,7 +9087,7 @@ public static partial class AgcExports
         var psInputCntl = ReadPsInputCntlRegisters(state.CxRegisters);
         var psInputNum = ReadPsInputNum(state.CxRegisters);
         var psInputCntlFingerprint = ComputePsInputCntlFingerprint(psInputCntl, psInputNum);
-        var attributeCount = GetInterpolatedAttributeCount(pixelState, psInputCntl, psInputNum);
+        var attributeCount = GetInterpolatedAttributeCount(pixelState);
         var exportStateFingerprint = _bakeScalars
             ? ComputeShaderStateFingerprint(exportEvaluation)
             : ComputeShaderStructuralFingerprint(exportEvaluation);
@@ -9283,7 +9323,7 @@ public static partial class AgcExports
             primitiveType,
             compiled.Vertex,
             compiled.Pixel,
-            GetInterpolatedAttributeCount(pixelState, psInputCntl, psInputNum),
+            GetInterpolatedAttributeCount(pixelState),
             vertexCount,
             state.InstanceCount,
             GetBaseVertex(state),
@@ -9478,7 +9518,6 @@ public static partial class AgcExports
             "SWaitcnt" or
             "SInstPrefetch" or
             "SEndpgm" or
-            "SMovB32" or
             "VMovB32" ||
         instruction.Control is Gen5ExportControl { Target: 0 };
 
@@ -9563,6 +9602,7 @@ public static partial class AgcExports
     {
         if (!_fillClearHack ||
             textures.Count != 0 ||
+            vertexInputs.Count != 0 ||
             pixelUserData.Count < 4 ||
             !renderState.Blends.All(IsTransparentPremultipliedFillBlend))
         {
@@ -9688,6 +9728,30 @@ public static partial class AgcExports
             renderTargets[0].NumberType,
             clearWord0,
             out dccClearColor);
+    }
+
+    /// <summary>
+    /// GFX10 CMASK fast clear: CB_COLORn_INFO.FAST_CLEAR (bit 12) set on
+    /// one or more targets. The CB clears via CMASK before the draw writes;
+    /// mark targets for clear-on-first-use. Unlike DCC, the draw content
+    /// IS written (not dropped). Dead Cells uses DbRenderControl CLEARON
+    /// instead (bit0), not this mechanism.
+    /// </summary>
+    private static bool IsCmaskFastClearDraw(
+        IReadOnlyDictionary<uint, uint> registers,
+        IReadOnlyList<RenderTargetDescriptor> renderTargets)
+    {
+        foreach (var rt in renderTargets)
+        {
+            var stride = rt.Slot * CbColorRegisterStride;
+            if (registers.TryGetValue(CbColor0Info + stride, out var info) &&
+                (info & CbColorInfoFastClearEnableMask) != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -9927,27 +9991,18 @@ public static partial class AgcExports
             ? (packedMasks >> (int)(target * 4)) & 0xFu
             : 0;
 
-    private static uint GetInterpolatedAttributeCount(
-        Gen5ShaderState state,
-        IReadOnlyList<uint>? pixelInputCntl = null,
-        uint inputNum = 32)
+    private static uint GetInterpolatedAttributeCount(Gen5ShaderState state)
     {
-        var attributes = state.Program.Instructions
-            .Select(instruction => instruction.Control)
-            .OfType<Gen5InterpolationControl>()
-            .Select(control => control.Attribute)
-            .Distinct()
-            .Order()
-            .ToArray();
-
-        var maxLocation = -1;
-        foreach (var attribute in attributes)
+        var maxAttribute = -1;
+        foreach (var instruction in state.Program.Instructions)
         {
-            var location = (int)Gen5SpirvTranslator.GetPixelParameterLocation(attributes, attribute, pixelInputCntl, inputNum);
-            maxLocation = Math.Max(maxLocation, Math.Max((int)attribute, location));
+            if (instruction.Control is Gen5InterpolationControl interpolation)
+            {
+                maxAttribute = Math.Max(maxAttribute, (int)interpolation.Attribute);
+            }
         }
 
-        return (uint)(maxLocation + 1);
+        return (uint)(maxAttribute + 1);
     }
 
     private static readonly bool _bakeScalars = string.Equals(
@@ -10183,7 +10238,7 @@ public static partial class AgcExports
             var address = ((ulong)(baseHigh & 0xFFu) << 40) | ((ulong)baseLow << 8);
             var writeMask = (targetMask >> ((int)slot * 4)) & 0xFu;
             if (address == 0 ||
-                (!includeMaskedTargets && hasTargetMask && slot != 0 && writeMask == 0))
+                (!includeMaskedTargets && hasTargetMask && writeMask == 0))
             {
                 continue;
             }
@@ -11131,7 +11186,7 @@ public static partial class AgcExports
             : buffer with { Pooled = ownsPooledData && buffer.Pooled };
 
     // BCn block-compressed guest formats and the bytes per 4x4 block.
-    private static int GetBlockCompressedBlockBytes(uint format) => format switch
+    internal static int GetBlockCompressedBlockBytes(uint format) => format switch
     {
         169 or 170 or 175 or 176 => 8,
         171 or 172 or 173 or 174 or 177 or 178 or 179 or 180 or 181 or 182 => 16,
@@ -11657,7 +11712,7 @@ public static partial class AgcExports
                 (long)physicalSourceByteCount * arrayLayers <= int.MaxValue)
             {
                 var gpuArrayParams = GnmTiling.GetDetileParams(
-                    descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh);
+                    descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh, pitchElements);
                 if (IsGpuDetileEquation(gpuArrayParams.Equation) &&
                     (long)elementsWide * elementsHigh * bytesPerElement <= (long)physicalSourceByteCount)
                 {
@@ -11817,7 +11872,7 @@ public static partial class AgcExports
                 {
                     var eq = hasElementLayout
                         ? GnmTiling.GetDetileParams(
-                            descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh).Equation
+                            descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh, pitchElements).Equation
                         : DetileEquation.None;
                     Console.Error.WriteLine(
                         $"[GPU-DETILE] gate mode={descriptor.TileMode} fmt={descriptor.Format} " +
@@ -11840,7 +11895,7 @@ public static partial class AgcExports
             IsGpuDetileTextureType(descriptor.Type))
         {
             var gpuDetileParams = GnmTiling.GetDetileParams(
-                descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh);
+                descriptor.TileMode, bytesPerElement, elementsWide, elementsHigh, pitchElements);
             if (IsGpuDetileEquation(gpuDetileParams.Equation) &&
                 (long)elementsWide * elementsHigh * bytesPerElement <= source.Length)
             {
@@ -13208,6 +13263,8 @@ public static partial class AgcExports
                     (ulong)output.Length,
                     VulkanVideoPresenter.CurrentGuestWorkSequenceForDiagnostics,
                     "agc.constant-fill");
+
+                VulkanVideoPresenter.RequestGuestColorClear(destinationAddress);
             },
             $"constant_fill dst=0x{destinationAddress:X16} bytes={output.Length}");
         description =

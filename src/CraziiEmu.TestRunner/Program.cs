@@ -1,4 +1,5 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -9,6 +10,15 @@ namespace CraziiEmu.TestRunner
     {
         static void Main(string[] args)
         {
+            if (args.Length > 0)
+            {
+                if (args[0] == "--deadcells" || args[0] == "DeadCellsAndFloat16Tests")
+                {
+                    DeadCellsAndFloat16Tests.RunAllTests();
+                    return;
+                }
+            }
+
             SyncOnAddressTests.RunAllTests();
             HRTimerTests.RunAllTests();
             PngDecTests.RunAllTests();
@@ -28,6 +38,8 @@ namespace CraziiEmu.TestRunner
             PthreadTlsTests.RunAllTests();
             KernelSocketErrnoTests.RunAllTests();
             UnifiedSocketTests.RunAllTests();
+            UnityScriptingMemTests.RunAllTests();
+            DeadCellsAndFloat16Tests.RunAllTests();
         }
     }
 }

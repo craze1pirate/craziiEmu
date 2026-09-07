@@ -204,8 +204,9 @@ internal static unsafe class GnmTiling
     /// bank/pipe-XOR variants remain opt-in.
     /// </summary>
     private static bool IsTrustedByDefault(uint swizzleMode) =>
-        // Exact base S/Z modes and RB+ 64 KiB / 4 KiB S_X/Z_X/R_X modes.
-        swizzleMode is 1 or 4 or 5 or 8 or 9 or 20 or 21 or 24 or 25 or 27;
+        // Exact base S/Z modes. D/R use different GFX10 swizzle equations and
+        // the T/X modes additionally apply pipe/bank XOR between blocks.
+        swizzleMode is 1 or 4 or 5 or 8 or 9 or 24 or 27;
 
     // Detile a surface when it is verified-correct by default (trusted base mode),
     // or when the user opts the approximate modes in with CRAZIIEMU_DETILE=1.
@@ -809,9 +810,9 @@ internal static unsafe class GnmTiling
         pattern = swizzleMode switch
         {
             1 => Standard256[bytesPerElementLog2],
-            5 or 21 => Standard4K[bytesPerElementLog2],
-            9 or 25 => RbPlus64KStandard[bytesPerElementLog2],
-            8 or 20 or 24 => RbPlus64KDepthX[bytesPerElementLog2],
+            5 => Standard4K[bytesPerElementLog2],
+            9 => RbPlus64KStandard[bytesPerElementLog2],
+            24 => RbPlus64KDepthX[bytesPerElementLog2],
             27 => RbPlus64KRenderX[bytesPerElementLog2],
             _ => [],
         };

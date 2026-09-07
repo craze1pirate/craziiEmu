@@ -736,9 +736,18 @@ internal static unsafe class VulkanVideoPresenter
 
         lock (_gate)
         {
-            if (_closed || _thread is not null)
+            // Still actively running — nothing to do.
+            if (_thread is not null)
             {
                 return;
+            }
+
+            // Presenter exited from a prior session and the thread has fully
+            // stopped. Reset all session state so the new launch starts clean
+            // (clears _closed, _splashHidden, queued work, etc.).
+            if (_closed)
+            {
+                ResetHostSessionStateLocked();
             }
         }
 
@@ -748,6 +757,9 @@ internal static unsafe class VulkanVideoPresenter
             out var splashHeight);
         lock (_gate)
         {
+            // Re-check after dropping and re-acquiring the lock (another
+            // thread may have already started the presenter between the two
+            // lock acquisitions above).
             if (_closed || _thread is not null)
             {
                 return;
@@ -807,6 +819,13 @@ internal static unsafe class VulkanVideoPresenter
     {
         _latestPresentation = null;
         _splashHidden = false;
+        // Allow the presenter thread to be restarted after a previous session
+        // closed. Run() sets _closed = true when the window exits; without
+        // clearing it here every subsequent call (Submit*, HideSplashScreen,
+        // EnsureStarted, etc.) short-circuits on the guard "if (_closed) return"
+        // and the second launch never renders or receives the splash-hide signal.
+        _closed = false;
+        Volatile.Write(ref _presenterCloseRequested, false);
         _pendingGuestWorkByQueue.Clear();
         _pendingGuestQueueSchedule.Clear();
         _pendingGuestQueueCursor = 0;
@@ -4757,6 +4776,26 @@ internal static unsafe class VulkanVideoPresenter
                     {
                         return PresentModeKHR.ImmediateKhr;
                     }
+                }
+
+                for (var index = 0u; index < modeCount; index++)
+                {
+                    if (modes[index] == PresentModeKHR.MailboxKhr)
+                    {
+                        return PresentModeKHR.MailboxKhr;
+                    }
+                }
+
+                return PresentModeKHR.FifoKhr;
+            }
+
+            // VSync enabled (default): prioritize FIFO to synchronize presentation
+            // with display refresh and maintain proper frame pacing.
+            for (var index = 0u; index < modeCount; index++)
+            {
+                if (modes[index] == PresentModeKHR.FifoKhr)
+                {
+                    return PresentModeKHR.FifoKhr;
                 }
             }
 
@@ -9518,13 +9557,18 @@ internal static unsafe class VulkanVideoPresenter
                     expectedSize <= int.MaxValue)
                 {
                     var linear = new byte[expectedSize];
+                    var blockBytes = AgcExports.GetBlockCompressedBlockBytes(texture.Format);
+                    var pitchElements = blockBytes != 0
+                        ? (int)((texture.Pitch + 3) / 4)
+                        : (int)texture.Pitch;
                     if (GnmTiling.TryDetile(
                             fallbackTiled,
                             linear,
                             texture.TileMode,
                             fallbackParams.ElementsWide,
                             fallbackParams.ElementsHigh,
-                            fallbackParams.BytesPerElement))
+                            fallbackParams.BytesPerElement,
+                            pitchElements))
                     {
                         cpuDetiled = linear;
                     }
@@ -9664,6 +9708,10 @@ internal static unsafe class VulkanVideoPresenter
                     var detiledAll = true;
                     for (var layer = 0; layer < layers; layer++)
                     {
+                        var blockBytes = AgcExports.GetBlockCompressedBlockBytes(texture.Format);
+                        var pitchElements = blockBytes != 0
+                            ? (int)((texture.Pitch + 3) / 4)
+                            : (int)texture.Pitch;
                         // TryDetile iterates the element grid (for BC, ceil(texels/4)).
                         if (!GnmTiling.TryDetile(
                                 detileSource.AsSpan(layer * sliceTiledBytes, sliceTiledBytes),
@@ -9671,7 +9719,8 @@ internal static unsafe class VulkanVideoPresenter
                                 texture.TileMode,
                                 detileParameters.ElementsWide,
                                 detileParameters.ElementsHigh,
-                                detileParameters.BytesPerElement))
+                                detileParameters.BytesPerElement,
+                                pitchElements))
                         {
                             detiledAll = false;
                             break;
@@ -10953,7 +11002,7 @@ internal static unsafe class VulkanVideoPresenter
                 (1, 3) => Format.R8Sscaled,
                 (1, 4) => Format.R8Uint,
                 (1, 5) => Format.R8Sint,
-                (1, 9) => Format.R8Srgb,
+                (1, 9) => Format.R8Unorm,
                 (2, 0) => Format.R16Unorm,
                 (2, 1) => Format.R16SNorm,
                 (2, 2) => Format.R16Uscaled,
@@ -10967,7 +11016,7 @@ internal static unsafe class VulkanVideoPresenter
                 (3, 3) => Format.R8G8Sscaled,
                 (3, 4) => Format.R8G8Uint,
                 (3, 5) => Format.R8G8Sint,
-                (3, 9) => Format.R8G8Srgb,
+                (3, 9) => Format.R8G8Unorm,
                 (4, 4) => Format.R32Uint,
                 (4, 5) => Format.R32Sint,
                 (4, 7) => Format.R32Sfloat,
@@ -11467,8 +11516,8 @@ internal static unsafe class VulkanVideoPresenter
                 (10, 4) => Format.R8G8B8A8Uint,
                 (10, 5) => Format.R8G8B8A8Sint,
                 (10, 9) => Format.R8G8B8A8Srgb,
-                (1, 9) => Format.R8Srgb,
-                (3, 9) => Format.R8G8Srgb,
+                (1, 9) => Format.R8Unorm,
+                (3, 9) => Format.R8G8Unorm,
                 (11, 4) => Format.R32G32Uint,
                 (11, 5) => Format.R32G32Sint,
                 (11, 7) => Format.R32G32Sfloat,

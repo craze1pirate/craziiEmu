@@ -300,6 +300,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		trackAllValues: true);
 
 	private nint _guestContextTransferStub;
+	private nint _scriptingGetMemStub;
 
 	private long _importDispatchCount;
 
@@ -2309,6 +2310,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			}
 		}
 		_importHandlerTrampolines.Clear();
+		_scriptingGetMemStub = 0;
 	}
 
 	private unsafe void CreateTlsHandler()
@@ -4537,14 +4539,34 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			{
 				if (!_externalGuestThreads.TryGetValue(threadHandle, out var external))
 				{
-					error = $"unknown guest exception target 0x{threadHandle:X16}";
-					return false;
+					if (CraziiEmu.Libs.Kernel.KernelPthreadState.TryGetThreadIdentity(threadHandle, out var identity))
+					{
+						Console.Error.WriteLine(
+							$"[LOADER][INFO] Auto-registering external guest thread 0x{threadHandle:X16} ('{identity.Name}') for exception delivery");
+						var fallbackContext = callerContext ?? _cpuContext;
+						if (fallbackContext is null)
+						{
+							error = $"no context available for guest exception target 0x{threadHandle:X16}";
+							return false;
+						}
+						external = new ExternalGuestThreadState
+						{
+							Context = fallbackContext,
+						};
+						_externalGuestThreads[threadHandle] = external;
+					}
+					else
+					{
+						error = $"unknown guest exception target 0x{threadHandle:X16}";
+						return false;
+					}
 				}
 
 				if (external.ExceptionStackBase == 0)
 				{
 					string? mapError = null;
-					if (!TryGetVirtualMemory(external.Context, out var virtualMemory) ||
+					if (external.Context is null ||
+						!TryGetVirtualMemory(external.Context, out var virtualMemory) ||
 						!TryMapGuestThreadRegion(
 							virtualMemory,
 							GuestThreadStackBaseAddress,
@@ -6316,6 +6338,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			int num6 = -1;
 			var mainThreadHandle = CraziiEmu.Libs.Kernel.KernelPthreadState.GetOrRegisterMainThreadHandle();
 			var previousGuestThreadHandle = GuestThreadExecution.EnterGuestThread(mainThreadHandle, isMainThread: true);
+			RegisterGuestThreadContext(mainThreadHandle, context);
 			try
 			{
 				Volatile.Write(ref _mainHostThreadId, unchecked((int)GetCurrentThreadId()));

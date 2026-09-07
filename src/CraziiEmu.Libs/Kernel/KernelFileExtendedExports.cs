@@ -1,10 +1,12 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Threading;
 
 namespace CraziiEmu.Libs.Kernel;
@@ -64,6 +66,22 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
+        if (IsRandomFd(fd))
+        {
+            if (requested > 0)
+            {
+                var randomBytes = GC.AllocateUninitializedArray<byte>(requested);
+                RandomNumberGenerator.Fill(randomBytes);
+                if (!ctx.Memory.TryWrite(bufferAddress, randomBytes))
+                {
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+            }
+
+            ctx[CpuRegister.Rax] = unchecked((ulong)requested);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
         var stream = GetOpenFile(fd);
         if (stream is null)
         {
@@ -113,6 +131,12 @@ public static partial class KernelMemoryCompatExports
         if (requested < 0 || (requested > 0 && bufferAddress == 0) || offset < 0)
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (IsRandomFd(fd))
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)requested);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         var stream = GetOpenFile(fd);
@@ -170,7 +194,7 @@ public static partial class KernelMemoryCompatExports
         var stream = GetOpenFile(fd);
         if (stream is null)
         {
-            if (fd is 0 or 1 or 2)
+            if (fd is 0 or 1 or 2 || IsRandomFd(fd))
             {
                 ctx[CpuRegister.Rax] = 0;
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -222,6 +246,11 @@ public static partial class KernelMemoryCompatExports
         var fd = unchecked((int)ctx[CpuRegister.Rdi]);
         var length = unchecked((long)ctx[CpuRegister.Rsi]);
         if (length < 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (IsRandomFd(fd))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
@@ -352,6 +381,14 @@ public static partial class KernelMemoryCompatExports
         var fd = unchecked((int)ctx[CpuRegister.Rdi]);
         lock (_fdGate)
         {
+            var newFd = (int)Interlocked.Increment(ref _nextFileDescriptor);
+            if (_randomFds.Contains(fd))
+            {
+                _randomFds.Add(newFd);
+                ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
             if (!_openFiles.TryGetValue(fd, out var stream))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -359,7 +396,6 @@ public static partial class KernelMemoryCompatExports
 
             // POSIX dup shares the open file description (and offset), which is
             // exactly the shared FileStream reference.
-            var newFd = (int)Interlocked.Increment(ref _nextFileDescriptor);
             _openFiles[newFd] = stream;
             ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
         }
@@ -375,6 +411,24 @@ public static partial class KernelMemoryCompatExports
         var newFd = unchecked((int)ctx[CpuRegister.Rsi]);
         lock (_fdGate)
         {
+            if (_randomFds.Contains(oldFd))
+            {
+                if (oldFd == newFd)
+                {
+                    ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
+                    return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                }
+
+                if (_openFiles.Remove(newFd, out var existingTarget))
+                {
+                    try { existingTarget.Dispose(); } catch (IOException) { }
+                }
+
+                _randomFds.Add(newFd);
+                ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
             if (!_openFiles.TryGetValue(oldFd, out var stream))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -385,6 +439,8 @@ public static partial class KernelMemoryCompatExports
                 ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
+
+            _randomFds.Remove(newFd);
 
             // If newFd names an open file, dup2 closes it first.
             if (_openFiles.TryGetValue(newFd, out var existing) && !ReferenceEquals(existing, stream))
@@ -420,12 +476,19 @@ public static partial class KernelMemoryCompatExports
             case F_DUPFD:
                 lock (_fdGate)
                 {
+                    var newFd = Math.Max((int)Interlocked.Increment(ref _nextFileDescriptor), argument);
+                    if (_randomFds.Contains(fd))
+                    {
+                        _randomFds.Add(newFd);
+                        ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
+                        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                    }
+
                     if (!_openFiles.TryGetValue(fd, out var stream))
                     {
                         return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
                     }
 
-                    var newFd = Math.Max((int)Interlocked.Increment(ref _nextFileDescriptor), argument);
                     _openFiles[newFd] = stream;
                     ctx[CpuRegister.Rax] = unchecked((ulong)newFd);
                 }

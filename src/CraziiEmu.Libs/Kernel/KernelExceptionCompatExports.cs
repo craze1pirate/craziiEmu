@@ -8,7 +8,7 @@ namespace CraziiEmu.Libs.Kernel;
 
 public static class KernelExceptionCompatExports
 {
-    private static readonly HashSet<int> AllowedSignals = new() { 1, 4, 8, 10, 11, 30 };
+    private static readonly HashSet<int> AllowedSignals = new() { 1, 4, 8, 10, 11, 30, 31 };
     private static readonly Dictionary<int, ulong> _installedHandlers = new();
     private static readonly object _gate = new();
 
@@ -94,8 +94,11 @@ public static class KernelExceptionCompatExports
                 "1",
                 StringComparison.Ordinal))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
+
+        KernelPthreadState.TryGetThreadIdentity(targetThread, out var targetIdentity);
+        var threadName = string.IsNullOrEmpty(targetIdentity.Name) ? "unknown" : targetIdentity.Name;
 
         var scheduler = GuestThreadExecution.Scheduler;
         string? error = null;
@@ -109,9 +112,9 @@ public static class KernelExceptionCompatExports
         {
             Console.Error.WriteLine(
                 $"[LOADER][WARN] sceKernelRaiseException delivery failed: " +
-                $"target=0x{targetThread:X16} type=0x{exceptionType:X2} " +
+                $"target=0x{targetThread:X16} ('{threadName}') type=0x{exceptionType:X2} " +
                 $"error={error ?? "scheduler unavailable"}");
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY);
+            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
         if (string.Equals(
@@ -121,7 +124,7 @@ public static class KernelExceptionCompatExports
         {
             Console.Error.WriteLine(
                 $"[LOADER][TRACE] guest_exception.raise " +
-                $"target=0x{targetThread:X16} type=0x{exceptionType:X2} " +
+                $"target=0x{targetThread:X16} ('{threadName}') type=0x{exceptionType:X2} " +
                 $"handler=0x{handler:X16}");
         }
 

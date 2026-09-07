@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System;
@@ -16,7 +17,7 @@ public static class ImeDialogExports
 
     private const int EndStatusOk = 0;
 
-    private const ulong ParamMaxTextLengthOffset = 0x24;
+    private const ulong ParamMaxTextLengthOffset = 0x20;
     private const ulong ParamInputTextBufferOffset = 0x28;
 
     private const int ImeDialogErrorInvalidAddress = unchecked((int)0x80BC0001);

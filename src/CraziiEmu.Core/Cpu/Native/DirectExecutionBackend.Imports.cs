@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System;
 using System.Buffers.Binary;
@@ -2161,7 +2162,11 @@ public sealed partial class DirectExecutionBackend
 		{
 			Console.Error.WriteLine(
 				$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			if (outputAddress != 0L)
+			{
+				_ = TryWriteUInt64Compat(outputAddress, 0uL);
+			}
+			cpuContext[CpuRegister.Rax] = unchecked((ulong)-2147352573); // KERNEL_ERROR_ESRCH (0x80020003)
 			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
@@ -2180,6 +2185,11 @@ public sealed partial class DirectExecutionBackend
 
 	private static bool TryResolveModuleSymbolAddress(int moduleHandle, string symbolName, out ulong address)
 	{
+		if (moduleHandle == 0)
+		{
+			moduleHandle = 1;
+		}
+
 		if (KernelModuleRegistry.TryResolveModuleSymbol(moduleHandle, symbolName, out address))
 		{
 			return true;
@@ -2211,16 +2221,127 @@ public sealed partial class DirectExecutionBackend
 	private bool TryResolveRuntimeSymbolAlias(string symbolName, out ulong address)
 	{
 		address = 0;
+		if (symbolName == "scriptingGetMem")
+		{
+			address = EnsureScriptingGetMemStub();
+			return address != 0;
+		}
+
 		var alias = symbolName switch
 		{
-			"scriptingGetMem" => "malloc",
 			"scriptingFreeMem" => "free",
 			"scriptingRealloc" => "realloc",
 			"scriptingCalloc" => "calloc",
 			_ => null,
 		};
 
-		return alias != null && TryResolveRuntimeSymbolAddress(alias, out address);
+		if (alias != null && TryResolveRuntimeSymbolAddress(alias, out address))
+		{
+			return true;
+		}
+
+		for (var i = 0; i < _importEntries.Length; i++)
+		{
+			if (_importEntries[i].Export?.Name == symbolName)
+			{
+				address = _importEntries[i].Address;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private unsafe ulong EnsureScriptingGetMemStub()
+	{
+		if (_scriptingGetMemStub != 0)
+		{
+			return (ulong)_scriptingGetMemStub;
+		}
+
+		if (!TryResolveRuntimeSymbolAddress("posix_memalign", out var posixMemalignAddr) &&
+			!TryResolveRuntimeSymbolAddress("cVSk9y8URbc", out posixMemalignAddr) &&
+			!TryResolveRuntimeSymbolAddress(ComputePsNid("posix_memalign"), out posixMemalignAddr))
+		{
+			if (TryResolveRuntimeSymbolAddress("malloc", out var mallocAddr))
+			{
+				Console.Error.WriteLine("[LOADER][WARN] scriptingGetMem: posix_memalign unavailable, falling back to malloc");
+				return mallocAddr;
+			}
+			return 0;
+		}
+
+		const nuint stubSize = 128u;
+		void* ptr = VirtualAlloc(null, stubSize, 12288u, 64u);
+		if (ptr == null)
+		{
+			return 0;
+		}
+
+		byte* p = (byte*)ptr;
+		var i = 0;
+
+		// sub rsp, 24
+		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xEC; p[i++] = 0x18;
+
+		// mov qword ptr [rsp+8], 0
+		p[i++] = 0x48; p[i++] = 0xC7; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x08;
+		p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
+
+		// cmp rdi, 16
+		// jae +7
+		// mov rdi, 16
+		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xFF; p[i++] = 0x10;
+		p[i++] = 0x73; p[i++] = 0x07;
+		p[i++] = 0x48; p[i++] = 0xC7; p[i++] = 0xC7; p[i++] = 0x10; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
+
+		// mov rdx, rsi (size)
+		p[i++] = 0x48; p[i++] = 0x89; p[i++] = 0xF2;
+
+		// mov rsi, rdi (alignment)
+		p[i++] = 0x48; p[i++] = 0x89; p[i++] = 0xFE;
+
+		// lea rdi, [rsp+8] (outPtr)
+		p[i++] = 0x48; p[i++] = 0x8D; p[i++] = 0x7C; p[i++] = 0x24; p[i++] = 0x08;
+
+		// mov rax, posixMemalignAddr
+		p[i++] = 0x48; p[i++] = 0xB8;
+		*(ulong*)(p + i) = posixMemalignAddr;
+		i += 8;
+
+		// call rax
+		p[i++] = 0xFF; p[i++] = 0xD0;
+
+		// test eax, eax
+		p[i++] = 0x85; p[i++] = 0xC0;
+
+		// jnz +10 (to .failed)
+		p[i++] = 0x75; p[i++] = 0x0A;
+
+		// mov rax, [rsp+8]
+		p[i++] = 0x48; p[i++] = 0x8B; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x08;
+
+		// add rsp, 24
+		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xC4; p[i++] = 0x18;
+
+		// ret
+		p[i++] = 0xC3;
+
+		// .failed:
+		// xor eax, eax
+		p[i++] = 0x31; p[i++] = 0xC0;
+
+		// add rsp, 24
+		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xC4; p[i++] = 0x18;
+
+		// ret
+		p[i++] = 0xC3;
+
+		FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
+		_importHandlerTrampolines.Add((nint)ptr);
+		_scriptingGetMemStub = (nint)ptr;
+		Console.Error.WriteLine($"[LOADER][INFO] scriptingGetMem native thunk installed at 0x{(ulong)_scriptingGetMemStub:X16} (posix_memalign=0x{posixMemalignAddr:X16})");
+		return (ulong)_scriptingGetMemStub;
 	}
 
 	private OrbisGen2Result DispatchIl2CppApiLookupSymbol()
@@ -2256,6 +2377,11 @@ public sealed partial class DirectExecutionBackend
 	private bool TryResolveIl2CppApiAddress(string symbolName, out ulong address)
 	{
 		if (TryResolveRuntimeSymbolAddress(symbolName, out address))
+		{
+			return true;
+		}
+
+		if (TryResolveRuntimeSymbolAlias(symbolName, out address))
 		{
 			return true;
 		}

@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using CraziiEmu.Core.Gpu;
+using CraziiEmu.HLE;
 using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.ShaderCompiler;
 
@@ -40,6 +41,7 @@ public static class VideoOutFlipTests
         TestNoWaitExecutesBeforeCapture();
         TestRenderWorkerRemainsResponsive();
         TestWindowTitleWithGpuFormat();
+        TestVideoOutFlipEventIdAndDataContract();
 
         Console.WriteLine("[TEST] VideoOutFlipTests PASSED cleanly.");
     }
@@ -574,5 +576,114 @@ public static class VideoOutFlipTests
         }
 
         Console.WriteLine("  [PASS] 20. Window title with GPU name format verified cleanly");
+    }
+
+    private static void TestVideoOutFlipEventIdAndDataContract()
+    {
+        var mem = new VideoOutTestMemory();
+        var ctx = new CpuContext(mem, Generation.Gen5);
+
+        ulong eventAddress = 0x1000;
+        ulong dataOutAddress = 0x2000;
+        const short videoOutFilter = -13; // OrbisKernelEventFilterVideoOut
+
+        // Helper to setup event buffer:
+        // offset 0x00: uint64 ident
+        // offset 0x08: int16 filter
+        // offset 0x10: uint64 data
+        void SetupEvent(ulong ident, short filter, ulong data)
+        {
+            _ = ctx.TryWriteUInt64(eventAddress, ident);
+            _ = ctx.TryWriteUInt16(eventAddress + 0x08, unchecked((ushort)filter));
+            _ = ctx.TryWriteUInt64(eventAddress + 0x10, data);
+        }
+
+        ctx[CpuRegister.Rdi] = eventAddress;
+        ctx[CpuRegister.Rsi] = dataOutAddress;
+
+        // 1. Test VideoOutGetEventId for all valid flip idents (0x6, 0, 3) -> 0
+        foreach (var flipIdent in new ulong[] { 0x6, 0, 3 })
+        {
+            SetupEvent(flipIdent, videoOutFilter, 0);
+            int id = VideoOutExports.VideoOutGetEventId(ctx);
+            if (id != 0)
+            {
+                throw new InvalidOperationException($"VideoOutGetEventId for flip ident 0x{flipIdent:X} expected 0, got {id}");
+            }
+        }
+
+        // 2. Test VideoOutGetEventId for all valid vblank idents (0x40, 0x7, 1, 2) -> 1
+        foreach (var vblankIdent in new ulong[] { 0x40, 0x7, 1, 2 })
+        {
+            SetupEvent(vblankIdent, videoOutFilter, 0);
+            int id = VideoOutExports.VideoOutGetEventId(ctx);
+            if (id != 1)
+            {
+                throw new InvalidOperationException($"VideoOutGetEventId for vblank ident 0x{vblankIdent:X} expected 1, got {id}");
+            }
+        }
+
+        // 3. Test VideoOutGetEventId for pre-vblank (0x59) -> 2 and set-mode (8, 0x51) -> 8
+        SetupEvent(0x59, videoOutFilter, 0);
+        if (VideoOutExports.VideoOutGetEventId(ctx) != 2)
+        {
+            throw new InvalidOperationException("VideoOutGetEventId for 0x59 expected 2");
+        }
+        SetupEvent(8, videoOutFilter, 0);
+        if (VideoOutExports.VideoOutGetEventId(ctx) != 8)
+        {
+            throw new InvalidOperationException("VideoOutGetEventId for 8 expected 8");
+        }
+
+        // 4. Test VideoOutGetEventData recovers positive flipArg
+        long expectedFlipArg = 123456L;
+        ulong packedData = ((unchecked((ulong)expectedFlipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16) | 0xABCUL;
+        SetupEvent(0x6, videoOutFilter, packedData);
+        int res = VideoOutExports.VideoOutGetEventData(ctx);
+        if (res != 0)
+        {
+            throw new InvalidOperationException($"VideoOutGetEventData failed with result {res}");
+        }
+        _ = ctx.TryReadUInt64(dataOutAddress, out var recoveredRaw);
+        if ((long)recoveredRaw != expectedFlipArg)
+        {
+            throw new InvalidOperationException($"VideoOutGetEventData recovered {(long)recoveredRaw} instead of {expectedFlipArg}");
+        }
+
+        // 5. Test VideoOutGetEventData recovers negative flipArg (-1) with sign extension
+        long negativeFlipArg = -1L;
+        ulong packedNegativeData = (unchecked((ulong)negativeFlipArg) << 16) | 0xDEFUL;
+        SetupEvent(0x6, videoOutFilter, packedNegativeData);
+        res = VideoOutExports.VideoOutGetEventData(ctx);
+        if (res != 0)
+        {
+            throw new InvalidOperationException($"VideoOutGetEventData negative failed with result {res}");
+        }
+        _ = ctx.TryReadUInt64(dataOutAddress, out recoveredRaw);
+        if ((long)recoveredRaw != negativeFlipArg)
+        {
+            throw new InvalidOperationException($"VideoOutGetEventData recovered {(long)recoveredRaw} instead of {negativeFlipArg}");
+        }
+
+        Console.WriteLine("  [PASS] 21. VideoOut event ID normalization and flipArg payload extraction verified");
+    }
+
+    private class VideoOutTestMemory : ICpuMemory
+    {
+        private readonly byte[] _ram = new byte[0x10000];
+
+        public bool TryRead(ulong address, Span<byte> destination)
+        {
+            if (address + (ulong)destination.Length > (ulong)_ram.Length) return false;
+            _ram.AsSpan((int)address, destination.Length).CopyTo(destination);
+            return true;
+        }
+
+        public bool TryWrite(ulong address, ReadOnlySpan<byte> source)
+        {
+            if (address + (ulong)source.Length > (ulong)_ram.Length) return false;
+            source.CopyTo(_ram.AsSpan((int)address, source.Length));
+            return true;
+        }
     }
 }

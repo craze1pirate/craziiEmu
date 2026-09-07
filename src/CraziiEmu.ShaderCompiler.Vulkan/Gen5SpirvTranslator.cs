@@ -234,6 +234,11 @@ public static partial class Gen5SpirvTranslator
         private const uint ImageDescriptorDwords = 8;
         private const uint SamplerDescriptorDwords = 4;
         private const int ScalarRegisterCount = 128;
+
+        // M0. Used as the runtime index added to the register numbers encoded in
+        // the V_MOVREL* instructions, and as the LDS/GDS base elsewhere.
+        private const uint M0ScalarRegister = 124;
+
         private const long InitialScalarDefinition = -1;
         private const long ConflictingScalarDefinition = -2;
         private const long UnreachableScalarDefinition = -3;
@@ -1316,9 +1321,12 @@ public static partial class Gen5SpirvTranslator
                         SpirvStorageClass.Input);
                     // VINTRP ATTR selects the PS input slot. SPI_PS_INPUT_CNTL
                     // maps that slot to a VS parameter export location.
-                    var location = GetPixelParameterLocation(attributes, attribute, _pixelInputCntl, _pixelInputNum);
+                    var cntl = attribute < (uint)_pixelInputCntl.Length
+                        ? _pixelInputCntl[attribute]
+                        : attribute;
+                    var location = cntl & 0x1Fu;
                     _module.AddDecoration(variable, SpirvDecoration.Location, location);
-                    if (IsPixelParameterFlat(attribute, _pixelInputCntl, _pixelInputNum))
+                    if ((cntl & 0x400u) != 0)
                     {
                         _module.AddDecoration(variable, SpirvDecoration.Flat);
                     }
@@ -5148,6 +5156,33 @@ public static partial class Gen5SpirvTranslator
                 _privateUintPointer,
                 _vectorRegisters,
                 UInt(register));
+
+        // The V_MOVREL* opcodes address the VGPR file with a register number that
+        // is only known at run time (encoded number + M0), so the access chain
+        // takes a computed index instead of a constant. The index is masked to
+        // the array bounds: SPIR-V leaves an out-of-range Private access chain
+        // undefined, and a mask costs nothing next to the surrounding load.
+        private uint DynamicVectorPointer(uint registerIndex) =>
+            _module.AddInstruction(
+                SpirvOp.AccessChain,
+                _privateUintPointer,
+                _vectorRegisters,
+                BitwiseAnd(registerIndex, UInt(VectorRegisterCount - 1)));
+
+        private uint LoadVDynamic(uint registerIndex) =>
+            Load(_uintType, DynamicVectorPointer(registerIndex));
+
+        private void StoreVDynamic(uint registerIndex, uint value)
+        {
+            var pointer = DynamicVectorPointer(registerIndex);
+            value = _module.AddInstruction(
+                SpirvOp.Select,
+                _uintType,
+                Load(_boolType, _exec),
+                value,
+                Load(_uintType, pointer));
+            Store(pointer, value);
+        }
 
         private uint PackedHalfPointer(uint register) =>
             _module.AddInstruction(

@@ -144,6 +144,12 @@ public static class WindowsMitigationHelper
             Environment.GetEnvironmentVariable(MitigatedChildEnvironment),
             "1",
             StringComparison.Ordinal);
+
+        if (TryGetLogFileArgument(args, out var logFilePath))
+        {
+            TryEnableConsoleFileMirror(logFilePath);
+        }
+
         if (args.Length == 0)
         {
             return args;
@@ -476,7 +482,7 @@ public static class WindowsMitigationHelper
 
                 var stream = new FileStream(
                     path,
-                    FileMode.Create,
+                    FileMode.Append,
                     FileAccess.Write,
                     FileShare.ReadWrite,
                     bufferSize: 4096,

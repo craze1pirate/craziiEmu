@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Kernel;
@@ -708,13 +709,15 @@ public static class SaveDataExports
             !ctx.TryReadUInt64(mountAddress + 0x10, out var blocks) ||
             !ctx.TryReadUInt64(mountAddress + 0x18, out var systemBlocks) ||
             !TryReadUInt32(ctx, mountAddress + 0x20, out var mountMode) ||
-            !TryReadUInt32(ctx, mountAddress + 0x24, out var resource) ||
-            !TryReadUInt32(ctx, mountAddress + 0x28, out var mode) ||
+            !TryReadUInt32(ctx, mountAddress + 0x28, out var resource) ||
             dirNameAddress == 0 ||
             !TryReadFixedAscii(ctx, dirNameAddress, SaveDataDirNameSize, out var dirName))
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
+
+        uint mode = 0;
+        _ = TryReadUInt32(ctx, mountAddress + 0x2C, out mode);
 
         return MountSaveData(
             ctx,
@@ -763,7 +766,7 @@ public static class SaveDataExports
                 return SetReturn(ctx, OrbisSaveDataErrorNotFound);
             }
 
-            if (existed && create)
+            if (existed && create && !createIfMissing)
             {
                 return SetReturn(ctx, OrbisSaveDataErrorExists);
             }
@@ -783,7 +786,7 @@ public static class SaveDataExports
             Span<byte> result = stackalloc byte[MountResultSize];
             result.Clear();
             WriteAscii(result[..16], mountPoint);
-            BinaryPrimitives.WriteUInt32LittleEndian(result[0x1C..], createIfMissing && !existed ? 1u : 0u);
+            BinaryPrimitives.WriteUInt32LittleEndian(result[0x1C..], !existed ? 1u : 0u);
             if (!ctx.Memory.TryWrite(resultAddress, result))
             {
                 return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
@@ -1060,7 +1063,7 @@ public static class SaveDataExports
     {
         var size = GetDirectorySize(entry.Path);
         var usedBlocks = checked((ulong)((size + 32767) / 32768));
-        var blocks = Math.Max(96UL, usedBlocks);
+        var blocks = Math.Max(DefaultTotalBlocks, usedBlocks);
         Span<byte> info = stackalloc byte[SaveDataSearchInfoSize];
         info.Clear();
         BinaryPrimitives.WriteUInt64LittleEndian(info[0x00..], blocks);

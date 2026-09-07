@@ -8,6 +8,7 @@ using CraziiEmu.Libs.Ampr;
 using CraziiEmu.Libs.Media;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Threading;
@@ -131,6 +132,30 @@ public static partial class KernelMemoryCompatExports
         _binkGuestCompletionShims = new();
     private static readonly Dictionary<int, string> _observedBinkGuestFiles = new();
     private static readonly Dictionary<int, OpenDirectory> _openDirectories = new();
+    private static readonly HashSet<int> _randomFds = new();
+
+    public static bool IsRandomDevice(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var normalized = path.Replace('\\', '/').TrimEnd('/');
+        return string.Equals(normalized, "/dev/random", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "/dev/urandom", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "dev/random", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalized, "dev/urandom", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsRandomFd(int fd)
+    {
+        lock (_fdGate)
+        {
+            return _randomFds.Contains(fd);
+        }
+    }
+
     private static readonly object _libcAllocGate = new();
     private static readonly object _memoryGate = new();
     private static readonly object _ioTraceGate = new();
@@ -1493,6 +1518,19 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
+        if (IsRandomDevice(guestPath))
+        {
+            var randomFd = (int)Interlocked.Increment(ref _nextFileDescriptor);
+            lock (_fdGate)
+            {
+                _randomFds.Add(randomFd);
+            }
+
+            LogOpenTrace($"_open random device path='{guestPath}' flags=0x{flags:X8} fd={randomFd}");
+            ctx[CpuRegister.Rax] = unchecked((ulong)randomFd);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        }
+
         var hostPath = ResolveGuestPath(guestPath);
         var access = ResolveOpenAccess(flags);
         var mode = ResolveOpenMode(flags, access);
@@ -1652,6 +1690,18 @@ public static partial class KernelMemoryCompatExports
         if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (IsRandomDevice(guestPath))
+        {
+            var now = DateTime.UtcNow;
+            if (!TryWriteKernelStat(ctx, statAddress, isDirectory: false, size: 0, now, now, now, guestPath, mode: 0x21B6))
+            {
+                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+            }
+
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         var hostPath = ResolveGuestPath(guestPath);
@@ -2229,6 +2279,13 @@ public static partial class KernelMemoryCompatExports
         string? observedBinkPath = null;
         lock (_fdGate)
         {
+            if (_randomFds.Remove(fd))
+            {
+                LogOpenTrace($"close random fd={fd}");
+                ctx[CpuRegister.Rax] = 0;
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
             if (_openFiles.Remove(fd, out stream))
             {
                 _binkGuestCompletionShims.Remove(fd);
@@ -2282,13 +2339,38 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        FileStream? stream;
+        FileStream? stream = null;
         HostMovieBridge.BinkGuestCompletionShim completionShim = default;
         var useBinkCompletionShim = false;
+        var isRandom = false;
         lock (_fdGate)
         {
-            _openFiles.TryGetValue(fd, out stream);
-            useBinkCompletionShim = _binkGuestCompletionShims.TryGetValue(fd, out completionShim);
+            if (_randomFds.Contains(fd))
+            {
+                isRandom = true;
+            }
+            else
+            {
+                _openFiles.TryGetValue(fd, out stream);
+                useBinkCompletionShim = _binkGuestCompletionShims.TryGetValue(fd, out completionShim);
+            }
+        }
+
+        if (isRandom)
+        {
+            if (requested > 0)
+            {
+                var randomBytes = GC.AllocateUninitializedArray<byte>(requested);
+                RandomNumberGenerator.Fill(randomBytes);
+                if (!ctx.Memory.TryWrite(bufferAddress, randomBytes))
+                {
+                    return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+                }
+            }
+
+            LogIoTrace("read", "/dev/urandom", $"fd={fd} req={requested} read={requested}");
+            ctx[CpuRegister.Rax] = unchecked((ulong)requested);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         if (stream is null)
@@ -2447,6 +2529,12 @@ public static partial class KernelMemoryCompatExports
         FileStream? stream;
         lock (_fdGate)
         {
+            if (_randomFds.Contains(fd))
+            {
+                LogIoTrace("lseek", "/dev/urandom", $"fd={fd} offset={offset} whence={whence} result=espipe");
+                return (OrbisGen2Result)unchecked((int)0x8002001D);
+            }
+
             _openFiles.TryGetValue(fd, out stream);
         }
 
@@ -2533,10 +2621,24 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        FileStream? stream;
+        FileStream? stream = null;
+        var isRandom = false;
         lock (_fdGate)
         {
-            _openFiles.TryGetValue(fd, out stream);
+            if (_randomFds.Contains(fd))
+            {
+                isRandom = true;
+            }
+            else
+            {
+                _openFiles.TryGetValue(fd, out stream);
+            }
+        }
+
+        if (isRandom)
+        {
+            ctx[CpuRegister.Rax] = unchecked((ulong)requested);
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         if (stream is null)
@@ -2577,26 +2679,7 @@ public static partial class KernelMemoryCompatExports
         ExportName = "clock_gettime",
         Target = Generation.Gen4 | Generation.Gen5,
         LibraryName = "libKernel")]
-    public static int ClockGettime(CpuContext ctx)
-    {
-        var timespecAddress = ctx[CpuRegister.Rsi];
-        if (timespecAddress == 0)
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var seconds = now.ToUnixTimeSeconds();
-        var nanoseconds = (now.Ticks % TimeSpan.TicksPerSecond) * 100;
-        if (!ctx.TryWriteUInt64(timespecAddress, unchecked((ulong)seconds)) ||
-            !ctx.TryWriteUInt64(timespecAddress + sizeof(long), unchecked((ulong)nanoseconds)))
-        {
-            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
+    public static int ClockGettime(CpuContext ctx) => KernelRuntimeCompatExports.KernelClockGettime(ctx);
 
     [SysAbiExport(
         Nid = "smIj7eqzZE8",
@@ -5084,7 +5167,32 @@ public static partial class KernelMemoryCompatExports
             return CombineWithinMount(ResolveTemp0Root(), relative);
         }
 
-        if (string.Equals(guestPath, "/temp0", StringComparison.OrdinalIgnoreCase))
+        if (guestPath.StartsWith("temp0/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = NormalizeMountRelativePath(guestPath["temp0/".Length..]);
+            return CombineWithinMount(ResolveTemp0Root(), relative);
+        }
+
+        if (string.Equals(guestPath, "/temp0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "temp0", StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolveTemp0Root();
+        }
+
+        if (guestPath.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = NormalizeMountRelativePath(guestPath["/temp/".Length..]);
+            return CombineWithinMount(ResolveTemp0Root(), relative);
+        }
+
+        if (guestPath.StartsWith("temp/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = NormalizeMountRelativePath(guestPath["temp/".Length..]);
+            return CombineWithinMount(ResolveTemp0Root(), relative);
+        }
+
+        if (string.Equals(guestPath, "/temp", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "temp", StringComparison.OrdinalIgnoreCase))
         {
             return ResolveTemp0Root();
         }
@@ -5446,7 +5554,9 @@ public static partial class KernelMemoryCompatExports
         var configuredRoot = Environment.GetEnvironmentVariable(temp0VariableName);
         if (!string.IsNullOrWhiteSpace(configuredRoot))
         {
-            return Path.GetFullPath(configuredRoot);
+            var fullPath = Path.GetFullPath(configuredRoot);
+            Directory.CreateDirectory(fullPath);
+            return fullPath;
         }
 
         var app0Root = Environment.GetEnvironmentVariable("CRAZIIEMU_APP0_DIR");
@@ -5461,6 +5571,7 @@ public static partial class KernelMemoryCompatExports
         var invalidChars = Path.GetInvalidFileNameChars();
         appName = new string(appName.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
         var root = Path.Combine(Path.GetTempPath(), "CraziiEmu", appName, "temp0");
+        Directory.CreateDirectory(root);
         Environment.SetEnvironmentVariable(temp0VariableName, root);
         return root;
     }
@@ -5558,11 +5669,11 @@ public static partial class KernelMemoryCompatExports
     private static bool IsMutatingOpen(int flags) =>
         (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
 
-    // Dev-build dumps (unpackaged UE titles, etc.) may write their Saved/ tree under
-    // /app0, which is read-only on retail hardware. Opt in via CRAZIIEMU_WRITABLE_APP0=1
-    // to allow those writes so such dumps can boot; defaults off to keep retail semantics.
+    // Dev-build dumps (unpackaged UE titles, etc.) and games running in emulator
+    // need write access to /app0. Default to writable (matching KytyPS5),
+    // opt into retail read-only via CRAZIIEMU_READONLY_APP0=1.
     private static readonly bool _writableApp0 =
-        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_WRITABLE_APP0"), "1", StringComparison.Ordinal);
+        !string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_READONLY_APP0"), "1", StringComparison.Ordinal);
 
     public static bool IsReadOnlyGuestMutationPath(string guestPath)
     {
@@ -7216,6 +7327,16 @@ public static partial class KernelMemoryCompatExports
             return TryWriteKernelStat(ctx, statAddress, isDirectory: false, size: 0, now, now, now, $"stdio:{fd}");
         }
 
+        lock (_fdGate)
+        {
+            if (_randomFds.Contains(fd))
+            {
+                var now = DateTime.UtcNow;
+                LogIoTrace("fstat", "/dev/urandom", $"fd={fd} size=0 dir=0");
+                return TryWriteKernelStat(ctx, statAddress, isDirectory: false, size: 0, now, now, now, "/dev/urandom", mode: 0x21B6);
+            }
+        }
+
         string? hostPath = null;
         bool isDirectory = false;
         lock (_fdGate)
@@ -7344,7 +7465,8 @@ public static partial class KernelMemoryCompatExports
         DateTime lastAccessUtc,
         DateTime lastWriteUtc,
         DateTime creationUtc,
-        string inodeSeed)
+        string inodeSeed,
+        ushort mode = 0)
     {
         Span<byte> payload = stackalloc byte[KernelStatSize];
         payload.Clear();
@@ -7352,7 +7474,9 @@ public static partial class KernelMemoryCompatExports
         var seedBytes = Encoding.UTF8.GetBytes(inodeSeed);
         BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStDevOffset..], 0);
         BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStInoOffset..], ComputeDirectoryEntryHash(seedBytes));
-        BinaryPrimitives.WriteUInt16LittleEndian(payload[KernelStatStModeOffset..], isDirectory ? KernelStatModeDirectory : KernelStatModeRegular);
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            payload[KernelStatStModeOffset..],
+            mode != 0 ? mode : (isDirectory ? KernelStatModeDirectory : KernelStatModeRegular));
         BinaryPrimitives.WriteUInt16LittleEndian(payload[KernelStatStNlinkOffset..], 1);
         BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStUidOffset..], 0);
         BinaryPrimitives.WriteUInt32LittleEndian(payload[KernelStatStGidOffset..], 0);
@@ -8030,6 +8154,12 @@ public static partial class KernelMemoryCompatExports
         if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        if (IsRandomDevice(guestPath))
+        {
+            ctx[CpuRegister.Rax] = 0;
+            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         var hostPath = ResolveGuestPath(guestPath);

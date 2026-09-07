@@ -251,6 +251,21 @@ internal static partial class Program
                 continue;
             }
 
+            const string logFilePrefix = "--log-file=";
+            if (argument.StartsWith(logFilePrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(argument, "--log-file", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    i++;
+                }
+                continue;
+            }
+
             if (argument.StartsWith("--", StringComparison.Ordinal))
             {
                 ebootPath = string.Empty;
