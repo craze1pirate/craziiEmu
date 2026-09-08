@@ -333,6 +333,7 @@ public static partial class Gen5SpirvTranslator
         private uint _scc;
         private uint _vcc;
         private uint _exec;
+        private uint _pixelValidMask;
         private uint _reachedPixelExport;
         private uint _programCounter;
         private uint _programActive;
@@ -698,7 +699,18 @@ public static partial class Gen5SpirvTranslator
                     // Materialize the condition before SelectionMerge: SPIR-V
                     // requires the merge instruction to be immediately followed
                     // by its structured branch terminator.
-                    var laneActive = Load(_boolType, _exec);
+                    var execActive = Load(_boolType, _exec);
+                    var reachedExport = Load(_boolType, _reachedPixelExport);
+                    var validMask = Load(_boolType, _pixelValidMask);
+                    var laneActive = _module.AddInstruction(
+                        SpirvOp.LogicalAnd,
+                        _boolType,
+                        execActive,
+                        _module.AddInstruction(
+                            SpirvOp.LogicalAnd,
+                            _boolType,
+                            reachedExport,
+                            validMask));
                     _module.AddStatement(
                         SpirvOp.SelectionMerge,
                         returnLabel,
@@ -846,6 +858,10 @@ public static partial class Gen5SpirvTranslator
                 _privateBoolPointer,
                 SpirvStorageClass.Private,
                 _module.ConstantBool(true));
+            _pixelValidMask = _module.AddGlobalVariable(
+                _privateBoolPointer,
+                SpirvStorageClass.Private,
+                _module.ConstantBool(true));
             _reachedPixelExport = _module.AddGlobalVariable(
                 _privateBoolPointer,
                 SpirvStorageClass.Private,
@@ -874,7 +890,9 @@ public static partial class Gen5SpirvTranslator
             _interfaces.Add(_scc);
             _interfaces.Add(_vcc);
             _interfaces.Add(_exec);
+            _interfaces.Add(_pixelValidMask);
             _interfaces.Add(_reachedPixelExport);
+            _module.AddName(_pixelValidMask, "pixelValidMask");
             _interfaces.Add(_programCounter);
             _interfaces.Add(_programActive);
             _module.AddName(_scalarRegisters, "sgpr");
@@ -1496,7 +1514,9 @@ public static partial class Gen5SpirvTranslator
             }
 
             Store(_scc, _module.ConstantBool(false));
-            Store(_reachedPixelExport, _module.ConstantBool(false));
+            var hasExportInstructions = _state.Program.Instructions.Any(static i => i.Control is Gen5ExportControl);
+            Store(_reachedPixelExport, _module.ConstantBool(!hasExportInstructions));
+            Store(_pixelValidMask, _module.ConstantBool(true));
             if (_subgroupInvocationIdInput != 0)
             {
                 StoreWaveMask(106, _module.ConstantBool(false));
@@ -3847,11 +3867,15 @@ public static partial class Gen5SpirvTranslator
                 return false;
             }
 
+            var effectiveDmask = writeAllComponents
+                ? 0xFu
+                : image.Dmask != 0
+                    ? image.Dmask
+                    : 1u;
             var outputValues = new List<uint>(4);
             for (uint component = 0; component < 4; component++)
             {
-                if (!writeAllComponents &&
-                    (image.Dmask & (1u << (int)component)) == 0)
+                if ((effectiveDmask & (1u << (int)component)) == 0)
                 {
                     continue;
                 }
@@ -4385,12 +4409,23 @@ public static partial class Gen5SpirvTranslator
 
             if (_stage == Gen5SpirvStage.Pixel)
             {
+                Store(_reachedPixelExport, _module.ConstantBool(true));
+                if (export.ValidMask)
+                {
+                    var active = Load(_boolType, _exec);
+                    var current = Load(_boolType, _pixelValidMask);
+                    var updated = _module.AddInstruction(
+                        SpirvOp.LogicalAnd,
+                        _boolType,
+                        current,
+                        active);
+                    Store(_pixelValidMask, updated);
+                }
+
                 if (!_pixelOutputs.TryGetValue(export.Target, out var output))
                 {
                     return true;
                 }
-
-                Store(_reachedPixelExport, _module.ConstantBool(true));
 
                 var values = new uint[4];
                 for (var component = 0; component < 4; component++)

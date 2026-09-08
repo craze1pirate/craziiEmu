@@ -29,8 +29,99 @@ public static class DeadCellsAndFloat16Tests
         TestGpuWaitRegistryFrameTracking();
         TestPhysicalVirtualMemoryConcurrentProtections();
         TestFloat16RecompilerArithmeticAndCapabilities();
+        TestDeadCellsBorderColorMapping();
+        TestDeadCellsBlendFactorMapping();
+        TestPixelShaderExportValidMaskOpKill();
 
         Console.WriteLine("[TEST] DeadCellsAndFloat16Tests PASSED cleanly.");
+    }
+
+    private static void TestDeadCellsBorderColorMapping()
+    {
+        // BorderColor 0: FloatTransparentBlack
+        // BorderColor 1: FloatOpaqueBlack
+        // BorderColor 2: FloatOpaqueWhite
+        // Any other: FloatTransparentBlack
+        var method = typeof(VulkanVideoPresenter).GetMethod(
+            "ToVkBorderColor",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        if (method != null)
+        {
+            var c0 = method.Invoke(null, [0u]);
+            var c1 = method.Invoke(null, [1u]);
+            var c2 = method.Invoke(null, [2u]);
+            var cOther = method.Invoke(null, [99u]);
+
+            Assert(c0?.ToString() == "FloatTransparentBlack", $"Border color 0 must be FloatTransparentBlack, got {c0}");
+            Assert(c1?.ToString() == "FloatOpaqueBlack", $"Border color 1 must be FloatOpaqueBlack, got {c1}");
+            Assert(c2?.ToString() == "FloatOpaqueWhite", $"Border color 2 must be FloatOpaqueWhite, got {c2}");
+            Assert(cOther?.ToString() == "FloatTransparentBlack", $"Border color default must be FloatTransparentBlack, got {cOther}");
+        }
+
+        var fallbackMethod = typeof(VulkanVideoPresenter).GetMethod(
+            "CreateFallbackTexturePixels",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        if (fallbackMethod != null)
+        {
+            var pixels = (byte[]?)fallbackMethod.Invoke(null, [9u, 16u, 16u, 1024UL]);
+            Assert(pixels != null && pixels.Length == 1024, "Fallback pixels must have expected length");
+            Assert(pixels.All(b => b == 0), "Fallback pixels must all be 0 (transparent black)");
+        }
+
+        Console.WriteLine("  [PASS] Sampler border color mapping & transparent fallback texture verified");
+    }
+
+    private static void TestDeadCellsBlendFactorMapping()
+    {
+        var method = typeof(VulkanVideoPresenter).GetMethod(
+            "ToVkBlendFactor",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        if (method != null)
+        {
+            var f0 = method.Invoke(null, [0u]);
+            var f1 = method.Invoke(null, [1u]);
+            var fOther = method.Invoke(null, [99u]);
+
+            Assert(f0?.ToString() == "Zero", $"Blend factor 0 must be Zero, got {f0}");
+            Assert(f1?.ToString() == "One", $"Blend factor 1 must be One, got {f1}");
+            Assert(fOther?.ToString() == "Zero", $"Blend factor default fallback must be Zero, got {fOther}");
+        }
+
+        Console.WriteLine("  [PASS] Blend factor fallback mapping verified");
+    }
+
+    private static void TestPixelShaderExportValidMaskOpKill()
+    {
+        // RDNA export with valid mask (VM=1): exp mrt0, v0, v1, v2, v3 done vm
+        var program = Decode(
+        [
+            0xF800_180F, // exp mrt0, v0, v1, v2, v3 done vm
+            0x03020100,
+            SEndpgm,
+        ]);
+
+        var state = new Gen5ShaderState(program, [], null);
+        var scalarRegisters = new uint[256];
+        var evaluation = new Gen5ShaderEvaluation(
+            scalarRegisters,
+            scalarRegisters,
+            [],
+            []);
+
+        var compiled = Gen5SpirvTranslator.TryCompilePixelShader(
+            state,
+            evaluation,
+            Gen5PixelOutputKind.Float,
+            out var shader,
+            out var error);
+
+        Assert(compiled, $"Pixel shader compilation failed: {error}");
+
+        var opcodes = ReadOpcodes(shader.Spirv);
+        Assert(opcodes.Contains((ushort)SpirvOp.Kill), "Pixel shader SPIR-V must contain OpKill for valid mask discard");
+        Assert(opcodes.Contains((ushort)SpirvOp.LogicalAnd), "Pixel shader SPIR-V must contain OpLogicalAnd for laneActive check");
+
+        Console.WriteLine("  [PASS] Pixel shader export valid mask OpKill & OpLogicalAnd verified");
     }
 
     private static void TestGpuWaitRegistryFrameTracking()

@@ -11166,7 +11166,7 @@ internal static unsafe class VulkanVideoPresenter
                 18 => BlendFactor.OneMinusSrc1Alpha,
                 19 => BlendFactor.ConstantAlpha,
                 20 => BlendFactor.OneMinusConstantAlpha,
-                _ => BlendFactor.One,
+                _ => BlendFactor.Zero,
             };
 
         private static BlendOp ToVkBlendOp(uint function) =>
@@ -11250,9 +11250,10 @@ internal static unsafe class VulkanVideoPresenter
         private static BorderColor ToVkBorderColor(uint color) =>
             color switch
             {
-                1 => BorderColor.FloatTransparentBlack,
+                0 => BorderColor.FloatTransparentBlack,
+                1 => BorderColor.FloatOpaqueBlack,
                 2 => BorderColor.FloatOpaqueWhite,
-                _ => BorderColor.FloatOpaqueBlack,
+                _ => BorderColor.FloatTransparentBlack,
             };
 
         private static ColorComponentFlags ToVkColorWriteMask(uint mask)
@@ -11361,21 +11362,8 @@ internal static unsafe class VulkanVideoPresenter
             return new Viewport(x, y, width, height, minDepth, maxDepth);
         }
 
-        private static byte[] CreateFallbackTexturePixels(uint format, uint width, uint height, ulong expectedSize)
-        {
-            if (format is 9 or 10)
-            {
-                var pixels = new byte[checked((int)expectedSize)];
-                for (var offset = 3; offset < pixels.Length; offset += 4)
-                {
-                    pixels[offset] = 0xFF;
-                }
-
-                return pixels;
-            }
-
-            return new byte[checked((int)expectedSize)];
-        }
+        private static byte[] CreateFallbackTexturePixels(uint format, uint width, uint height, ulong expectedSize) =>
+            new byte[checked((int)expectedSize)];
 
         private static ulong GetTextureBytesPerPixel(uint format) =>
             format switch
@@ -14403,7 +14391,9 @@ internal static unsafe class VulkanVideoPresenter
                     StoreOp = AttachmentStoreOp.Store,
                     StencilLoadOp = AttachmentLoadOp.DontCare,
                     StencilStoreOp = AttachmentStoreOp.DontCare,
-                    InitialLayout = ImageLayout.ColorAttachmentOptimal,
+                    InitialLayout = initialized[index]
+                        ? ImageLayout.ColorAttachmentOptimal
+                        : ImageLayout.Undefined,
                     FinalLayout = ImageLayout.ColorAttachmentOptimal,
                 };
                 colorReferences[index] = new AttachmentReference
@@ -14750,7 +14740,9 @@ internal static unsafe class VulkanVideoPresenter
                 StoreOp = AttachmentStoreOp.Store,
                 StencilLoadOp = AttachmentLoadOp.DontCare,
                 StencilStoreOp = AttachmentStoreOp.DontCare,
-                InitialLayout = ImageLayout.ColorAttachmentOptimal,
+                InitialLayout = clearColor
+                    ? ImageLayout.Undefined
+                    : ImageLayout.ColorAttachmentOptimal,
                 FinalLayout = ImageLayout.ColorAttachmentOptimal,
             };
             attachments[1] = new AttachmentDescription

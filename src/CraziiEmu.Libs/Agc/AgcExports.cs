@@ -9602,7 +9602,6 @@ public static partial class AgcExports
     {
         if (!_fillClearHack ||
             textures.Count != 0 ||
-            vertexInputs.Count != 0 ||
             pixelUserData.Count < 4 ||
             !renderState.Blends.All(IsTransparentPremultipliedFillBlend))
         {
