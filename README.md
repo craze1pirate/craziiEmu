@@ -40,15 +40,15 @@ While initially inspired by and incorporating core foundations from the open-sou
 
 craziiEmu is actively progressing commercial game boot sequences and in-game execution:
 
-### *Dead Cells* (PPSA15552) — **In-Game**
-*Dead Cells* boots seamlessly into 2D gameplay with responsive combat, full controller input, and playable 30-40 FPS performance.
+### *Dead Cells* (PPSA15552) — **Fully Playable**
+*Dead Cells* boots seamlessly into 2D gameplay with responsive combat, full controller input, and stable performance.
 
 <div align="center">
-  <img src="./assets/images/dead-cells.png" width="88%" alt="Dead Cells In-Game on craziiEmu"/>
-  <p><em>Dead Cells running in-game on craziiEmu (30-40 FPS, Vulkan backend)</em></p>
+  <img src="./assets/images/dead-cells.png" width="88%" alt="Dead Cells Fully Playable on craziiEmu"/>
+  <p><em>Dead Cells running fully playable on craziiEmu (Vulkan backend)</em></p>
 </div>
 
-*Current Status:* In-game at 30-40 FPS (minor visual passes remaining).
+*Current Status:* Fully playable.
 
 ---
 
@@ -80,8 +80,8 @@ craziiEmu is actively progressing commercial game boot sequences and in-game exe
 
 | Tier | Meaning | Representative Titles |
 | :--- | :--- | :--- |
-| **Playable** | Boots, reaches gameplay, and can be played with stable performance and sound. | *Dreaming Sarah*, *void tRrLM(); //Void Terrarium* |
-| **In-Game** | Reaches gameplay loop, but performance issues or game-breaking glitches may occur. | *Dead Cells* (minor visual passes remaining) |
+| **Playable** | Boots, reaches gameplay, and can be played with stable performance and sound. | *Dead Cells*, *Dreaming Sarah*, *void tRrLM(); //Void Terrarium* |
+| **In-Game** | Reaches gameplay loop, but performance issues or game-breaking glitches may occur. | — |
 | **Intro / Logo** | Boots past bootloader, initializes runtime services, and renders intro/title logos. | *Stray*, *Among Us*, *Naiad*, *Grand Theft Auto V* |
 | **Loads** | Parses ELF/SELF headers, loads modules, but crashes before rendering visual frames. | *Sonic Superstars* |
 
