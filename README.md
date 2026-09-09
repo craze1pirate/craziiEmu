@@ -6,7 +6,7 @@
   [![Platform](https://img.shields.io/badge/Platform-Windows%20Only%20(x64)-0078D4?style=flat&logo=windows)](https://github.com/craze1pirate/craziiEmu)
   [![Framework](https://img.shields.io/badge/.NET-10-512BD4?style=flat&logo=dotnet)](https://dotnet.microsoft.com/)
   [![Graphics](https://img.shields.io/badge/Graphics-Vulkan%201.3-E52E2D?style=flat&logo=vulkan)](https://www.vulkan.org/)
-  [![Release](https://img.shields.io/badge/Release-v0.31--alpha-blue?style=flat)](https://github.com/craze1pirate/craziiEmu/releases)
+  [![Release](https://img.shields.io/badge/Release-v0.32--alpha-blue?style=flat)](https://github.com/craze1pirate/craziiEmu/releases)
   [![License](https://img.shields.io/badge/License-GPL--2.0-22c55e?style=flat)](LICENSE)
 </div>
 

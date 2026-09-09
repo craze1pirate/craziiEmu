@@ -65,7 +65,7 @@ public static class DeadCellsAndFloat16Tests
         {
             var pixels = (byte[]?)fallbackMethod.Invoke(null, [9u, 16u, 16u, 1024UL]);
             Assert(pixels != null && pixels.Length == 1024, "Fallback pixels must have expected length");
-            Assert(pixels.All(b => b == 0), "Fallback pixels must all be 0 (transparent black)");
+            Assert(pixels!.All(b => b == 0), "Fallback pixels must all be 0 (transparent black)");
         }
 
         Console.WriteLine("  [PASS] Sampler border color mapping & transparent fallback texture verified");
