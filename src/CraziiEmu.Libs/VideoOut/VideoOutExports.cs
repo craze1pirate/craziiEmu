@@ -65,7 +65,7 @@ public static class VideoOutExports
     // sceVideoOutGetEventId (mapped below), so the exact value is internal; only
     // its distinctness from the flip ident matters for GetEventId/GetEventData.
     private const ulong SceVideoOutInternalEventVblank = 0x40;
-    private const short OrbisKernelEventFilterVideoOut = -13;
+    public const short OrbisKernelEventFilterVideoOut = -13;
 
     private static readonly object _stateGate = new();
     private static readonly object _frameDumpGate = new();
@@ -291,6 +291,7 @@ public static class VideoOutExports
                 LastVblankTimestamp = openedAt,
                 IsGen5 = ctx.TargetGeneration == Generation.Gen5,
             };
+            StartVblankThreadOnce();
             return handle;
         }
     }
@@ -771,12 +772,18 @@ public static class VideoOutExports
     public static int VideoOutIsFlipPending(CpuContext ctx)
     {
         var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!TryGetPort(handle, out _))
+        if (!TryGetPort(handle, out var port))
         {
             return OrbisVideoOutErrorInvalidHandle;
         }
 
-        ctx[CpuRegister.Rax] = 0;
+        int pendingFlips;
+        lock (_stateGate)
+        {
+            pendingFlips = port.PendingFlipsCount;
+        }
+
+        ctx[CpuRegister.Rax] = unchecked((ulong)pendingFlips);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -861,8 +868,10 @@ public static class VideoOutExports
             return OrbisVideoOutErrorInvalidEvent;
         }
 
-        var decodedData = unchecked((ulong)(unchecked((long)data) >> 16));
-        if (isFlip && (data & 0x8000_0000_0000_0000UL) != 0)
+        var decodedData = (ident == 2UL || ident == 3UL)
+            ? data
+            : unchecked((ulong)(unchecked((long)data) >> 16));
+        if (isFlip && ident != 3UL && (data & 0x8000_0000_0000_0000UL) != 0)
         {
             decodedData |= 0xFFFF_0000_0000_0000UL;
         }
@@ -1282,10 +1291,11 @@ public static class VideoOutExports
                 {
                     _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                         flipEvents[i].Equeue,
-                        SceVideoOutInternalEventFlip,
+                        port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip,
                         OrbisKernelEventFilterVideoOut,
-                        eventHint,
-                        flipEvents[i].UserData);
+                        port.IsGen5 ? unchecked((ulong)flipArg) : eventHint,
+                        flipEvents[i].UserData,
+                        port.IsGen5);
                 }
             }
             finally
@@ -1394,31 +1404,37 @@ public static class VideoOutExports
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     flipEvents[i].Equeue,
-                    SceVideoOutInternalEventFlip,
+                    port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip,
                     OrbisKernelEventFilterVideoOut,
-                    eventHint,
-                    flipEvents[i].UserData);
+                    port.IsGen5 ? unchecked((ulong)flipArg) : eventHint,
+                    flipEvents[i].UserData,
+                    port.IsGen5);
             }
             ArrayPool<FlipEventRegistration>.Shared.Return(flipEvents);
         }
 
         if (vblankEvents != null)
         {
-            var dataHint = (port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+            var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
             for (var i = 0; i < vblankEventCount; i++)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     vblankEvents[i].Equeue,
-                    SceVideoOutInternalEventVblank,
+                    ident,
                     OrbisKernelEventFilterVideoOut,
                     dataHint,
-                    vblankEvents[i].UserData);
+                    vblankEvents[i].UserData,
+                    port.IsGen5);
             }
             ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
         }
 
         // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
-        KernelSemaphoreCompatExports.SignalAllSemaphores();
+        if (flipArg != 0)
+        {
+            KernelSemaphoreCompatExports.SignalAllSemaphores();
+        }
     }
 
     private static void ReportFrameRate(bool presented)
@@ -1499,7 +1515,7 @@ public static class VideoOutExports
 
     private static void VblankTickLoop()
     {
-        var pending = new List<(ulong Equeue, ulong DataHint, ulong UserData)>();
+        var pending = new List<(ulong Equeue, ulong Ident, ulong DataHint, ulong UserData, bool IsGen5)>();
         var next = Stopwatch.GetTimestamp();
         while (Volatile.Read(ref _vblankStopRequested) == 0)
         {
@@ -1509,29 +1525,26 @@ public static class VideoOutExports
             {
                 foreach (var port in _ports.Values)
                 {
-                    if (port.VblankEvents.Count == 0)
-                    {
-                        continue;
-                    }
-
                     refresh = port.RefreshRate == 0 ? 60 : port.RefreshRate;
                     port.VblankCount++;
-                    var dataHint = (port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+                    var dataHint = port.IsGen5 ? port.VblankCount : ((port.VblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+                    var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
                     foreach (var registration in port.VblankEvents)
                     {
-                        pending.Add((registration.Equeue, dataHint, registration.UserData));
+                        pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
                     }
                 }
             }
 
-            foreach (var (equeue, dataHint, userData) in pending)
+            foreach (var (equeue, ident, dataHint, userData, isGen5) in pending)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     equeue,
-                    SceVideoOutInternalEventVblank,
+                    ident,
                     OrbisKernelEventFilterVideoOut,
                     dataHint,
-                    userData);
+                    userData,
+                    isGen5);
             }
 
             var interval = Stopwatch.Frequency / Math.Max(1, (long)refresh);

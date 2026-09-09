@@ -11,6 +11,7 @@ using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Ime;
 using CraziiEmu.Libs.Kernel;
+using CraziiEmu.Libs.VideoOut;
 
 namespace CraziiEmu.TestRunner;
 
@@ -18,27 +19,27 @@ public static class UnityScriptingMemTests
 {
     private sealed class TestMemory : ICpuMemory
     {
-        private readonly byte[] _ram = new byte[16 * 1024 * 1024]; // 16 MB
+        private readonly byte[] _storage = new byte[0x100000];
 
         public bool TryRead(ulong address, Span<byte> destination)
         {
-            if (address + (ulong)destination.Length > (ulong)_ram.Length)
+            if (address + (ulong)destination.Length > (ulong)_storage.Length)
             {
                 return false;
             }
 
-            _ram.AsSpan((int)address, destination.Length).CopyTo(destination);
+            _storage.AsSpan((int)address, destination.Length).CopyTo(destination);
             return true;
         }
 
         public bool TryWrite(ulong address, ReadOnlySpan<byte> source)
         {
-            if (address + (ulong)source.Length > (ulong)_ram.Length)
+            if (address + (ulong)source.Length > (ulong)_storage.Length)
             {
                 return false;
             }
 
-            source.CopyTo(_ram.AsSpan((int)address, source.Length));
+            source.CopyTo(_storage.AsSpan((int)address, source.Length));
             return true;
         }
 
@@ -55,6 +56,8 @@ public static class UnityScriptingMemTests
         TestVirtualRandomDeviceLifecycleAndEntropy();
         TestGuestPathTempMappingAndApp0Writable();
         TestKernelExceptionSignalParityAndEsrch();
+        TestGuestPathDataMappingAndRecursiveMkdir();
+        TestAmongUsAndUnityProgressionFeatures();
 
         Console.WriteLine("[TEST] UnityScriptingMemTests PASSED cleanly.");
     }
@@ -429,5 +432,195 @@ public static class UnityScriptingMemTests
         KernelExceptionCompatExports.RemoveExceptionHandler(ctx);
 
         Console.WriteLine("  [PASS] sceKernelRaiseException ESRCH return and SIGUSR1/SIGUSR2 parity verified");
+    }
+
+    private static void TestGuestPathDataMappingAndRecursiveMkdir()
+    {
+        // 1. Verify /data/ and data/ path resolution
+        var dataFile1 = KernelMemoryCompatExports.ResolveGuestPath("/data/test.dat");
+        var dataFile2 = KernelMemoryCompatExports.ResolveGuestPath("data/test.dat");
+        var dataDir1 = KernelMemoryCompatExports.ResolveGuestPath("/data");
+        var dataDir2 = KernelMemoryCompatExports.ResolveGuestPath("data");
+
+        if (!string.Equals(dataFile1, dataFile2, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"/data and data mapping mismatch: '{dataFile1}' vs '{dataFile2}'");
+        }
+
+        if (!string.Equals(Path.GetDirectoryName(dataFile1), dataDir1, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Parent of /data/test.dat '{Path.GetDirectoryName(dataFile1)}' does not match /data '{dataDir1}'");
+        }
+
+        if (!string.Equals(dataDir1, dataDir2, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"/data '{dataDir1}' does not match data '{dataDir2}'");
+        }
+
+        if (!Directory.Exists(dataDir1))
+        {
+            throw new InvalidOperationException($"Resolved data directory does not exist on host: {dataDir1}");
+        }
+
+        // 2. Verify recursive mkdir for nested paths
+        var hostNestedDir = KernelMemoryCompatExports.ResolveGuestPath("/data/nested/archive/dir");
+        var hostNestedParent = KernelMemoryCompatExports.ResolveGuestPath("/data/nested");
+        try
+        {
+            if (Directory.Exists(hostNestedParent))
+            {
+                Directory.Delete(hostNestedParent, recursive: true);
+            }
+        }
+        catch { }
+
+        var mem = new TestMemory();
+        var ctx = new CpuContext(mem, Generation.Gen5);
+        ulong pathAddr = 0xE000;
+        WriteCString(mem, pathAddr, "/data/nested/archive/dir");
+        ctx[CpuRegister.Rdi] = pathAddr;
+        ctx[CpuRegister.Rsi] = 0x1FF; // 0777 octal
+        var mkdirRes = KernelMemoryCompatExports.KernelMkdir(ctx);
+        if (mkdirRes != 0)
+        {
+            throw new InvalidOperationException($"KernelMkdir failed for nested path: {mkdirRes}");
+        }
+
+        if (!Directory.Exists(hostNestedDir))
+        {
+            throw new InvalidOperationException($"Nested directory was not created on host: {hostNestedDir}");
+        }
+
+        try
+        {
+            if (Directory.Exists(hostNestedParent))
+            {
+                Directory.Delete(hostNestedParent, recursive: true);
+            }
+        }
+        catch { }
+
+        // 3. Verify libkernel_unity export aliases
+        var unityInstall = KernelExceptionCompatExports.InstallExceptionHandlerUnity(ctx);
+        if (unityInstall != (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT)
+        {
+            throw new InvalidOperationException($"Expected INVALID_ARGUMENT for invalid signal, got {unityInstall}");
+        }
+
+        // 4. Verify CompleteFlip fallback to open port and event queue signaling
+        VideoOutExports.CompleteFlip(0, 42);
+
+        Console.WriteLine("  [PASS] /data guest path, recursive mkdir, and libkernel_unity exports verified");
+    }
+
+    private static void TestAmongUsAndUnityProgressionFeatures()
+    {
+        var mem = new TestMemory();
+        var ctx = new CpuContext(mem, Generation.Gen5);
+
+        // 1. Verify Gen5 display events preserve ident=3 and unmasked flipArg
+        ulong eqHandle = 0;
+        ulong eqNameAddr = 0x1000;
+        WriteCString(mem, eqNameAddr, "test_unity_eq");
+        ctx[CpuRegister.Rdi] = 0x2000; // out handle addr
+        ctx[CpuRegister.Rsi] = eqNameAddr;
+        ctx[CpuRegister.Rdx] = 0;
+        ctx[CpuRegister.Rcx] = 16;
+        Span<byte> handleBytes = stackalloc byte[8];
+        if (KernelEventQueueCompatExports.KernelCreateEqueue(ctx) == 0 &&
+            mem.TryRead(0x2000, handleBytes))
+        {
+            eqHandle = BinaryPrimitives.ReadUInt64LittleEndian(handleBytes);
+            const ulong expectedFlipArg = 0xDEAD_BEEF_CAFE_0001UL;
+            KernelEventQueueCompatExports.TriggerDisplayEvent(
+                eqHandle,
+                ident: 3UL,
+                filter: VideoOutExports.OrbisKernelEventFilterVideoOut,
+                eventHint: expectedFlipArg,
+                userData: 0x8888UL,
+                isGen5: true);
+
+            if (KernelEventQueueCompatExports.TryReservePendingEventForTest(eqHandle, out var ev))
+            {
+                if (ev.Ident != 3UL || ev.Data != expectedFlipArg || ev.UserData != 0x8888UL)
+                {
+                    throw new InvalidOperationException(
+                        $"Gen5 TriggerDisplayEvent mismatch: ident={ev.Ident}, data=0x{ev.Data:X16}, userData=0x{ev.UserData:X16}");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException("Failed to reserve queued Gen5 display event");
+            }
+
+            ctx[CpuRegister.Rdi] = eqHandle;
+            KernelEventQueueCompatExports.KernelDeleteEqueue(ctx);
+        }
+
+        // 2. Verify VideoOutIsFlipPending returns 0 or pending count in RAX
+        ctx[CpuRegister.Rdi] = 0; // userId
+        ctx[CpuRegister.Rsi] = 0; // busType
+        ctx[CpuRegister.Rdx] = 0; // index
+        ctx[CpuRegister.Rcx] = 0;
+        var videoPort = VideoOutExports.VideoOutOpen(ctx);
+        if (videoPort <= 0)
+        {
+            throw new InvalidOperationException($"VideoOutOpen failed: {videoPort}");
+        }
+
+        try
+        {
+            ctx[CpuRegister.Rdi] = (ulong)videoPort;
+            var isFlipPendingRes = VideoOutExports.VideoOutIsFlipPending(ctx);
+            if (isFlipPendingRes != 0 || ctx[CpuRegister.Rax] != 0)
+            {
+                throw new InvalidOperationException(
+                    $"VideoOutIsFlipPending returned res={isFlipPendingRes}, RAX={ctx[CpuRegister.Rax]}");
+            }
+
+            // 3. Verify VideoOutFlipStatus writes currentBuffer at both 0x20 and 0x38
+            ulong statusAddr = 0x3000;
+            ctx[CpuRegister.Rdi] = (ulong)videoPort;
+            ctx[CpuRegister.Rsi] = statusAddr;
+            var statusRes = VideoOutExports.VideoOutGetFlipStatus(ctx);
+            if (statusRes == 0)
+            {
+                Span<byte> bufGen4Bytes = stackalloc byte[8];
+                Span<byte> bufGen5Bytes = stackalloc byte[4];
+                mem.TryRead(statusAddr + 0x20, bufGen4Bytes);
+                mem.TryRead(statusAddr + 0x38, bufGen5Bytes);
+                ulong bufGen4 = BinaryPrimitives.ReadUInt64LittleEndian(bufGen4Bytes);
+                uint bufGen5 = BinaryPrimitives.ReadUInt32LittleEndian(bufGen5Bytes);
+                if (bufGen4 != (ulong)bufGen5)
+                {
+                    throw new InvalidOperationException($"VideoOutFlipStatus mismatch: 0x20={bufGen4} vs 0x38={bufGen5}");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException($"VideoOutGetFlipStatus failed: {statusRes}");
+            }
+        }
+        finally
+        {
+            ctx[CpuRegister.Rdi] = (ulong)videoPort;
+            VideoOutExports.VideoOutClose(ctx);
+        }
+
+        // 4. Verify fopen on non-existent file returns ORBIS_GEN2_OK with RAX=0 (NULL)
+        ulong fakePathAddr = 0x4000;
+        ulong modeAddr = 0x4100;
+        WriteCString(mem, fakePathAddr, "/app0/non_existent_unity_file.txt");
+        WriteCString(mem, modeAddr, "r");
+        ctx[CpuRegister.Rdi] = fakePathAddr;
+        ctx[CpuRegister.Rsi] = modeAddr;
+        var fopenRes = CraziiEmu.Libs.LibcStdio.LibcStdioExports.Fopen(ctx);
+        if (fopenRes != (int)OrbisGen2Result.ORBIS_GEN2_OK || ctx[CpuRegister.Rax] != 0)
+        {
+            throw new InvalidOperationException(
+                $"Expected fopen to return ORBIS_GEN2_OK and RAX=0, got res={fopenRes}, RAX=0x{ctx[CpuRegister.Rax]:X16}");
+        }
+
+        Console.WriteLine("  [PASS] Gen5 display events, dual flip status layout, and fopen NULL return verified");
     }
 }

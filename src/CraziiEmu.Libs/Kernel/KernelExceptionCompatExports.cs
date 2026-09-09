@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 
@@ -42,6 +43,13 @@ public static class KernelExceptionCompatExports
     }
 
     [SysAbiExport(
+        Nid = "WkwEd3N7w0Y",
+        ExportName = "sceKernelInstallExceptionHandler_Unity",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libkernel_unity")]
+    public static int InstallExceptionHandlerUnity(CpuContext ctx) => InstallExceptionHandler(ctx);
+
+    [SysAbiExport(
         Nid = "Qhv5ARAoOEc",
         ExportName = "sceKernelRemoveExceptionHandler",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -63,6 +71,13 @@ public static class KernelExceptionCompatExports
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
+
+    [SysAbiExport(
+        Nid = "Qhv5ARAoOEc",
+        ExportName = "sceKernelRemoveExceptionHandler_Unity",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libkernel_unity")]
+    public static int RemoveExceptionHandlerUnity(CpuContext ctx) => RemoveExceptionHandler(ctx);
 
     [SysAbiExport(
         Nid = "il03nluKfMk",
@@ -130,6 +145,13 @@ public static class KernelExceptionCompatExports
 
         return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_OK);
     }
+
+    [SysAbiExport(
+        Nid = "il03nluKfMk",
+        ExportName = "sceKernelRaiseException_Unity",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libkernel_unity")]
+    public static int RaiseExceptionUnity(CpuContext ctx) => RaiseException(ctx);
 
     private static int SetReturn(CpuContext ctx, OrbisGen2Result result)
     {

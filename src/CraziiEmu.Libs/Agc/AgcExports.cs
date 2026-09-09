@@ -7092,13 +7092,7 @@ public static partial class AgcExports
 
         if (hasCurrent && GpuWaitRegistry.Compare(waiter, currentValue))
         {
-            // Value satisfies the condition, but only bypass if the label was
-            // written in the current frame. A stale label from a previous frame
-            // means the producer hasn't written yet this frame — must wait.
-            if (GpuWaitRegistry.IsLabelFresh(ctx.Memory, waitAddress))
-            {
-                return false; // satisfied by current-frame write — keep parsing
-            }
+            return false; // already satisfied — keep parsing
         }
 
         if (!_gpuWaitSuspendEnabled)

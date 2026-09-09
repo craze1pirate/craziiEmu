@@ -2176,6 +2176,12 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
         }
 
+        if (string.IsNullOrWhiteSpace(hostPath))
+        {
+            LogOpenTrace($"mkdir denied path='{guestPath}'");
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
         try
         {
             if (File.Exists(hostPath) || Directory.Exists(hostPath))
@@ -2184,9 +2190,11 @@ public static partial class KernelMemoryCompatExports
             }
 
             var parentDirectory = Path.GetDirectoryName(hostPath);
-            if (string.IsNullOrWhiteSpace(parentDirectory) || !Directory.Exists(parentDirectory))
+            if (!string.IsNullOrWhiteSpace(parentDirectory) && !Directory.Exists(parentDirectory))
             {
-                return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+                // Referred from KytyPS5 Common::File::CreateDirectories:
+                // Create parent directories automatically so nested guest directories succeed.
+                Directory.CreateDirectory(parentDirectory);
             }
 
             Directory.CreateDirectory(hostPath);
@@ -5277,12 +5285,74 @@ public static partial class KernelMemoryCompatExports
             }
         }
 
-        // Default-deny: a guest path that matched no mount prefix must NOT be
-        // handed back verbatim as a host path. Returning it raw let any absolute
-        // guest path address the host filesystem directly ("/etc/passwd",
-        // "C:\\Windows\\...") because it is already fully qualified and skips the
-        // relative-path app0 fallback above. Callers treat an empty host path as
-        // "resolves to nothing" and fail the syscall with NOT_FOUND.
+        if (guestPath.StartsWith("/data/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = NormalizeMountRelativePath(guestPath["/data/".Length..]);
+            return CombineWithinMount(ResolveDataRoot(), relative);
+        }
+
+        if (guestPath.StartsWith("data/", StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = NormalizeMountRelativePath(guestPath["data/".Length..]);
+            return CombineWithinMount(ResolveDataRoot(), relative);
+        }
+
+        if (string.Equals(guestPath, "/data", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolveDataRoot();
+        }
+
+        if (guestPath.StartsWith("/savedata0/", StringComparison.OrdinalIgnoreCase) ||
+            guestPath.StartsWith("savedata0/", StringComparison.OrdinalIgnoreCase))
+        {
+            var prefixLength = guestPath.StartsWith("/", StringComparison.Ordinal) ? "/savedata0/".Length : "savedata0/".Length;
+            var relative = NormalizeMountRelativePath(guestPath[prefixLength..]);
+            var defaultSavedataRoot = Path.Combine(GetPerAppWritableRoot(), "savedata0");
+            Directory.CreateDirectory(defaultSavedataRoot);
+            return CombineWithinMount(defaultSavedataRoot, relative);
+        }
+
+        if (string.Equals(guestPath, "/savedata0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "savedata0", StringComparison.OrdinalIgnoreCase))
+        {
+            var defaultSavedataRoot = Path.Combine(GetPerAppWritableRoot(), "savedata0");
+            Directory.CreateDirectory(defaultSavedataRoot);
+            return defaultSavedataRoot;
+        }
+
+        if (guestPath.StartsWith("/savedata/", StringComparison.OrdinalIgnoreCase) ||
+            guestPath.StartsWith("savedata/", StringComparison.OrdinalIgnoreCase))
+        {
+            var prefixLength = guestPath.StartsWith("/", StringComparison.Ordinal) ? "/savedata/".Length : "savedata/".Length;
+            var relative = NormalizeMountRelativePath(guestPath[prefixLength..]);
+            var defaultSavedataRoot = Path.Combine(GetPerAppWritableRoot(), "savedata0");
+            Directory.CreateDirectory(defaultSavedataRoot);
+            return CombineWithinMount(defaultSavedataRoot, relative);
+        }
+
+        if (string.Equals(guestPath, "/savedata", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(guestPath, "savedata", StringComparison.OrdinalIgnoreCase))
+        {
+            var defaultSavedataRoot = Path.Combine(GetPerAppWritableRoot(), "savedata0");
+            Directory.CreateDirectory(defaultSavedataRoot);
+            return defaultSavedataRoot;
+        }
+
+        // Fallback for unmounted guest paths (e.g. /cache/, /user/...):
+        // Route them securely to the per-app writable sandbox root rather than default-denying.
+        var sandboxRelative = NormalizeMountRelativePath(guestPath.TrimStart('/', '\\'));
+        if (!string.IsNullOrWhiteSpace(sandboxRelative))
+        {
+            var sandboxRoot = GetPerAppWritableRoot();
+            Directory.CreateDirectory(sandboxRoot);
+            var resolvedSandbox = CombineWithinMount(sandboxRoot, sandboxRelative);
+            if (!string.IsNullOrEmpty(resolvedSandbox))
+            {
+                return resolvedSandbox;
+            }
+        }
+
         return string.Empty;
     }
 
@@ -5548,6 +5618,23 @@ public static partial class KernelMemoryCompatExports
         return root;
     }
 
+    private static string ResolveDataRoot()
+    {
+        const string dataVariableName = "CRAZIIEMU_DATA_DIR";
+        var configuredRoot = Environment.GetEnvironmentVariable(dataVariableName);
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+        {
+            var fullPath = Path.GetFullPath(configuredRoot);
+            Directory.CreateDirectory(fullPath);
+            return fullPath;
+        }
+
+        var root = Path.Combine(GetPerAppWritableRoot(), "data");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable(dataVariableName, root);
+        return root;
+    }
+
     private static string ResolveTemp0Root()
     {
         const string temp0VariableName = "CRAZIIEMU_TEMP0_DIR";
@@ -5571,6 +5658,21 @@ public static partial class KernelMemoryCompatExports
         var invalidChars = Path.GetInvalidFileNameChars();
         appName = new string(appName.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
         var root = Path.Combine(Path.GetTempPath(), "CraziiEmu", appName, "temp0");
+        try
+        {
+            if (Directory.Exists(root))
+            {
+                foreach (var file in Directory.EnumerateFiles(root))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+                foreach (var dir in Directory.EnumerateDirectories(root))
+                {
+                    try { Directory.Delete(dir, recursive: true); } catch { }
+                }
+            }
+        }
+        catch { }
         Directory.CreateDirectory(root);
         Environment.SetEnvironmentVariable(temp0VariableName, root);
         return root;
