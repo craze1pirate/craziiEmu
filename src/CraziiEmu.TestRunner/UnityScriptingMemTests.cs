@@ -500,17 +500,17 @@ public static class UnityScriptingMemTests
         }
         catch { }
 
-        // 3. Verify libkernel_unity export aliases
-        var unityInstall = KernelExceptionCompatExports.InstallExceptionHandlerUnity(ctx);
-        if (unityInstall != (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT)
+        // 3. Verify stock exception exports
+        var stockInstall = KernelExceptionCompatExports.InstallExceptionHandler(ctx);
+        if (stockInstall != (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT)
         {
-            throw new InvalidOperationException($"Expected INVALID_ARGUMENT for invalid signal, got {unityInstall}");
+            throw new InvalidOperationException($"Expected INVALID_ARGUMENT for invalid signal, got {stockInstall}");
         }
 
         // 4. Verify CompleteFlip fallback to open port and event queue signaling
         VideoOutExports.CompleteFlip(0, 42);
 
-        Console.WriteLine("  [PASS] /data guest path, recursive mkdir, and libkernel_unity exports verified");
+        Console.WriteLine("  [PASS] /data guest path, recursive mkdir, and exception exports verified");
     }
 
     private static void TestAmongUsAndUnityProgressionFeatures()
