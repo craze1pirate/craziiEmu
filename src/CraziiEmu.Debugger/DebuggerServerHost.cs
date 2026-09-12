@@ -11,7 +11,7 @@ namespace CraziiEmu.Debugger;
 /// <summary>
 /// One-call wiring of the live debugger: it owns a <see cref="DebuggerSession"/>
 /// and a <see cref="DebuggerServer"/>, exposes the <see cref="Hook"/> to attach
-/// to <c>SharpEmuRuntimeOptions.DebugHook</c>, and starts/stops the network
+/// to <c>CraziiEmuRuntimeOptions.DebugHook</c>, and starts/stops the network
 /// front-end. A host constructs one, hands <see cref="Hook"/> to the runtime,
 /// calls <see cref="Start"/>, and calls <see cref="NotifyRunCompleted"/> once the
 /// runtime returns.

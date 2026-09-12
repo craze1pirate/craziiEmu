@@ -19,7 +19,7 @@ public interface IDebuggerSession : IDebugTarget
 
     /// <summary>
     /// The dispatcher-facing hook. Assign this to
-    /// <c>SharpEmuRuntimeOptions.DebugHook</c> so guest frames are routed through
+    /// <c>CraziiEmuRuntimeOptions.DebugHook</c> so guest frames are routed through
     /// the session.
     /// </summary>
     ICpuDebugHook Hook { get; }

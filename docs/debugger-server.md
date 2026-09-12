@@ -20,7 +20,7 @@ client usage, see
 | -------- | ---- |
 | `CraziiEmu.Core` | Defines the dispatcher seam `ICpuDebugHook` / `ICpuDebugFrame` (namespace `CraziiEmu.Core.Cpu.Debug`) and the `CpuExecutionOptions.DebugHook` slot. Core has **no** reference to the debugger. |
 | `CraziiEmu.Debugger` | The debugger: `DebuggerSession` (implements the hook), `BreakpointStore`, the TCP `DebuggerServer`, the pluggable `IDebugProtocol` with a JSON-lines implementation, and the `DebuggerServerHost` one-call wiring. |
-| `CraziiEmu.CLI` | Parses `--debug-server`, builds a `DebuggerServerHost`, hands its `Hook` to `SharpEmuRuntimeOptions.DebugHook`, and manages its lifetime. |
+| `CraziiEmu.CLI` | Parses `--debug-server`, builds a `DebuggerServerHost`, hands its `Hook` to `CraziiEmuRuntimeOptions.DebugHook`, and manages its lifetime. |
 | `CraziiEmu.DebugClient` | A standalone client executable. Depends only on the BCL. |
 
 The dependency direction is important: Core stays debugger-agnostic and only
@@ -169,8 +169,8 @@ using CraziiEmu.Core.Runtime;
 await using var host = new DebuggerServerHost();
 host.Start();
 
-var options = new SharpEmuRuntimeOptions { DebugHook = host.Hook };
-using var runtime = SharpEmuRuntime.CreateDefault(options);
+var options = new CraziiEmuRuntimeOptions { DebugHook = host.Hook };
+using var runtime = CraziiEmuRuntime.CreateDefault(options);
 var result = runtime.Run(ebootPath);
 
 host.NotifyRunCompleted();
