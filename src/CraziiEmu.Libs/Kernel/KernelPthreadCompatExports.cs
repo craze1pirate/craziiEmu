@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Collections.Concurrent;
 using CraziiEmu.HLE;
@@ -43,6 +44,42 @@ public static class KernelPthreadCompatExports
     private static long _nextSynchronizationWaiterId;
     private static int _pthreadFastPathTraceWritten;
     private static readonly ConcurrentDictionary<ulong, byte> _pthreadFastPathBusyTraced = new();
+
+    public static void WakeThreadForSignal(ulong threadId)
+    {
+        lock (_stateGate)
+        {
+            foreach (var state in _condStates.Values)
+            {
+                lock (state.SyncRoot)
+                {
+                    for (var node = state.WaiterQueue.First; node is not null; node = node.Next)
+                    {
+                        if (node.Value.ThreadId == threadId)
+                        {
+                            Monitor.PulseAll(state.SyncRoot);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        foreach (var mutex in _mutexStates.Values)
+        {
+            lock (mutex.SyncRoot)
+            {
+                for (var node = mutex.Waiters.First; node is not null; node = node.Next)
+                {
+                    if (node.Value.ThreadId == threadId)
+                    {
+                        node.Value.HostSignal?.Set();
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     private sealed class PthreadMutexState
     {
@@ -965,7 +1002,7 @@ public static class KernelPthreadCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        var hostResult = WaitForHostMutexLock(resolvedAddress != 0 ? resolvedAddress : mutexAddress, state, waiter!);
+        var hostResult = WaitForHostMutexLock(ctx, resolvedAddress != 0 ? resolvedAddress : mutexAddress, state, waiter!);
         TracePthreadMutex(ctx, "lock", mutexAddress, resolvedAddress, state, currentThreadId, hostResult);
         return hostResult;
     }
@@ -1625,21 +1662,36 @@ public static class KernelPthreadCompatExports
             var condWaitIteration = 0;
             while (waiter.CompletionState == 0)
             {
+                if (CheckAndDeliverPendingGuestException(ctx, currentThreadId, state.SyncRoot))
+                {
+                    if (waiter.CompletionState != 0)
+                    {
+                        break;
+                    }
+                }
+
                 if (!timed)
                 {
-                    if (!Monitor.Wait(state.SyncRoot, 1000))
+                    if (!Monitor.Wait(state.SyncRoot, 10))
                     {
                         condWaitIteration++;
-                        Console.Error.WriteLine($"[LOADER][WARN] PthreadCondWaitCore WAITING ({condWaitIteration}s non-guest): cond=0x{condAddress:X16} mutex=0x{mutexAddress:X16} thread=0x{waiter.ThreadId:X16}");
+                        if (condWaitIteration % 100 == 0)
+                        {
+                            Console.Error.WriteLine($"[LOADER][WARN] PthreadCondWaitCore WAITING ({condWaitIteration / 100}s non-guest): cond=0x{condAddress:X16} mutex=0x{mutexAddress:X16} thread=0x{waiter.ThreadId:X16}");
+                        }
                     }
                     continue;
                 }
 
                 var remaining = GetRemainingTimeout(deadline);
-                if (remaining <= TimeSpan.Zero || !Monitor.Wait(state.SyncRoot, remaining))
+                var pollDuration = TimeSpan.FromMilliseconds(Math.Min(10, Math.Max(1, remaining.TotalMilliseconds)));
+                if (remaining <= TimeSpan.Zero || !Monitor.Wait(state.SyncRoot, pollDuration))
                 {
-                    CompleteCondWaiterLocked(state, waiter, timedOut: true);
-                    break;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        CompleteCondWaiterLocked(state, waiter, timedOut: true);
+                        break;
+                    }
                 }
             }
         }
@@ -1649,12 +1701,30 @@ public static class KernelPthreadCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        _ = WaitForHostMutexLock(mutexAddress, mutexState, waiter.MutexWaiter);
+        _ = WaitForHostMutexLock(ctx, mutexAddress, mutexState, waiter.MutexWaiter);
         var waitResult = waiter.CompletionState == 2
             ? CondTimedOutResult(waiter)
             : (int)OrbisGen2Result.ORBIS_GEN2_OK;
         TracePthreadCond(waiter.CompletionState == 2 ? "wait-exit-timeout" : "wait-exit", condAddress, mutexAddress, state, timed, waitResult);
         return waitResult;
+    }
+
+    private static bool CheckAndDeliverPendingGuestException(CpuContext ctx, ulong threadId, object syncRoot)
+    {
+        if (!GuestThreadExecution.HasPendingGuestException(threadId))
+        {
+            return false;
+        }
+
+        Monitor.Exit(syncRoot);
+        try
+        {
+            return GuestThreadExecution.TryDeliverPendingGuestException(ctx, threadId);
+        }
+        finally
+        {
+            Monitor.Enter(syncRoot);
+        }
     }
 
     private static int PthreadCondSignalCore(CpuContext ctx, ulong condAddress, bool broadcast)
@@ -1864,7 +1934,7 @@ public static class KernelPthreadCompatExports
         }
     }
 
-    private static int WaitForHostMutexLock(ulong mutexAddress, PthreadMutexState state, PthreadMutexWaiter waiter)
+    private static int WaitForHostMutexLock(CpuContext ctx, ulong mutexAddress, PthreadMutexState state, PthreadMutexWaiter waiter)
     {
         ManualResetEventSlim? hostSignal = null;
         try
@@ -1886,7 +1956,7 @@ public static class KernelPthreadCompatExports
                         if (waitIteration > 0)
                         {
                             Console.Error.WriteLine(
-                                $"[LOADER][WARN] WaitForHostMutexLock GRANTED: mutex=0x{mutexAddress:X16} owner=0x{state.OwnerThreadId:X16} thread=0x{waiter.ThreadId:X16} after {waitIteration}s");
+                                $"[LOADER][WARN] WaitForHostMutexLock GRANTED: mutex=0x{mutexAddress:X16} owner=0x{state.OwnerThreadId:X16} thread=0x{waiter.ThreadId:X16} after {waitIteration / 100}s");
                         }
                         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
                     }
@@ -1894,13 +1964,21 @@ public static class KernelPthreadCompatExports
                     hostSignal.Reset();
                 }
 
-                if (!hostSignal.Wait(1000))
+                if (!hostSignal.Wait(10))
                 {
-                    waitIteration++;
-                    lock (state.SyncRoot)
+                    if (GuestThreadExecution.HasPendingGuestException(waiter.ThreadId))
                     {
-                        Console.Error.WriteLine(
-                            $"[LOADER][WARN] WaitForHostMutexLock WAITING ({waitIteration}s): mutex=0x{mutexAddress:X16} owner=0x{state.OwnerThreadId:X16} waiter=0x{waiter.ThreadId:X16} headWaiter={(state.Waiters.First?.Value.ThreadId.ToString("X16") ?? "none")} recursion={state.RecursionCount}");
+                        GuestThreadExecution.TryDeliverPendingGuestException(ctx, waiter.ThreadId);
+                    }
+
+                    waitIteration++;
+                    if (waitIteration % 100 == 0)
+                    {
+                        lock (state.SyncRoot)
+                        {
+                            Console.Error.WriteLine(
+                                $"[LOADER][WARN] WaitForHostMutexLock WAITING ({waitIteration / 100}s): mutex=0x{mutexAddress:X16} owner=0x{state.OwnerThreadId:X16} waiter=0x{waiter.ThreadId:X16} headWaiter={(state.Waiters.First?.Value.ThreadId.ToString("X16") ?? "none")} recursion={state.RecursionCount}");
+                        }
                     }
                 }
             }

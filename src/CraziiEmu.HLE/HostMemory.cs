@@ -39,6 +39,56 @@ public static unsafe class HostMemory
         public uint Alignment2;
     }
 
+    public const uint MEM_REPLACE_PLACEHOLDER = 0x00004000;
+    public const uint MEM_RESERVE_PLACEHOLDER = 0x00040000;
+    public const uint MEM_PRESERVE_PLACEHOLDER = 0x00000002;
+
+    private static readonly bool s_hasVirtualAlloc2 = CheckVirtualAlloc2Supported();
+
+    public static bool IsVirtualAlloc2Supported => s_hasVirtualAlloc2;
+
+    private static bool CheckVirtualAlloc2Supported()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        if (NativeLibrary.TryLoad("kernelbase.dll", out var handle))
+        {
+            try
+            {
+                return NativeLibrary.TryGetExport(handle, "VirtualAlloc2", out _);
+            }
+            finally
+            {
+                NativeLibrary.Free(handle);
+            }
+        }
+        return false;
+    }
+
+    public static void* Alloc2(
+        void* address,
+        nuint size,
+        uint allocationType,
+        uint protect,
+        void* process = null)
+    {
+        if (s_hasVirtualAlloc2)
+        {
+            var targetProcess = process != null ? process : Win32GetCurrentProcess();
+            return Win32VirtualAlloc2(targetProcess, address, size, allocationType, protect, null, 0);
+        }
+        return null;
+    }
+
+    public static bool FreeEx(
+        void* address,
+        nuint size,
+        uint freeType,
+        void* process = null)
+    {
+        var targetProcess = process != null ? process : Win32GetCurrentProcess();
+        return Win32VirtualFreeEx(targetProcess, address, size, freeType);
+    }
+
     public static void* Alloc(void* address, nuint size, uint allocationType, uint protect) =>
         Win32VirtualAlloc(address, size, allocationType, protect);
 
@@ -53,6 +103,24 @@ public static unsafe class HostMemory
 
     public static void FlushInstructionCache(void* address, nuint size) =>
         Win32FlushInstructionCache(Win32GetCurrentProcess(), address, size);
+
+    [DllImport("kernelbase.dll", EntryPoint = "VirtualAlloc2", SetLastError = true)]
+    private static extern void* Win32VirtualAlloc2(
+        void* Process,
+        void* BaseAddress,
+        nuint Size,
+        uint AllocationType,
+        uint PageProtection,
+        void* ExtendedParameters,
+        uint ParameterCount);
+
+    [DllImport("kernel32.dll", EntryPoint = "VirtualFreeEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Win32VirtualFreeEx(
+        void* hProcess,
+        void* lpAddress,
+        nuint dwSize,
+        uint dwFreeType);
 
     [DllImport("kernel32.dll", EntryPoint = "VirtualAlloc", SetLastError = true)]
     private static extern void* Win32VirtualAlloc(void* lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);

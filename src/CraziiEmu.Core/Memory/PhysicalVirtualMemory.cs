@@ -123,6 +123,86 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
 
     private readonly object _fixedAllocationGate = new();
     private readonly HashSet<ulong> _fixedGranuleReservationBases = new();
+    private readonly HashSet<ulong> _preReservedBases = new();
+
+    public const ulong DefaultGuestPreReserveStart = 0x0000_0001_0000_0000UL; // 4 GiB
+    public const ulong DefaultGuestPreReserveEnd   = 0x0000_0080_0000_0000UL; // 512 GiB
+    public const ulong DefaultGuestPreReserveChunk = 0x0000_0004_0000_0000UL; // 16 GiB chunks
+
+    public bool IsAddressInPreReservedGuestSpace(ulong address) =>
+        address >= DefaultGuestPreReserveStart && address < DefaultGuestPreReserveEnd;
+
+    public IReadOnlyCollection<ulong> PreReservedBases => _preReservedBases;
+
+    public int PreReserveGuestAddressRange(
+        ulong startAddress = DefaultGuestPreReserveStart,
+        ulong endAddress = DefaultGuestPreReserveEnd,
+        ulong chunkSize = DefaultGuestPreReserveChunk)
+    {
+        if (!OperatingSystem.IsWindows() || startAddress >= endAddress || chunkSize == 0)
+        {
+            return 0;
+        }
+
+        int reservedCount = 0;
+        lock (_fixedAllocationGate)
+        {
+            var cursor = AlignDown(startAddress, HostAllocationGranularity);
+            var end = AlignUp(endAddress, HostAllocationGranularity);
+
+            while (cursor < end)
+            {
+                var nextCursor = cursor + chunkSize;
+                if (nextCursor < cursor || nextCursor > end)
+                {
+                    nextCursor = end;
+                }
+                var currentChunkSize = nextCursor - cursor;
+
+                if (_hostMemory.Query(cursor, out var info))
+                {
+                    if (info.State == HostRegionState.Free)
+                    {
+                        var maxFreeSize = info.RegionSize > ulong.MaxValue - info.BaseAddress
+                            ? ulong.MaxValue - cursor
+                            : (info.BaseAddress + info.RegionSize) - cursor;
+
+                        var toReserve = Math.Min(currentChunkSize, maxFreeSize);
+                        toReserve = AlignDown(toReserve, HostAllocationGranularity);
+
+                        if (toReserve >= HostAllocationGranularity)
+                        {
+                            var reserved = _hostMemory.Reserve(cursor, toReserve, HostPageProtection.ReadWrite);
+                            if (reserved == cursor)
+                            {
+                                _fixedGranuleReservationBases.Add(cursor);
+                                _preReservedBases.Add(cursor);
+                                reservedCount++;
+                                cursor += toReserve;
+                                continue;
+                            }
+                            else if (reserved != 0)
+                            {
+                                _hostMemory.Free(reserved);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var advance = info.RegionSize > 0 ? info.RegionSize : HostAllocationGranularity;
+                        cursor = AlignUp(cursor + advance, HostAllocationGranularity);
+                        continue;
+                    }
+                }
+
+                cursor += HostAllocationGranularity;
+            }
+        }
+
+        Log.Info($"Pre-reserved {reservedCount} guest virtual memory chunks from 0x{startAddress:X16} to 0x{endAddress:X16}");
+        return reservedCount;
+    }
+
     private ulong _guestAllocationArenaBase;
     private readonly SortedDictionary<ulong, ulong> _guestAllocationFreeRanges = new();
     private readonly Dictionary<ulong, (ulong Offset, ulong Size)> _guestAllocations = new();
@@ -1119,6 +1199,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
                     }
 
                     _fixedGranuleReservationBases.Clear();
+                    _preReservedBases.Clear();
                     _regions.Clear();
                     _pageProtections.Clear();
                     lock (_allocationSearchHintGate)

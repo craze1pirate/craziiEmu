@@ -117,6 +117,19 @@ public interface IGuestThreadScheduler
         ulong handler,
         int exceptionType,
         out string? error);
+
+    /// <summary>
+    /// Checks whether there is a queued kernel exception waiting to be delivered
+    /// to the specified guest thread.
+    /// </summary>
+    bool HasPendingGuestException(ulong threadHandle);
+
+    /// <summary>
+    /// Delivers any pending kernel exception queued for the specified thread
+    /// by executing its installed exception handler on its exception stack.
+    /// Returns true if an exception was delivered.
+    /// </summary>
+    bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle);
 }
 
 public readonly record struct GuestImportCallFrame(
@@ -255,6 +268,12 @@ public static class GuestThreadExecution
     public static ulong CurrentGuestThreadHandle => _currentGuestThreadHandle;
 
     public static ulong CurrentFiberAddress => _currentFiberAddress;
+
+    public static bool HasPendingGuestException(ulong threadHandle) =>
+        Scheduler?.HasPendingGuestException(threadHandle) ?? false;
+
+    public static bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle) =>
+        Scheduler?.TryDeliverPendingGuestException(context, threadHandle) ?? false;
 
     public static ulong EnterGuestThread(ulong threadHandle, bool isMainThread = false)
     {

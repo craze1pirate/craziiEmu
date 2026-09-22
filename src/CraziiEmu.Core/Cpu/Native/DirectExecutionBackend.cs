@@ -17,6 +17,7 @@ using CraziiEmu.Core.Loader;
 using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Diagnostics;
+using CraziiEmu.Libs.Kernel;
 
 namespace CraziiEmu.Core.Cpu.Native;
 
@@ -2110,17 +2111,37 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		void* ptr = null;
 		if (preferredNearAddress != 0)
 		{
-			for (long delta = 0x10000; delta < 0x7FFF0000L; delta += 0x10000)
+			const uint memFree = 0x10000;
+			int probes = 0;
+			for (long delta = 0x10000; delta < 0x7FFF0000L && probes < 64; )
 			{
 				ulong tryAddr = preferredNearAddress + (ulong)delta;
-				ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
-				if (ptr != null) break;
+				if (VirtualQuery((void*)tryAddr, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) != 0)
+				{
+					if (mbi.State == memFree && mbi.RegionSize >= 512)
+					{
+						ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
+						if (ptr != null) break;
+					}
+					delta += Math.Max(0x10000L, (long)mbi.RegionSize);
+				}
+				else
+				{
+					delta += 0x100000L;
+				}
+				probes++;
 
 				if ((ulong)delta < preferredNearAddress)
 				{
 					tryAddr = preferredNearAddress - (ulong)delta;
-					ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
-					if (ptr != null) break;
+					if (VirtualQuery((void*)tryAddr, out mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION64)) != 0)
+					{
+						if (mbi.State == memFree && mbi.RegionSize >= 512)
+						{
+							ptr = VirtualAlloc((void*)tryAddr, 512u, 12288u, 64u);
+							if (ptr != null) break;
+						}
+					}
 				}
 			}
 		}
@@ -3910,6 +3931,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			{
 				Pump(wakeContext, "wake");
 			}
+
+			DispatchReadyGuestThreads();
 		}
 
 		return wakeCount;
@@ -3994,9 +4017,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			}
 		}
 
-		if (wakeCount != 0 && _logGuestThreads)
+		if (wakeCount != 0)
 		{
-			Console.Error.WriteLine($"[LOADER][INFO] guest_threads.timeout_wake count={wakeCount}");
+			if (_logGuestThreads)
+			{
+				Console.Error.WriteLine($"[LOADER][INFO] guest_threads.timeout_wake count={wakeCount}");
+			}
+
+			DispatchReadyGuestThreads();
 		}
 
 		return wakeCount;
@@ -4925,6 +4953,126 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		return 0;
 	}
 
+	public bool HasPendingGuestException(ulong threadHandle)
+	{
+		if (Volatile.Read(ref _pendingGuestExceptionCount) == 0)
+		{
+			return false;
+		}
+
+		if (threadHandle == 0)
+		{
+			threadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
+			if (threadHandle == 0)
+			{
+				threadHandle = _currentExternalGuestThreadHandle;
+			}
+		}
+
+		if (threadHandle == 0)
+		{
+			return false;
+		}
+
+		lock (_guestThreadGate)
+		{
+			return _pendingGuestExceptions.ContainsKey(threadHandle);
+		}
+	}
+
+	public bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle)
+	{
+		if (Volatile.Read(ref _pendingGuestExceptionCount) == 0)
+		{
+			return false;
+		}
+
+		if (threadHandle == 0)
+		{
+			threadHandle = GuestThreadExecution.CurrentGuestThreadHandle;
+			if (threadHandle == 0)
+			{
+				threadHandle = _currentExternalGuestThreadHandle;
+			}
+		}
+
+		if (threadHandle == 0)
+		{
+			return false;
+		}
+
+		PendingGuestException pending;
+		lock (_guestThreadGate)
+		{
+			if (!TryRemovePendingGuestExceptionLocked(threadHandle, out pending))
+			{
+				return false;
+			}
+
+			_activeGuestExceptionDeliveries.Add(threadHandle);
+		}
+
+		GuestCpuContinuation continuation;
+		if (GuestThreadExecution.TryGetCurrentImportCallFrame(out var frame) && frame.IsValid)
+		{
+			continuation = new GuestCpuContinuation(
+				Rip: frame.ReturnRip,
+				Rsp: frame.ResumeRsp,
+				ReturnSlotAddress: frame.ReturnSlotAddress,
+				Rflags: context.Rflags,
+				FsBase: context.FsBase,
+				GsBase: context.GsBase,
+				Rax: context[CpuRegister.Rax],
+				Rcx: context[CpuRegister.Rcx],
+				Rdx: context[CpuRegister.Rdx],
+				Rbx: context[CpuRegister.Rbx],
+				Rbp: context[CpuRegister.Rbp],
+				Rsi: context[CpuRegister.Rsi],
+				Rdi: context[CpuRegister.Rdi],
+				R8: context[CpuRegister.R8],
+				R9: context[CpuRegister.R9],
+				R10: context[CpuRegister.R10],
+				R11: context[CpuRegister.R11],
+				R12: context[CpuRegister.R12],
+				R13: context[CpuRegister.R13],
+				R14: context[CpuRegister.R14],
+				R15: context[CpuRegister.R15],
+				FpuControlWord: context.FpuControlWord,
+				Mxcsr: context.Mxcsr,
+				RestoreFullFpuState: false);
+		}
+		else
+		{
+			continuation = new GuestCpuContinuation(
+				Rip: context.Rip,
+				Rsp: context[CpuRegister.Rsp],
+				ReturnSlotAddress: 0,
+				Rflags: context.Rflags,
+				FsBase: context.FsBase,
+				GsBase: context.GsBase,
+				Rax: context[CpuRegister.Rax],
+				Rcx: context[CpuRegister.Rcx],
+				Rdx: context[CpuRegister.Rdx],
+				Rbx: context[CpuRegister.Rbx],
+				Rbp: context[CpuRegister.Rbp],
+				Rsi: context[CpuRegister.Rsi],
+				Rdi: context[CpuRegister.Rdi],
+				R8: context[CpuRegister.R8],
+				R9: context[CpuRegister.R9],
+				R10: context[CpuRegister.R10],
+				R11: context[CpuRegister.R11],
+				R12: context[CpuRegister.R12],
+				R13: context[CpuRegister.R13],
+				R14: context[CpuRegister.R14],
+				R15: context[CpuRegister.R15],
+				FpuControlWord: context.FpuControlWord,
+				Mxcsr: context.Mxcsr,
+				RestoreFullFpuState: false);
+		}
+
+		return DeliverGuestExceptionCore(context, threadHandle, pending, continuation);
+	}
+
 	private void DeliverPendingGuestExceptionAtSafePoint(
 		CpuContext currentContext,
 		GuestCpuContinuation interruptedContinuation)
@@ -4939,14 +5087,15 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		{
 			threadHandle = _currentExternalGuestThreadHandle;
 		}
+
+		if (threadHandle == 0)
+		{
+			return;
+		}
+
 		PendingGuestException pending;
 		lock (_guestThreadGate)
 		{
-			if (threadHandle == 0)
-			{
-				return;
-			}
-
 			if (!TryRemovePendingGuestExceptionLocked(threadHandle, out pending))
 			{
 				return;
@@ -4955,6 +5104,15 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			_activeGuestExceptionDeliveries.Add(threadHandle);
 		}
 
+		DeliverGuestExceptionCore(currentContext, threadHandle, pending, interruptedContinuation);
+	}
+
+	private bool DeliverGuestExceptionCore(
+		CpuContext currentContext,
+		ulong threadHandle,
+		PendingGuestException pending,
+		GuestCpuContinuation interruptedContinuation)
+	{
 		const ulong exceptionContextSize = 0x500;
 		const ulong callbackStackOffset = 0x1000;
 		const ulong callbackStackSize = 0xF000;
@@ -4970,7 +5128,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				Console.Error.WriteLine(
 					$"[LOADER][ERROR] Guest exception safe-point context write failed: " +
 					$"target=0x{threadHandle:X16} type=0x{pending.ExceptionType:X2}");
-				return;
+				return false;
 			}
 
 			if (string.Equals(
@@ -4998,7 +5156,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 					$"[LOADER][ERROR] Guest exception safe-point delivery failed: " +
 					$"target=0x{threadHandle:X16} type=0x{pending.ExceptionType:X2} " +
 					$"error={callbackError ?? "unknown"}");
+				return false;
 			}
+
+			return true;
 		}
 		finally
 		{
@@ -5015,6 +5176,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	{
 		_pendingGuestExceptions[threadHandle] = pending;
 		Volatile.Write(ref _pendingGuestExceptionCount, _pendingGuestExceptions.Count);
+		KernelPthreadCompatExports.WakeThreadForSignal(threadHandle);
+		KernelSemaphoreCompatExports.WakeThreadForSignal(threadHandle);
+		KernelEventFlagCompatExports.WakeThreadForSignal(threadHandle);
 	}
 
 	private bool TryRemovePendingGuestExceptionLocked(
@@ -5583,6 +5747,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 					default:
 						thread.State = GuestThreadRunState.Faulted;
 						thread.BlockReason = blockReason;
+						Console.Error.WriteLine(
+							$"[LOADER][ERROR] Guest thread faulted: name='{thread.Name}' handle=0x{thread.ThreadHandle:X16} " +
+							$"exitReason={exitReason} blockReason={blockReason ?? "none"} " +
+							$"lastNid={Volatile.Read(ref thread.LastImportNid) ?? "none"} " +
+							$"lastRip=0x{Volatile.Read(ref thread.LastReturnRip):X16}");
 						break;
 				}
 			}
@@ -5607,6 +5776,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				thread.ExecutorActive = false;
 			}
 		}
+
+		DispatchReadyGuestThreads();
 	}
 
 	private GuestNativeCallExitReason ExecuteBlockedGuestThreadContinuation(

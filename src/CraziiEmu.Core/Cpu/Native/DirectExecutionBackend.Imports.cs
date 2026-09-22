@@ -2692,6 +2692,25 @@ public sealed partial class DirectExecutionBackend
 	}
 
 	private readonly Dictionary<ulong, byte[]> _inlineDetourBackup = new();
+	private int _lastInlineDetourSymbolCount = -1;
+	private bool _inlineDetoursApplied;
+
+	private static bool IsPotentialInlineDetourSymbol(string symName)
+	{
+		if (string.IsNullOrWhiteSpace(symName))
+		{
+			return false;
+		}
+
+		return symName.Contains("cxa_guard", StringComparison.Ordinal) ||
+		       symName.Contains("umtx", StringComparison.Ordinal) ||
+		       symName.Contains("3GPpjQdAMTw", StringComparison.Ordinal) ||
+		       symName.Contains("9rAeANT2tyE", StringComparison.Ordinal) ||
+		       symName.Contains("S+B1-L6d+Wk", StringComparison.Ordinal) ||
+		       symName.Contains("2emaaluWzUw", StringComparison.Ordinal) ||
+		       symName.Contains("bZzZ2S54a10", StringComparison.Ordinal) ||
+		       symName.Contains("3D1uQc1oEFE", StringComparison.Ordinal);
+	}
 
 	private static bool IsInlineDetourTarget(string nid, string exportName)
 	{
@@ -2706,7 +2725,7 @@ public sealed partial class DirectExecutionBackend
 			"__cxa_guard_release" or
 			"__cxa_guard_abort" or
 			"_umtx_op" => true,
-			_ => nid is "3GPpjQdAMTw" or "S+B1-L6d+Wk" or "bZzZ2S54a10" or "3D1uQc1oEFE"
+			_ => nid is "3GPpjQdAMTw" or "9rAeANT2tyE" or "S+B1-L6d+Wk" or "2emaaluWzUw" or "bZzZ2S54a10" or "3D1uQc1oEFE"
 		};
 	}
 
@@ -2724,12 +2743,22 @@ public sealed partial class DirectExecutionBackend
 			return;
 		}
 
+		if (_inlineDetoursApplied && _lastInlineDetourSymbolCount == runtimeSymbols.Length)
+		{
+			return;
+		}
+
 		int patchedCount = 0;
 		foreach (KeyValuePair<string, ulong> kvp in runtimeSymbols)
 		{
-			ulong guestAddr = kvp.Value;
 			string symName = kvp.Key;
-			if (guestAddr == 0 || string.IsNullOrWhiteSpace(symName))
+			if (!IsPotentialInlineDetourSymbol(symName))
+			{
+				continue;
+			}
+
+			ulong guestAddr = kvp.Value;
+			if (guestAddr == 0)
 			{
 				continue;
 			}
@@ -2792,38 +2821,72 @@ public sealed partial class DirectExecutionBackend
 			}
 
 			long disp64 = (long)trampolineAddr - (long)(guestAddr + 5);
-			if (disp64 < int.MinValue || disp64 > int.MaxValue)
+			if (disp64 >= int.MinValue && disp64 <= int.MaxValue)
 			{
-				Console.Error.WriteLine($"[LOADER][WARN] Cannot apply inline detour for {export.Name}: trampoline at 0x{trampolineAddr:X16} out of ±2GB rel32 range from 0x{guestAddr:X16}");
-				continue;
-			}
+				byte[] originalBytes = new byte[5];
+				if (!virtualMemory.TryRead(guestAddr, originalBytes))
+				{
+					Console.Error.WriteLine($"[LOADER][WARN] Failed to read original instructions for inline detour: {export.Name} at 0x{guestAddr:X16}");
+					continue;
+				}
 
-			byte[] originalBytes = new byte[5];
-			if (!virtualMemory.TryRead(guestAddr, originalBytes))
-			{
-				Console.Error.WriteLine($"[LOADER][WARN] Failed to read original instructions for inline detour: {export.Name} at 0x{guestAddr:X16}");
-				continue;
-			}
+				byte[] detourBytes = new byte[5];
+				detourBytes[0] = 0xE9;
+				int disp32 = (int)disp64;
+				detourBytes[1] = (byte)(disp32 & 0xFF);
+				detourBytes[2] = (byte)((disp32 >> 8) & 0xFF);
+				detourBytes[3] = (byte)((disp32 >> 16) & 0xFF);
+				detourBytes[4] = (byte)((disp32 >> 24) & 0xFF);
 
-			byte[] detourBytes = new byte[5];
-			detourBytes[0] = 0xE9;
-			int disp32 = (int)disp64;
-			detourBytes[1] = (byte)(disp32 & 0xFF);
-			detourBytes[2] = (byte)((disp32 >> 8) & 0xFF);
-			detourBytes[3] = (byte)((disp32 >> 16) & 0xFF);
-			detourBytes[4] = (byte)((disp32 >> 24) & 0xFF);
-
-			if (virtualMemory.TryWrite(guestAddr, detourBytes))
-			{
-				_inlineDetourBackup[guestAddr] = originalBytes;
-				patchedCount++;
-				Console.Error.WriteLine($"[LOADER][INFO] Applied inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
+				if (virtualMemory.TryWrite(guestAddr, detourBytes))
+				{
+					_inlineDetourBackup[guestAddr] = originalBytes;
+					patchedCount++;
+					Console.Error.WriteLine($"[LOADER][INFO] Applied inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
+				}
+				else
+				{
+					Console.Error.WriteLine($"[LOADER][ERROR] Failed to write inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
+				}
 			}
 			else
 			{
-				Console.Error.WriteLine($"[LOADER][ERROR] Failed to write inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
+				// Out of ±2GB rel32 range: try 14-byte indirect absolute jump: jmp qword ptr [rip+0]
+				// FF 25 00 00 00 00 [8-byte trampolineAddr]
+				byte[] originalBytes14 = new byte[14];
+				if (!virtualMemory.TryRead(guestAddr, originalBytes14))
+				{
+					Console.Error.WriteLine($"[LOADER][WARN] Cannot apply inline detour for {export.Name}: trampoline at 0x{trampolineAddr:X16} out of ±2GB rel32 range from 0x{guestAddr:X16}");
+					continue;
+				}
+
+				byte[] detourBytes14 = new byte[14];
+				detourBytes14[0] = 0xFF;
+				detourBytes14[1] = 0x25;
+				detourBytes14[2] = 0x00;
+				detourBytes14[3] = 0x00;
+				detourBytes14[4] = 0x00;
+				detourBytes14[5] = 0x00;
+				fixed (byte* pDetour = detourBytes14)
+				{
+					*(ulong*)(pDetour + 6) = (ulong)trampolineAddr;
+				}
+
+				if (virtualMemory.TryWrite(guestAddr, detourBytes14))
+				{
+					_inlineDetourBackup[guestAddr] = originalBytes14;
+					patchedCount++;
+					Console.Error.WriteLine($"[LOADER][INFO] Applied 14-byte inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
+				}
+				else
+				{
+					Console.Error.WriteLine($"[LOADER][ERROR] Failed to write 14-byte inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
+				}
 			}
 		}
+
+		_inlineDetoursApplied = true;
+		_lastInlineDetourSymbolCount = runtimeSymbols.Length;
 
 		if (patchedCount > 0)
 		{

@@ -1361,10 +1361,6 @@ public static class VideoOutExports
                 Console.Error.WriteLine(
                     $"[LOADER][WARN] CompleteFlip: port not found for handle={handle}");
             }
-            if (flipArg != 0)
-            {
-                KernelSemaphoreCompatExports.SignalAllSemaphores();
-            }
             return;
         }
 
@@ -1430,11 +1426,7 @@ public static class VideoOutExports
             ArrayPool<FlipEventRegistration>.Shared.Return(vblankEvents);
         }
 
-        // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
-        if (flipArg != 0)
-        {
-            KernelSemaphoreCompatExports.SignalAllSemaphores();
-        }
+
     }
 
     private static void ReportFrameRate(bool presented)

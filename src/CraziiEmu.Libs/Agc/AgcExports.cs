@@ -9818,12 +9818,29 @@ public static partial class AgcExports
     /// <summary>
     /// ResolveVertexOffset for the common UC path: GE_INDX_OFFSET is the
     /// DrawIndexed vertexOffset / DrawAuto firstVertex. Embedded-fetch SGPR
-    /// fallback is not required when the game latches this register (GTA UI).
+    /// fallback resolves offsets when the game uses embedded-fetch shaders (KytyPS5 ResolveDrawOffsets).
     /// </summary>
+    internal static int GetBaseVertex(
+        IReadOnlyDictionary<uint, uint> ucRegisters,
+        IReadOnlyDictionary<uint, uint> shRegisters)
+    {
+        if (ucRegisters.TryGetValue(GeIndxOffset, out var indexOffset) && indexOffset != 0)
+        {
+            return unchecked((int)indexOffset);
+        }
+
+        // Embedded fetch fallback: check vertex stage user data SGPRs (GsUserDataRegister 0x8C..0xAB)
+        if (shRegisters.TryGetValue(GsUserDataRegister + NggUserDataScalarRegisterBase, out var sgprOffset) &&
+            sgprOffset != 0)
+        {
+            return unchecked((int)sgprOffset);
+        }
+
+        return unchecked((int)indexOffset);
+    }
+
     private static int GetBaseVertex(SubmittedDcbState state) =>
-        state.UcRegisters.TryGetValue(GeIndxOffset, out var indexOffset)
-            ? unchecked((int)indexOffset)
-            : 0;
+        GetBaseVertex(state.UcRegisters, state.ShRegisters);
 
     private static GuestIndexBuffer? CreateGuestIndexBuffer(
         CpuContext ctx,
@@ -10323,6 +10340,14 @@ public static partial class AgcExports
     // bit2, ZFUNC bits[6:4] (GCN compare, matches Vulkan CompareOp ordering).
     // DB_RENDER_CONTROL (context register 0x000): DEPTH_CLEAR_ENABLE bit0.
     private const uint DbDepthControl = 0x200;
+    private const uint PaSuPolyOffsetDbFmtCntl = 0x2DE;
+    private const uint PaSuPolyOffsetClamp = 0x2DF;
+    private const uint PaSuPolyOffsetFrontScale = 0x2E0;
+    private const uint PaSuPolyOffsetFrontOffset = 0x2E1;
+    private const uint PaSuPolyOffsetBackScale = 0x2E2;
+    private const uint PaSuPolyOffsetBackOffset = 0x2E3;
+    private const uint DbStencilControl = 0x10B;
+    private const uint DbStencilRefMask = 0x10C;
 
     internal static GuestDepthState DecodeDepthState(
         IReadOnlyDictionary<uint, uint> registers)
@@ -10336,7 +10361,76 @@ public static partial class AgcExports
             ? (control >> 4) & 0x7u
             : GuestDepthState.Default.CompareOp;
         var clearEnable = (renderControl & 0x1u) != 0;
-        return new GuestDepthState(testEnable, writeEnable, compareOp, clearEnable, stencilEnable);
+
+        // Polygon offset / Depth bias decoding (Referred from KytyPS5 renderDraw.cpp & pm4Handlers.cpp)
+        var cullFront = false;
+        var cullBack = false;
+        var polyOffsetFrontEnable = false;
+        var polyOffsetBackEnable = false;
+        if (registers.TryGetValue(PaSuScModeCntl, out var scMode))
+        {
+            cullFront = (scMode & 0x1u) != 0;
+            cullBack = ((scMode >> 1) & 0x1u) != 0;
+            polyOffsetFrontEnable = ((scMode >> 11) & 0x1u) != 0;
+            polyOffsetBackEnable = ((scMode >> 12) & 0x1u) != 0;
+        }
+        var useFront = polyOffsetFrontEnable && !cullFront;
+        var useBack = polyOffsetBackEnable && !cullBack;
+        var depthBiasEnable = useFront || useBack;
+
+        var negNumDbBits = -23;
+        var dbIsFloatFmt = true;
+        if (registers.TryGetValue(PaSuPolyOffsetDbFmtCntl, out var fmtCntl))
+        {
+            negNumDbBits = unchecked((sbyte)(byte)(fmtCntl & 0xFFu));
+            dbIsFloatFmt = ((fmtCntl >> 8) & 0x1u) != 0;
+        }
+
+        var clamp = registers.TryGetValue(PaSuPolyOffsetClamp, out var clampRaw)
+            ? BitConverter.UInt32BitsToSingle(clampRaw)
+            : 0f;
+        var frontScale = registers.TryGetValue(PaSuPolyOffsetFrontScale, out var fsRaw)
+            ? BitConverter.UInt32BitsToSingle(fsRaw)
+            : 0f;
+        var frontOffset = registers.TryGetValue(PaSuPolyOffsetFrontOffset, out var foRaw)
+            ? BitConverter.UInt32BitsToSingle(foRaw)
+            : 0f;
+        var backScale = registers.TryGetValue(PaSuPolyOffsetBackScale, out var bsRaw)
+            ? BitConverter.UInt32BitsToSingle(bsRaw)
+            : 0f;
+        var backOffset = registers.TryGetValue(PaSuPolyOffsetBackOffset, out var boRaw)
+            ? BitConverter.UInt32BitsToSingle(boRaw)
+            : 0f;
+
+        var guestConstantFactor = useFront ? frontOffset : backOffset;
+        var constantFactor = VulkanVideoPresenter.ConvertPolygonOffsetConstantFactor(
+            guestConstantFactor, negNumDbBits, dbIsFloatFmt, Silk.NET.Vulkan.Format.D32Sfloat);
+        var slopeFactor = (useFront ? frontScale : backScale) / 16.0f;
+
+        // Stencil state decoding
+        var stencilRef = 0u;
+        var stencilMask = 0xFFu;
+        var stencilWriteMask = 0xFFu;
+        if (registers.TryGetValue(DbStencilRefMask, out var refMask))
+        {
+            stencilRef = refMask & 0xFFu;
+            stencilMask = (refMask >> 8) & 0xFFu;
+            stencilWriteMask = (refMask >> 16) & 0xFFu;
+        }
+
+        return new GuestDepthState(
+            testEnable,
+            writeEnable,
+            compareOp,
+            clearEnable,
+            stencilEnable,
+            depthBiasEnable,
+            constantFactor,
+            slopeFactor,
+            clamp,
+            stencilMask,
+            stencilWriteMask,
+            stencilRef);
     }
 
     private static GuestDepthTarget? DecodeDepthTarget(

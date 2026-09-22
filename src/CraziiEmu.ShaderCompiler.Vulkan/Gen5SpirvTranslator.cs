@@ -579,78 +579,104 @@ public static partial class Gen5SpirvTranslator
                 }
                 EmitInitialState();
 
-                var loopHeader = _module.AllocateId();
-                var switchHeader = _module.AllocateId();
-                var switchMerge = _module.AllocateId();
-                var loopContinue = _module.AllocateId();
-                var loopMerge = _module.AllocateId();
-                var defaultLabel = _module.AllocateId();
-                var caseLabels = new uint[blocks.Count];
-                for (var index = 0; index < caseLabels.Length; index++)
-                {
-                    caseLabels[index] = _module.AllocateId();
-                }
+                var exitLabel = _module.AllocateId();
+                var useStructuredCfg = string.Equals(
+                    Environment.GetEnvironmentVariable("CRAZIIEMU_ENABLE_STRUCTURED_CFG"),
+                    "1",
+                    StringComparison.Ordinal) && !string.Equals(
+                    Environment.GetEnvironmentVariable("CRAZIIEMU_DISABLE_STRUCTURED_CFG"),
+                    "1",
+                    StringComparison.Ordinal);
 
-                _module.AddStatement(SpirvOp.Branch, loopHeader);
-                _module.AddLabel(loopHeader);
-                _module.AddStatement(SpirvOp.LoopMerge, loopMerge, loopContinue, 0);
-                _module.AddStatement(SpirvOp.Branch, switchHeader);
-
-                _module.AddLabel(switchHeader);
-                var selector = Load(_uintType, _programCounter);
-                _module.AddStatement(SpirvOp.SelectionMerge, switchMerge, 0);
-                var switchOperands = new uint[2 + (blocks.Count * 2)];
-                switchOperands[0] = selector;
-                switchOperands[1] = defaultLabel;
-                for (var index = 0; index < blocks.Count; index++)
+                var structuredSuccess = false;
+                if (useStructuredCfg && Gen5ShaderCfg.TryBuildAndStructurize(_state.Program.Instructions, out var cfgGraph))
                 {
-                    switchOperands[2 + (index * 2)] = (uint)index;
-                    switchOperands[3 + (index * 2)] = caseLabels[index];
-                }
-
-                _module.AddStatement(SpirvOp.Switch, switchOperands);
-                for (var index = 0; index < blocks.Count; index++)
-                {
-                    _module.AddLabel(caseLabels[index]);
-                    if (!TryEmitBlock(blocks, index, out error))
+                    structuredSuccess = TryEmitStructuredControlFlow(cfgGraph, exitLabel, out error);
+                    if (!structuredSuccess)
                     {
-                        error = $"block=0x{blocks[index].StartPc:X}: {error}";
-                        return false;
+                        Console.Error.WriteLine(
+                            $"[CFG][FALLBACK] Shader 0x{_state.Program.Address:X16} structured emission failed: {error}; falling back to dispatcher loop.");
+                    }
+                }
+
+                if (!structuredSuccess)
+                {
+                    var loopHeader = _module.AllocateId();
+                    var switchHeader = _module.AllocateId();
+                    var switchMerge = _module.AllocateId();
+                    var loopContinue = _module.AllocateId();
+                    var loopMerge = _module.AllocateId();
+                    var defaultLabel = _module.AllocateId();
+                    var caseLabels = new uint[blocks.Count];
+                    for (var index = 0; index < caseLabels.Length; index++)
+                    {
+                        caseLabels[index] = _module.AllocateId();
                     }
 
+                    _module.AddStatement(SpirvOp.Branch, loopHeader);
+                    _module.AddLabel(loopHeader);
+                    _module.AddStatement(SpirvOp.LoopMerge, loopMerge, loopContinue, 0);
+                    _module.AddStatement(SpirvOp.Branch, switchHeader);
+
+                    _module.AddLabel(switchHeader);
+                    var selector = Load(_uintType, _programCounter);
+                    _module.AddStatement(SpirvOp.SelectionMerge, switchMerge, 0);
+                    var switchOperands = new uint[2 + (blocks.Count * 2)];
+                    switchOperands[0] = selector;
+                    switchOperands[1] = defaultLabel;
+                    for (var index = 0; index < blocks.Count; index++)
+                    {
+                        switchOperands[2 + (index * 2)] = (uint)index;
+                        switchOperands[3 + (index * 2)] = caseLabels[index];
+                    }
+
+                    _module.AddStatement(SpirvOp.Switch, switchOperands);
+                    for (var index = 0; index < blocks.Count; index++)
+                    {
+                        _module.AddLabel(caseLabels[index]);
+                        if (!TryEmitBlock(blocks, index, out error))
+                        {
+                            error = $"block=0x{blocks[index].StartPc:X}: {error}";
+                            return false;
+                        }
+
+                        _module.AddStatement(SpirvOp.Branch, switchMerge);
+                    }
+
+                    _module.AddLabel(defaultLabel);
+                    Store(_programActive, _module.ConstantBool(false));
                     _module.AddStatement(SpirvOp.Branch, switchMerge);
-                }
 
-                _module.AddLabel(defaultLabel);
-                Store(_programActive, _module.ConstantBool(false));
-                _module.AddStatement(SpirvOp.Branch, switchMerge);
+                    _module.AddLabel(switchMerge);
+                    _module.AddStatement(SpirvOp.Branch, loopContinue);
+                    _module.AddLabel(loopContinue);
+                    var active = Load(_boolType, _programActive);
+                    if (_maxDispatcherSteps > 0)
+                    {
+                        var steps = IAdd(Load(_uintType, _iterationGuard), UInt(1));
+                        Store(_iterationGuard, steps);
+                        var withinLimit = _module.AddInstruction(
+                            SpirvOp.ULessThan,
+                            _boolType,
+                            steps,
+                            UInt((uint)_maxDispatcherSteps));
+                        active = _module.AddInstruction(
+                            SpirvOp.LogicalAnd,
+                            _boolType,
+                            active,
+                            withinLimit);
+                    }
 
-                _module.AddLabel(switchMerge);
-                _module.AddStatement(SpirvOp.Branch, loopContinue);
-                _module.AddLabel(loopContinue);
-                var active = Load(_boolType, _programActive);
-                if (_maxDispatcherSteps > 0)
-                {
-                    var steps = IAdd(Load(_uintType, _iterationGuard), UInt(1));
-                    Store(_iterationGuard, steps);
-                    var withinLimit = _module.AddInstruction(
-                        SpirvOp.ULessThan,
-                        _boolType,
-                        steps,
-                        UInt((uint)_maxDispatcherSteps));
-                    active = _module.AddInstruction(
-                        SpirvOp.LogicalAnd,
-                        _boolType,
+                    _module.AddStatement(
+                        SpirvOp.BranchConditional,
                         active,
-                        withinLimit);
+                        loopHeader,
+                        loopMerge);
+                    _module.AddLabel(loopMerge);
+                    _module.AddStatement(SpirvOp.Branch, exitLabel);
                 }
 
-                _module.AddStatement(
-                    SpirvOp.BranchConditional,
-                    active,
-                    loopHeader,
-                    loopMerge);
-                _module.AddLabel(loopMerge);
+                _module.AddLabel(exitLabel);
                 if (_stage == Gen5SpirvStage.Pixel &&
                     Environment.GetEnvironmentVariable(
                         "SHARPEMU_TRACE_TITLE_SHADER_STATE") == "1" &&
@@ -1716,6 +1742,121 @@ public static partial class Gen5SpirvTranslator
                 workGroupId,
                 component);
             StoreS(register.Value, value);
+        }
+
+        private bool TryEmitStructuredControlFlow(
+            Gen5CfgGraph cfgGraph,
+            uint exitLabel,
+            out string error)
+        {
+            error = string.Empty;
+            var blockCount = cfgGraph.Blocks.Count;
+            var blockLabels = new uint[blockCount];
+            for (var i = 0; i < blockCount; i++)
+            {
+                blockLabels[i] = _module.AllocateId();
+            }
+
+            // Function entry branches directly to block 0
+            _module.AddStatement(SpirvOp.Branch, blockLabels[0]);
+
+            for (var i = 0; i < blockCount; i++)
+            {
+                var cfgBlock = cfgGraph.Blocks[i];
+                _module.AddLabel(blockLabels[i]);
+
+                for (var index = cfgBlock.StartIndex; index < cfgBlock.EndIndex; index++)
+                {
+                    var instruction = _state.Program.Instructions[index];
+                    if (IsBranch(instruction.Opcode) || instruction.Opcode == "SEndpgm")
+                    {
+                        continue;
+                    }
+
+                    if (!TryEmitInstruction(instruction, out error))
+                    {
+                        error = $"pc=0x{instruction.Pc:X} {instruction.Opcode}: {error}";
+                        return false;
+                    }
+
+                    CapturePixelVgprs(instruction);
+                    CapturePixelVgprPoints(instruction);
+                    MarkPixelPath(instruction);
+                    CapturePixelExec(instruction);
+                }
+
+                var terminator = _state.Program.Instructions[cfgBlock.EndIndex - 1];
+                uint condition = 0;
+                if (cfgBlock.Terminator.Kind == Gen5CfgTerminatorKind.ConditionalBranch)
+                {
+                    if (!TryGetBranchCondition(terminator.Opcode, out condition))
+                    {
+                        error = $"pc=0x{terminator.Pc:X}: unknown branch condition for {terminator.Opcode}";
+                        return false;
+                    }
+                }
+
+                // If loop header, emit OpLoopMerge immediately before the branch instruction
+                if (cfgBlock.Terminator.IsLoopHeader)
+                {
+                    var loopMerge = cfgBlock.Terminator.MergeBlock >= 0 && cfgBlock.Terminator.MergeBlock < blockCount
+                        ? blockLabels[cfgBlock.Terminator.MergeBlock]
+                        : exitLabel;
+                    var loopContinue = cfgBlock.Terminator.ContinueBlock >= 0 && cfgBlock.Terminator.ContinueBlock < blockCount
+                        ? blockLabels[cfgBlock.Terminator.ContinueBlock]
+                        : blockLabels[i];
+
+                    _module.AddStatement(SpirvOp.LoopMerge, loopMerge, loopContinue, 0);
+                }
+
+                switch (cfgBlock.Terminator.Kind)
+                {
+                    case Gen5CfgTerminatorKind.ConditionalBranch:
+                    {
+                        // In SPIR-V, a block with OpLoopMerge cannot also have OpSelectionMerge
+                        if (!cfgBlock.Terminator.IsLoopHeader)
+                        {
+                            var selectionMerge = cfgBlock.Terminator.MergeBlock >= 0 && cfgBlock.Terminator.MergeBlock < blockCount
+                                ? blockLabels[cfgBlock.Terminator.MergeBlock]
+                                : exitLabel;
+                            _module.AddStatement(SpirvOp.SelectionMerge, selectionMerge, 0);
+                        }
+
+                        var trueLabel = cfgBlock.Terminator.TrueBlock >= 0 && cfgBlock.Terminator.TrueBlock < blockCount
+                            ? blockLabels[cfgBlock.Terminator.TrueBlock]
+                            : exitLabel;
+                        var falseLabel = cfgBlock.Terminator.FalseBlock >= 0 && cfgBlock.Terminator.FalseBlock < blockCount
+                            ? blockLabels[cfgBlock.Terminator.FalseBlock]
+                            : exitLabel;
+
+                        _module.AddStatement(SpirvOp.BranchConditional, condition, trueLabel, falseLabel);
+                        break;
+                    }
+
+                    case Gen5CfgTerminatorKind.Branch:
+                    {
+                        var targetLabel = cfgBlock.Terminator.TrueBlock >= 0 && cfgBlock.Terminator.TrueBlock < blockCount
+                            ? blockLabels[cfgBlock.Terminator.TrueBlock]
+                            : exitLabel;
+                        _module.AddStatement(SpirvOp.Branch, targetLabel);
+                        break;
+                    }
+
+                    case Gen5CfgTerminatorKind.Return:
+                    {
+                        _module.AddStatement(SpirvOp.Branch, exitLabel);
+                        break;
+                    }
+
+                    default:
+                    {
+                        error = $"block=0x{cfgBlock.StartPc:X}: unsupported terminator kind {cfgBlock.Terminator.Kind}";
+                        return false;
+                    }
+                }
+            }
+
+            return true;
         }
 
         private bool TryEmitBlock(

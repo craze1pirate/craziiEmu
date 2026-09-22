@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Buffers.Binary;
 using System.Net;
@@ -365,7 +366,16 @@ internal static class KernelSocketCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        if (optname == 0x1200 && optlen >= 4) // SO_NBIO
+        if ((level == 6 || level == 0xFFFF) && optname == 1 && optlen >= 4) // TCP_NODELAY
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                if (state.NativeSocket is not null) state.NativeSocket.NoDelay = valInt != 0;
+            }
+        }
+        else if (optname == 0x1200 && optlen >= 4) // SO_NBIO
         {
             Span<byte> val = stackalloc byte[4];
             if (ctx.Memory.TryRead(optvalAddress, val))
@@ -381,6 +391,55 @@ internal static class KernelSocketCompatExports
             {
                 var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
                 state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
+            }
+        }
+        else if (optname == 0x0020 && optlen >= 4) // SO_BROADCAST
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                if (state.NativeSocket is not null) state.NativeSocket.EnableBroadcast = valInt != 0;
+            }
+        }
+        else if (optname == 0x0200 && optlen >= 4) // SO_REUSEPORT
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
+            }
+        }
+        else if (optname == 0x0800) // SO_NOSIGPIPE
+        {
+            // BSD signal suppression, no-op
+        }
+        else if (optname == 0x0008 && optlen >= 4) // SO_KEEPALIVE
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, valInt != 0);
+            }
+        }
+        else if (optname == 0x1001 && optlen >= 4) // SO_RCVBUF
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                if (state.NativeSocket is not null) state.NativeSocket.ReceiveBufferSize = valInt;
+            }
+        }
+        else if (optname == 0x1002 && optlen >= 4) // SO_SNDBUF
+        {
+            Span<byte> val = stackalloc byte[4];
+            if (ctx.Memory.TryRead(optvalAddress, val))
+            {
+                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
+                if (state.NativeSocket is not null) state.NativeSocket.SendBufferSize = valInt;
             }
         }
 
@@ -431,7 +490,45 @@ internal static class KernelSocketCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        if (optname == 0x1200 && optlen >= 4) // SO_NBIO
+        if ((level == 6 || level == 0xFFFF) && optname == 1 && optlen >= 4) // TCP_NODELAY
+        {
+            Span<byte> val = stackalloc byte[4];
+            BinaryPrimitives.WriteInt32LittleEndian(val, state.NativeSocket?.NoDelay == true ? 1 : 0);
+            if (!ctx.Memory.TryWrite(optvalAddress, val))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
+                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
+            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
+                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+        }
+        else if (optname == 0x1008 && optlen >= 4) // SO_TYPE
+        {
+            Span<byte> val = stackalloc byte[4];
+            BinaryPrimitives.WriteInt32LittleEndian(val, state.Type != 0 ? state.Type : 1);
+            if (!ctx.Memory.TryWrite(optvalAddress, val))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
+                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
+            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
+            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
+            {
+                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
+                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+        }
+        else if (optname == 0x1200 && optlen >= 4) // SO_NBIO
         {
             Span<byte> val = stackalloc byte[4];
             BinaryPrimitives.WriteInt32LittleEndian(val, state.IsNonBlocking() ? 1 : 0);

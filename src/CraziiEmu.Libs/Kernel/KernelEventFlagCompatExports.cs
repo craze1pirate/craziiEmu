@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -38,6 +39,21 @@ public static class KernelEventFlagCompatExports
         public ulong Bits { get; set; }
         public int WaitingThreads { get; set; }
         public object Gate { get; } = new();
+    }
+
+    public static void WakeThreadForSignal(ulong threadId)
+    {
+        _ = threadId;
+        foreach (var flag in _eventFlags.Values)
+        {
+            lock (flag.Gate)
+            {
+                if (flag.WaitingThreads > 0)
+                {
+                    Monitor.PulseAll(flag.Gate);
+                }
+            }
+        }
     }
 
     [SysAbiExport(
@@ -390,6 +406,19 @@ public static class KernelEventFlagCompatExports
                         }
 
                         Monitor.Wait(state.Gate, (int)Math.Min(remaining, HostWaitPumpMilliseconds));
+
+                        if (currentGuestThread != 0 && GuestThreadExecution.HasPendingGuestException(currentGuestThread))
+                        {
+                            Monitor.Exit(state.Gate);
+                            try
+                            {
+                                GuestThreadExecution.TryDeliverPendingGuestException(ctx, currentGuestThread);
+                            }
+                            finally
+                            {
+                                Monitor.Enter(state.Gate);
+                            }
+                        }
                     }
                 }
                 finally

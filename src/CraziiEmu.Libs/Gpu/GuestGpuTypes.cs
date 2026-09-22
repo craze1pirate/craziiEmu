@@ -129,7 +129,14 @@ internal readonly record struct GuestDepthState(
     bool WriteEnable,
     uint CompareOp,
     bool ClearEnable = false,
-    bool StencilTestEnable = false)
+    bool StencilTestEnable = false,
+    bool DepthBiasEnable = false,
+    float DepthBiasConstantFactor = 0f,
+    float DepthBiasSlopeFactor = 0f,
+    float DepthBiasClamp = 0f,
+    uint StencilCompareMask = 0xFF,
+    uint StencilWriteMask = 0xFF,
+    uint StencilReference = 0)
 {
     public static GuestDepthState Default { get; } = new(false, false, 7, false, false);
 }

@@ -90,6 +90,7 @@ public sealed class CraziiEmuRuntime : ICraziiEmuRuntime
         moduleManager.Freeze();
 
         var virtualMemory = new PhysicalVirtualMemory();
+        virtualMemory.PreReserveGuestAddressRange();
 
         var fileSystem = new PhysicalFileSystem();
 

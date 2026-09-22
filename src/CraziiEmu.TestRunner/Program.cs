@@ -17,6 +17,7 @@ namespace CraziiEmu.TestRunner
                     DeadCellsAndFloat16Tests.RunAllTests();
                     return;
                 }
+
             }
 
             SyncOnAddressTests.RunAllTests();
@@ -40,6 +41,16 @@ namespace CraziiEmu.TestRunner
             UnifiedSocketTests.RunAllTests();
             UnityScriptingMemTests.RunAllTests();
             DeadCellsAndFloat16Tests.RunAllTests();
+            ShaderCfgTests.RunAllTests();
+            TextureCacheOverlapTests.RunAllTests();
+            AsyncComputeTimelineTests.RunAllTests();
+            GraphicsDynamicStateTests.RunAllTests();
+            VirtualMemoryPreReservationTests.RunAllTests();
+            UnityEngineCompatTests.RunAllTests();
+            GameCompatibilityTests.RunAllTests();
+            VulkanPipelineComplianceTests.RunAllTests();
+            KernelSemaphoreLifecycleTests.RunAllTests();
+            PadAndRudpTests.RunAllTests();
         }
     }
 }

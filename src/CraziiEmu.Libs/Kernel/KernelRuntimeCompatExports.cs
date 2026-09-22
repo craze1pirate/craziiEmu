@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.Fiber;
@@ -1506,18 +1507,9 @@ public static class KernelRuntimeCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var utc = DateTimeOffset.FromUnixTimeSeconds(utcSeconds);
-        var local = TimeZoneInfo.ConvertTime(utc, TimeZoneInfo.Local);
-        var offset = local.Offset;
-        var localSeconds = utcSeconds + (long)offset.TotalSeconds;
-        var dstSeconds = TimeZoneInfo.Local.IsDaylightSavingTime(local.DateTime)
-            ? (uint)Math.Max(0, TimeZoneInfo.Local.GetAdjustmentRules()
-                .Where(rule => rule.DateStart <= local.Date && rule.DateEnd >= local.Date)
-                .Select(rule => rule.DaylightDelta.TotalSeconds)
-                .DefaultIfEmpty(0)
-                .Max())
-            : 0u;
-        var westSeconds = unchecked((uint)(int)offset.TotalSeconds);
+        var (minutesWest, dstSeconds, _) = GetCurrentTimezoneInfo();
+        var west = (long)minutesWest * 60;
+        var localSeconds = utcSeconds - west + dstSeconds;
 
         if (!ctx.TryWriteUInt64(localTimeAddress, unchecked((ulong)localSeconds)))
         {
@@ -1528,15 +1520,15 @@ public static class KernelRuntimeCompatExports
         {
             Span<byte> timesec = stackalloc byte[OrbisTimesecSize];
             BinaryPrimitives.WriteInt64LittleEndian(timesec, utcSeconds);
-            BinaryPrimitives.WriteUInt32LittleEndian(timesec.Slice(sizeof(long), sizeof(uint)), westSeconds);
-            BinaryPrimitives.WriteUInt32LittleEndian(timesec.Slice(sizeof(long) + sizeof(uint), sizeof(uint)), dstSeconds);
+            BinaryPrimitives.WriteUInt32LittleEndian(timesec.Slice(sizeof(long), sizeof(uint)), unchecked((uint)(-west)));
+            BinaryPrimitives.WriteUInt32LittleEndian(timesec.Slice(sizeof(long) + sizeof(uint), sizeof(uint)), unchecked((uint)dstSeconds));
             if (!ctx.Memory.TryWrite(timesecAddress, timesec))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
         }
 
-        if (dstSecondsAddress != 0 && !ctx.TryWriteUInt64(dstSecondsAddress, dstSeconds))
+        if (dstSecondsAddress != 0 && !ctx.TryWriteUInt64(dstSecondsAddress, unchecked((ulong)(uint)dstSeconds)))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -1562,20 +1554,11 @@ public static class KernelRuntimeCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        var localDate = DateTimeOffset.FromUnixTimeSeconds(localSeconds).DateTime;
-        var offset = TimeZoneInfo.Local.GetUtcOffset(localDate);
-        var utcSeconds = localSeconds - (long)offset.TotalSeconds;
-        var dstSeconds = TimeZoneInfo.Local.IsDaylightSavingTime(localDate)
-            ? (int)Math.Max(0, TimeZoneInfo.Local.GetAdjustmentRules()
-                .Where(rule => rule.DateStart <= localDate.Date && rule.DateEnd >= localDate.Date)
-                .Select(rule => rule.DaylightDelta.TotalSeconds)
-                .DefaultIfEmpty(0)
-                .Max())
-            : 0;
-        var minutesWest = unchecked((int)-offset.TotalMinutes);
+        var (minutesWest, dstSeconds, dstTime) = GetCurrentTimezoneInfo();
+        var utcSeconds = localSeconds + (long)minutesWest * 60 - dstSeconds;
 
         if (!TryWriteInt32(ctx, timezoneAddress, minutesWest) ||
-            !TryWriteInt32(ctx, timezoneAddress + sizeof(int), dstSeconds / 60))
+            !TryWriteInt32(ctx, timezoneAddress + sizeof(int), dstTime))
         {
             return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
@@ -2355,6 +2338,27 @@ public static class KernelRuntimeCompatExports
         public ushort wMilliseconds;
     }
 
+    private static (int MinutesWest, int DstSeconds, int DstTime) GetCurrentTimezoneInfo()
+    {
+        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+        {
+            var result = GetTimeZoneInformation(out var tzi);
+            var minutesWest = tzi.Bias;
+            var dstSeconds = (result == 2) ? -tzi.DaylightBias * 60 : 0; // 2 == TIME_ZONE_ID_DAYLIGHT
+            var dstTime = (result == 0) ? 0 : 4; // 0 == TIME_ZONE_ID_UNKNOWN ? DST_NONE(0) : DST_MET(4)
+            return (minutesWest, dstSeconds, dstTime);
+        }
+        else
+        {
+            var tzInfo = TimeZoneInfo.Local;
+            var minutesWest = (int)(-tzInfo.BaseUtcOffset.TotalMinutes);
+            var isDst = tzInfo.IsDaylightSavingTime(DateTime.Now);
+            var dstSeconds = isDst ? 3600 : 0;
+            var dstTime = isDst ? 4 : 0;
+            return (minutesWest, dstSeconds, dstTime);
+        }
+    }
+
     [SysAbiExport(
         Nid = "kOcnerypnQA",
         ExportName = "sceKernelGettimezone",
@@ -2363,25 +2367,18 @@ public static class KernelRuntimeCompatExports
     public static int KernelGettimezone(CpuContext ctx)
     {
         var tzAddress = ctx[CpuRegister.Rdi];
-        if (tzAddress != 0)
+        if (tzAddress == 0)
         {
-            if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
-            {
-                var result = GetTimeZoneInformation(out var tzi);
-                var minutesWest = tzi.Bias;
-                var isDst = (result == 0 || result == 1) ? 0 : 1; // TIME_ZONE_ID_UNKNOWN=0, TIME_ZONE_ID_STANDARD=1, TIME_ZONE_ID_DAYLIGHT=2
-                _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
-                _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
-            }
-            else
-            {
-                var tzInfo = TimeZoneInfo.Local;
-                var minutesWest = (int)(-tzInfo.BaseUtcOffset.TotalMinutes);
-                var isDst = tzInfo.IsDaylightSavingTime(DateTime.Now) ? 1 : 0;
-                _ = ctx.Memory.TryWrite(tzAddress, BitConverter.GetBytes(minutesWest));
-                _ = ctx.Memory.TryWrite(tzAddress + 4, BitConverter.GetBytes(isDst));
-            }
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
+
+        var (minutesWest, _, dstTime) = GetCurrentTimezoneInfo();
+        if (!TryWriteInt32(ctx, tzAddress, minutesWest) ||
+            !TryWriteInt32(ctx, tzAddress + 4, dstTime))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }

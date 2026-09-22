@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -156,7 +157,19 @@ public static class NetExports
 
         var valInt = BinaryPrimitives.ReadInt32LittleEndian(value);
 
-        if (level == 0xFFFF) // SOL_SOCKET
+        if (level == 6) // IPPROTO_TCP
+        {
+            switch (option)
+            {
+                case 1: // TCP_NODELAY
+                    if (socket.NativeSocket is not null)
+                    {
+                        socket.NativeSocket.NoDelay = valInt != 0;
+                    }
+                    return ctx.SetReturn(0);
+            }
+        }
+        else if (level == 0xFFFF) // SOL_SOCKET
         {
             switch (option)
             {
@@ -174,12 +187,38 @@ public static class NetExports
                     socket.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, valInt != 0);
                     return ctx.SetReturn(0);
 
+                case 0x0020: // SO_BROADCAST
+                    if (socket.NativeSocket is not null)
+                    {
+                        socket.NativeSocket.EnableBroadcast = valInt != 0;
+                    }
+                    return ctx.SetReturn(0);
+
+                case 0x0200: // SO_REUSEPORT
+                    socket.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
+                    return ctx.SetReturn(0);
+
+                case 0x0800: // SO_NOSIGPIPE (BSD signal suppression)
+                    return ctx.SetReturn(0);
+
+                case 0x0100: // SO_OOBINLINE
+                    socket.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.OutOfBandInline, valInt != 0);
+                    return ctx.SetReturn(0);
+
                 case 0x1001: // SO_RCVBUF
                     if (socket.NativeSocket is not null) socket.NativeSocket.ReceiveBufferSize = valInt;
                     return ctx.SetReturn(0);
 
                 case 0x1002: // SO_SNDBUF
                     if (socket.NativeSocket is not null) socket.NativeSocket.SendBufferSize = valInt;
+                    return ctx.SetReturn(0);
+
+                case 0x1005: // SO_RCVTIMEO
+                    if (socket.NativeSocket is not null) socket.NativeSocket.ReceiveTimeout = valInt;
+                    return ctx.SetReturn(0);
+
+                case 0x1006: // SO_SNDTIMEO
+                    if (socket.NativeSocket is not null) socket.NativeSocket.SendTimeout = valInt;
                     return ctx.SetReturn(0);
             }
         }
@@ -393,7 +432,31 @@ public static class NetExports
             return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
         }
 
-        if (level == 0xFFFF) // SOL_SOCKET
+        if (level == 6) // IPPROTO_TCP
+        {
+            int valInt = 0;
+            switch (option)
+            {
+                case 1: // TCP_NODELAY
+                    valInt = socket.NativeSocket?.NoDelay == true ? 1 : 0;
+                    break;
+                default:
+                    return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+            }
+
+            Span<byte> valBuf = stackalloc byte[sizeof(int)];
+            BinaryPrimitives.WriteInt32LittleEndian(valBuf, valInt);
+            if (!ctx.Memory.TryWrite(valueAddress, valBuf))
+            {
+                return SetNetError(ctx, NetErrorInvalidArgument, NetErrnoInvalidArgument);
+            }
+
+            Span<byte> outOptlen = stackalloc byte[sizeof(int)];
+            BinaryPrimitives.WriteInt32LittleEndian(outOptlen, sizeof(int));
+            _ = ctx.Memory.TryWrite(optlenAddress, outOptlen);
+            return ctx.SetReturn(0);
+        }
+        else if (level == 0xFFFF) // SOL_SOCKET
         {
             int valInt = 0;
             switch (option)
@@ -412,6 +475,24 @@ public static class NetExports
                     valInt = socket.NativeSocket is not null
                         ? (int)socket.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive)!
                         : 0;
+                    break;
+
+                case 0x0020: // SO_BROADCAST
+                    valInt = socket.NativeSocket?.EnableBroadcast == true ? 1 : 0;
+                    break;
+
+                case 0x0200: // SO_REUSEPORT
+                    valInt = socket.NativeSocket is not null
+                        ? (int)socket.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress)!
+                        : 0;
+                    break;
+
+                case 0x0800: // SO_NOSIGPIPE
+                    valInt = 0;
+                    break;
+
+                case 0x1008: // SO_TYPE
+                    valInt = socket.Type != 0 ? socket.Type : 1;
                     break;
 
                 case 0x1001: // SO_RCVBUF

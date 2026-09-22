@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
@@ -11,6 +12,7 @@ namespace CraziiEmu.Libs.Pad;
 
 public static class PadExports
 {
+    private const int OrbisPadErrorInvalidArg = unchecked((int)0x80920001);
     private const int OrbisPadErrorInvalidHandle = unchecked((int)0x80920003);
     private const int OrbisPadErrorNotInitialized = unchecked((int)0x80920005);
     private const int OrbisPadErrorDeviceNotConnected = unchecked((int)0x80920007);
@@ -24,6 +26,7 @@ public static class PadExports
     private const int PrimaryPadHandle = 1;
     private const int ControllerInformationSize = 0x1C;
     private const int PadDataSize = 0x78;
+    private const int PadDeviceClassDataSize = 24;
 
     // Real firmware hands out small non-negative handles; 0 is valid. Some titles
     // (Monster Truck Championship) read pad state with handle 0, and rejecting it
@@ -116,7 +119,7 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorDeviceNoHandle);
         }
 
-        var typeAccepted = extended ? type is 0 or 1 or 2 : type == StandardPortType;
+        var typeAccepted = type is 0 or 1 or 2;
         if (!IsPrimaryUser(userId) || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
@@ -178,6 +181,32 @@ public static class PadExports
     }
 
     [SysAbiExport(
+        Nid = "r44mAxdSG+U",
+        ExportName = "scePadSetAngularVelocityDeadbandState",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadSetAngularVelocityDeadbandState(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        return IsPrimaryPadHandle(handle)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn(OrbisPadErrorInvalidHandle);
+    }
+
+    [SysAbiExport(
+        Nid = "rIZnR6eSpvk",
+        ExportName = "scePadResetOrientation",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadResetOrientation(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        return IsPrimaryPadHandle(handle)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn(OrbisPadErrorInvalidHandle);
+    }
+
+    [SysAbiExport(
         Nid = "gjP9-KQzoUk",
         ExportName = "scePadGetControllerInformation",
         Target = Generation.Gen4 | Generation.Gen5,
@@ -208,6 +237,56 @@ public static class PadExports
         BinaryPrimitives.WriteInt32LittleEndian(information[0x10..], 0);
 
         return ctx.Memory.TryWrite(informationAddress, information)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
+
+    [SysAbiExport(
+        Nid = "IHPqcbc0zCA",
+        ExportName = "scePadDeviceClassParseData",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadDeviceClassParseData(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var dataAddress = ctx[CpuRegister.Rsi];
+        var classDataAddress = ctx[CpuRegister.Rdx];
+
+        if (!IsPrimaryPadHandle(handle))
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidHandle);
+        }
+
+        if (dataAddress == 0 || classDataAddress == 0)
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidArg);
+        }
+
+        Span<byte> padData = stackalloc byte[PadDataSize];
+        if (!ctx.Memory.TryRead(dataAddress, padData))
+        {
+            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+        }
+
+        Span<byte> classData = stackalloc byte[PadDeviceClassDataSize];
+        classData.Clear();
+
+        var connected = padData[0x4C] != 0;
+        var uniqueDataLen = padData[0x6B];
+
+        var deviceClass = 0;
+        if (uniqueDataLen > 0)
+        {
+            var dataLen = (byte)Math.Min((int)uniqueDataLen, 12);
+            deviceClass = -1;
+            classData[0x08] = dataLen;
+            padData.Slice(0x6C, dataLen).CopyTo(classData.Slice(0x0C, dataLen));
+        }
+
+        BinaryPrimitives.WriteInt32LittleEndian(classData[0x00..], deviceClass);
+        classData[0x04] = connected ? (byte)1 : (byte)0;
+
+        return ctx.Memory.TryWrite(classDataAddress, classData)
             ? ctx.SetReturn(0)
             : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
@@ -374,6 +453,19 @@ public static class PadExports
             (triggerMask & 0x01) != 0 ? DecodeTriggerEffect(parameter[8..64]) : null,
             (triggerMask & 0x02) != 0 ? DecodeTriggerEffect(parameter[64..120]) : null);
         return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_OK);
+    }
+
+    [SysAbiExport(
+        Nid = "Yq0zOH7YNOM",
+        ExportName = "scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        return IsPrimaryPadHandle(handle)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn(OrbisPadErrorInvalidHandle);
     }
 
     // Size taken from the caller's own frame rather than assumed: the guest
@@ -644,6 +736,25 @@ public static class PadExports
         }
 
         HostPlatform.Current.Input.ResetLightbar();
+        return ctx.SetReturn(0);
+    }
+
+    [SysAbiExport(
+        Nid = "n3kSX62fgNo",
+        ExportName = "scePadUnknownN3kSX62fgNo",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadUnknownN3kSX62fgNo(CpuContext ctx)
+    {
+        var addr = ctx[CpuRegister.Rdi];
+        var size = ctx[CpuRegister.Rcx];
+        if (addr >= 0x10000 && size > 0 && size <= 0x1000)
+        {
+            Span<byte> zero = stackalloc byte[(int)size];
+            zero.Clear();
+            ctx.Memory.TryWrite(addr, zero);
+        }
+
         return ctx.SetReturn(0);
     }
 
