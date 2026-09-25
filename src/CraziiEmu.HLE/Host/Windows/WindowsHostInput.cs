@@ -34,10 +34,19 @@ internal sealed partial class WindowsHostInput : IHostInput
 
         if (count < destination.Length)
         {
-            Span<HostGamepadState> windowState = stackalloc HostGamepadState[1];
-            if (WindowInputBridge.Source?.Invoke(windowState) > 0)
+            var windowSource = HostWindowInputSource.Current;
+            if (windowSource != null)
             {
-                destination[count++] = windowState[0];
+                var added = windowSource.GetGamepadStates(destination[count..]);
+                count += added;
+            }
+            else
+            {
+                Span<HostGamepadState> windowState = stackalloc HostGamepadState[1];
+                if (WindowInputBridge.Source?.Invoke(windowState) > 0)
+                {
+                    destination[count++] = windowState[0];
+                }
             }
         }
 
@@ -51,31 +60,53 @@ internal sealed partial class WindowsHostInput : IHostInput
             return "DualSense";
         }
 
-        return WindowsXInputReader.TryGetState(out _) ? "Xbox controller" : null;
+        if (WindowsXInputReader.TryGetState(out _))
+        {
+            return "Xbox controller";
+        }
+
+        return HostWindowInputSource.Current?.DescribeConnectedGamepad();
     }
 
     public void SetRumble(byte largeMotor, byte smallMotor)
     {
         WindowsDualSenseReader.SetRumble(largeMotor, smallMotor);
         WindowsXInputReader.SetRumble(largeMotor, smallMotor);
+        HostWindowInputSource.Current?.SetRumble(largeMotor, smallMotor);
     }
 
-    public void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger) =>
+    public void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger)
+    {
         WindowsXInputReader.SetTriggerRumble(leftTrigger, rightTrigger);
+        HostWindowInputSource.Current?.SetTriggerRumble(leftTrigger, rightTrigger);
+    }
 
     public void SetAdaptiveTriggerEffect(
         HostAdaptiveTriggerEffect? leftTrigger,
         HostAdaptiveTriggerEffect? rightTrigger)
     {
+        HostWindowInputSource.Current?.SetAdaptiveTriggerEffect(leftTrigger, rightTrigger);
     }
 
-    public void SetLightbar(byte red, byte green, byte blue) =>
+    public void SetLightbar(byte red, byte green, byte blue)
+    {
         WindowsDualSenseReader.SetLightbar(red, green, blue);
+        HostWindowInputSource.Current?.SetLightbar(red, green, blue);
+    }
 
-    public void ResetLightbar() => WindowsDualSenseReader.ResetLightbar();
+    public void ResetLightbar()
+    {
+        WindowsDualSenseReader.ResetLightbar();
+        HostWindowInputSource.Current?.ResetLightbar();
+    }
 
     public bool IsHostWindowFocused()
     {
+        if (HostWindowInputSource.Current?.HasKeyboardFocus ?? false)
+        {
+            return true;
+        }
+
         var foregroundWindow = GetForegroundWindow();
         if (foregroundWindow == 0)
         {
@@ -98,8 +129,36 @@ internal sealed partial class WindowsHostInput : IHostInput
         return hostTopLevelWindow != 0 && foregroundWindow == hostTopLevelWindow;
     }
 
-    public bool IsKeyDown(int virtualKey) =>
-        (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+    public bool IsKeyDown(int virtualKey)
+    {
+        if (HostWindowInputSource.Current?.IsKeyDown(virtualKey) ?? false)
+        {
+            return true;
+        }
+
+        if (virtualKey == 0x100) // InputMap.MouseLeft
+        {
+            return (GetAsyncKeyState(0x01) & 0x8000) != 0;
+        }
+        if (virtualKey == 0x101) // InputMap.MouseRight
+        {
+            return (GetAsyncKeyState(0x02) & 0x8000) != 0;
+        }
+        if (virtualKey == 0x102) // InputMap.MouseMiddle
+        {
+            return (GetAsyncKeyState(0x04) & 0x8000) != 0;
+        }
+        if (virtualKey == 0xA0) // VK_LSHIFT
+        {
+            return ((GetAsyncKeyState(0xA0) | GetAsyncKeyState(0x10)) & 0x8000) != 0;
+        }
+        if (virtualKey == 0xA2) // VK_LCONTROL
+        {
+            return ((GetAsyncKeyState(0xA2) | GetAsyncKeyState(0x11)) & 0x8000) != 0;
+        }
+
+        return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+    }
 
     [LibraryImport("user32.dll")]
     private static partial short GetAsyncKeyState(int vKey);

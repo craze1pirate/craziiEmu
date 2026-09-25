@@ -4,6 +4,7 @@
 namespace CraziiEmu.Libs.VideoOut;
 
 using System.Text;
+using CraziiEmu.HLE.Host;
 using CraziiEmu.Libs.Gpu.Buffers;
 using CraziiEmu.Libs.Gpu.Pipelines;
 using CraziiEmu.Libs.Gpu.Rendering;
@@ -62,6 +63,7 @@ internal static unsafe partial class VulkanVideoPresenter
 
         private void Initialize()
         {
+            HostPlatform.Current.Threading.RequestTimerResolution();
             if (_window is not null)
             {
                 try

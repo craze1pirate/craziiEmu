@@ -263,10 +263,9 @@ internal static unsafe partial class VulkanVideoPresenter
             var options = WindowOptions.DefaultVulkan;
             options.Size = new Vector2D<int>(targetWidth, targetHeight);
             options.Title = VideoOutExports.GetWindowTitle();
-            options.WindowBorder = WindowBorder.Fixed;
-            options.VSync = _videoOptions.VSync;
-            options.FramesPerSecond = _videoOptions.RefreshRate > 0 ? _videoOptions.RefreshRate : 60;
-            options.UpdatesPerSecond = _videoOptions.RefreshRate > 0 ? _videoOptions.RefreshRate : 60;
+            options.VSync = false;
+            options.FramesPerSecond = 0;
+            options.UpdatesPerSecond = 0;
             options.WindowState = _videoOptions.WindowMode == HostWindowMode.Borderless || _videoOptions.WindowMode == HostWindowMode.ExclusiveFullscreen
                 ? WindowState.Fullscreen
                 : WindowState.Normal;

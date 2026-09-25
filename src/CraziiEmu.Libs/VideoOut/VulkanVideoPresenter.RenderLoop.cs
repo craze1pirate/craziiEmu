@@ -217,6 +217,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     }
                 }
 
+                WaitForRenderWork();
                 return;
             }
 

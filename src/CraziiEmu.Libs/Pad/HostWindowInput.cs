@@ -62,6 +62,7 @@ public static class HostWindowInput
         }
 
         HostWindowInputSource.Set(SourceInstance);
+        CraziiEmu.HLE.Host.WindowInputBridge.SetSource(SourceInstance.GetGamepadStates);
     }
 
     public static void Disconnect()
@@ -80,6 +81,7 @@ public static class HostWindowInput
         }
 
         HostWindowInputSource.Clear(SourceInstance);
+        CraziiEmu.HLE.Host.WindowInputBridge.SetSource(null!);
     }
 
     public static void Attach(IInputContext input)
@@ -128,6 +130,7 @@ public static class HostWindowInput
         };
 
         HostWindowInputSource.Set(SourceInstance);
+        CraziiEmu.HLE.Host.WindowInputBridge.SetSource(SourceInstance.GetGamepadStates);
     }
 
     public static void AttachMouse(IMouse mouse)

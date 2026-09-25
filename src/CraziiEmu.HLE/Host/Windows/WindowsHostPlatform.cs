@@ -6,6 +6,11 @@ namespace CraziiEmu.HLE.Host.Windows;
 
 internal sealed class WindowsHostPlatform : IHostPlatform
 {
+    public WindowsHostPlatform()
+    {
+        Threading.RequestTimerResolution();
+    }
+
     public IHostMemory Memory { get; } = new WindowsHostMemory();
 
     public IHostThreading Threading { get; } = new WindowsHostThreading();

@@ -1613,6 +1613,7 @@ public static partial class VideoOutExports
 
     private static void VblankTickLoop()
     {
+        HostPlatform.Current.Threading.RequestTimerResolution();
         var pending = new List<(ulong Equeue, ulong DataHint, ulong UserData)>();
         while (Volatile.Read(ref _vblankStopRequested) == 0)
         {

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using CraziiEmu.HLE;
+using CraziiEmu.HLE.Configuration;
 using CraziiEmu.HLE.Host;
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -809,13 +810,15 @@ public static class PadExports
         }
 
         var input = HostPlatform.Current.Input;
-        var buttons = 0u;
-        var leftX = (byte)128;
-        var leftY = (byte)128;
+        var acceptsKeyboardInput = input.IsHostWindowFocused();
+        var config = CraziiEmuConfig.Instance.Input;
+        var buttons = acceptsKeyboardInput ? ReadKeyboardButtons(input) : 0u;
+        var leftX = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(config.LeftStickLeft), input.IsKeyDown(config.LeftStickRight)) : (byte)128;
+        var leftY = acceptsKeyboardInput ? ReadAnalogStick(input.IsKeyDown(config.LeftStickUp), input.IsKeyDown(config.LeftStickDown)) : (byte)128;
         var rightX = (byte)128;
         var rightY = (byte)128;
-        var l2 = (byte)0;
-        var r2 = (byte)0;
+        var l2 = acceptsKeyboardInput && input.IsKeyDown(config.L2) ? (byte)255 : (byte)0;
+        var r2 = acceptsKeyboardInput && input.IsKeyDown(config.R2) ? (byte)255 : (byte)0;
         var gamepadType = HostGamepadType.Generic;
         var connection = HostGamepadConnection.Unknown;
         var motion = default(HostMotionState);
@@ -961,6 +964,41 @@ public static class PadExports
                 (ushort)Math.Round(Math.Clamp(point.Y, 0, 1) * 942));
             data[offset + 4] = point.Id;
         }
+    }
+
+    private static uint ReadKeyboardButtons(IHostInput input)
+    {
+        var config = CraziiEmuConfig.Instance.Input;
+        uint buttons = 0;
+        // D-pad
+        if (input.IsKeyDown(config.DpadLeft)) buttons |= OrbisPadButton.Left;
+        if (input.IsKeyDown(config.DpadRight)) buttons |= OrbisPadButton.Right;
+        if (input.IsKeyDown(config.DpadUp)) buttons |= OrbisPadButton.Up;
+        if (input.IsKeyDown(config.DpadDown)) buttons |= OrbisPadButton.Down;
+        // Face buttons (configured + common fallbacks)
+        if (input.IsKeyDown(config.Cross) || input.IsKeyDown(0x20) || input.IsKeyDown(0x0D)) buttons |= OrbisPadButton.Cross;
+        if (input.IsKeyDown(config.Circle) || input.IsKeyDown(0xA0) || input.IsKeyDown(0x10) || input.IsKeyDown(0x1B)) buttons |= OrbisPadButton.Circle;
+        if (input.IsKeyDown(config.Square) || input.IsKeyDown(0x46)) buttons |= OrbisPadButton.Square;
+        if (input.IsKeyDown(config.Triangle) || input.IsKeyDown(0x45)) buttons |= OrbisPadButton.Triangle;
+        // Shoulder buttons
+        if (input.IsKeyDown(config.L1)) buttons |= OrbisPadButton.L1;
+        if (input.IsKeyDown(config.R1)) buttons |= OrbisPadButton.R1;
+        if (input.IsKeyDown(config.L2)) buttons |= OrbisPadButton.L2;
+        if (input.IsKeyDown(config.R2)) buttons |= OrbisPadButton.R2;
+        // Stick clicks
+        if (input.IsKeyDown(config.L3)) buttons |= OrbisPadButton.L3;
+        if (input.IsKeyDown(config.R3)) buttons |= OrbisPadButton.R3;
+        // Options / Create
+        if (input.IsKeyDown(config.Options) || input.IsKeyDown(0x09)) buttons |= OrbisPadButton.Options;
+        if (input.IsKeyDown(config.Create) || input.IsKeyDown(0x08)) buttons |= OrbisPadButton.TouchPad;
+        return buttons;
+    }
+
+    private static byte ReadAnalogStick(bool negative, bool positive)
+    {
+        if (negative && !positive) return 0;
+        if (positive && !negative) return 255;
+        return 128;
     }
 
     private static byte MergeAxis(byte controller, byte keyboard)

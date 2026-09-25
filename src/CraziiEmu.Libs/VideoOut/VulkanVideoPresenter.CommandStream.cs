@@ -611,6 +611,8 @@ internal static unsafe partial class VulkanVideoPresenter
                     {
                         RetirePresentation(_pendingGuestImagePresentations.Dequeue());
                     }
+
+                    Monitor.PulseAll(_gate);
                 }
 
                 CollectAbandonedGuestImageVersions();
