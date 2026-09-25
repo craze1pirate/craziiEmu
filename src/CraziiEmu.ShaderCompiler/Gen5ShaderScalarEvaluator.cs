@@ -24,7 +24,7 @@ public static class Gen5ShaderScalarEvaluator
     // unresolved resource missing rather than not at all. STRICT reverts.
     private static readonly bool _strictScalarLoad =
         string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_STRICT_SCALAR_LOAD"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_SCALAR_LOAD"),
             "1",
             StringComparison.Ordinal);
 
@@ -33,7 +33,7 @@ public static class Gen5ShaderScalarEvaluator
     // strict diagnostics can restore the old failure behaviour explicitly.
     private static readonly bool _strictBufferLoad =
         string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_STRICT_BUFFER_LOAD"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_BUFFER_LOAD"),
             "1",
             StringComparison.Ordinal);
     private static readonly object _scalarFallbackTraceGate = new();
@@ -43,7 +43,7 @@ public static class Gen5ShaderScalarEvaluator
     private static readonly ConditionalWeakTable<Gen5ShaderProgram, Ir.Gen5ScalarSsa> _scalarSsaCache = [];
 
     private static readonly bool _divergentDescriptorGuard = !string.Equals(
-        Environment.GetEnvironmentVariable("SHARPEMU_IR_DESCRIPTOR_GUARD"),
+        Environment.GetEnvironmentVariable("CRAZIIEMU_IR_DESCRIPTOR_GUARD"),
         "0",
         StringComparison.Ordinal);
 
@@ -156,13 +156,13 @@ public static class Gen5ShaderScalarEvaluator
 
     // Uniform forward branches select material/resource bodies that remain
     // statically present in the translated shader. Discover the skipped body's
-    // descriptors by default; SHARPEMU_CFG_RESOURCE_DISCOVERY=0 is a diagnostic
+    // descriptors by default; CRAZIIEMU_CFG_RESOURCE_DISCOVERY=0 is a diagnostic
     // opt-out. Conditional branches are deliberately not forked because their
     // fall-through is already scanned and forking vector-mask conditions grows
     // exponentially without adding descriptor coverage.
     private static readonly bool _cfgResourceDiscovery =
         !string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_CFG_RESOURCE_DISCOVERY"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_CFG_RESOURCE_DISCOVERY"),
             "0",
             StringComparison.Ordinal);
 
@@ -1008,7 +1008,7 @@ public static class Gen5ShaderScalarEvaluator
 
     private static readonly bool _traceVertexInputShape =
         string.Equals(
-            Environment.GetEnvironmentVariable("SHARPEMU_TRACE_VERTEX_SHAPE"),
+            Environment.GetEnvironmentVariable("CRAZIIEMU_TRACE_VERTEX_SHAPE"),
             "1",
             StringComparison.Ordinal);
 
@@ -1046,7 +1046,7 @@ public static class Gen5ShaderScalarEvaluator
     private static void TraceTitleVertexInputs(IReadOnlyList<Gen5VertexInputBinding> bindings)
     {
         if (!string.Equals(
-                Environment.GetEnvironmentVariable("SHARPEMU_TRACE_VERTEX_RAW"),
+                Environment.GetEnvironmentVariable("CRAZIIEMU_TRACE_VERTEX_RAW"),
                 "1",
                 StringComparison.Ordinal) ||
             bindings.Count != 3 ||

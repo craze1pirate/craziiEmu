@@ -4,7 +4,6 @@
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
-using CraziiEmu.Libs.Kernel;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -23,6 +22,7 @@ public static class AudioOutExports
     internal const int AudioOutErrorInvalidSize = unchecked((int)0x80260006);
 
     private static readonly ConcurrentDictionary<int, PortState> Ports = new();
+    private static readonly ConcurrentDictionary<int, PortState> ShutdownPorts = new();
     private static int _nextPortHandle;
     private static Func<uint, IHostAudioStream?>? _streamFactoryForTests;
 
@@ -73,14 +73,10 @@ public static class AudioOutExports
         public IHostAudioStream? Backend { get; }
         public object SubmissionGate { get; } = new();
         public volatile float Volume = 1.0f;
-        public ulong RegisteredEventQueue;
-        public ulong RegisteredEventUserData;
-        public long TotalSamplesPlayed;
-        public ulong LastOutputTimestamp;
         public int BufferByteLength =>
             checked((int)BufferLength * Channels * BytesPerSample);
 
-        public void Pace()
+        public void PaceSilence()
         {
             long delay;
             lock (_paceGate)
@@ -103,24 +99,10 @@ public static class AudioOutExports
             }
         }
 
-        public void PaceSilence() => Pace();
-
-        public void Dispose() => Dispose(0);
-
-        public void Dispose(int handle)
+        public void Dispose()
         {
             lock (SubmissionGate)
             {
-                if (RegisteredEventQueue != 0)
-                {
-                    KernelEventQueueCompatExports.DeleteRegisteredEvent(
-                        RegisteredEventQueue,
-                        (ulong)handle,
-                        KernelEventQueueCompatExports.KernelEventFilterUser);
-                    RegisteredEventQueue = 0;
-                    RegisteredEventUserData = 0;
-                }
-
                 Backend?.Dispose();
             }
         }
@@ -230,7 +212,7 @@ public static class AudioOutExports
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        port.Dispose(handle);
+        port.Dispose();
         return ctx.SetReturn(0);
     }
 
@@ -317,20 +299,19 @@ public static class AudioOutExports
     }
 
     [SysAbiExport(
-        Nid = "n91w1sJ7WdM",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceAudioOut")]
-    public static int AudioOutOutputGen4(CpuContext ctx) => AudioOutOutput(ctx);
-
-    [SysAbiExport(
         Nid = "QOQtbeDqsT4",
         ExportName = "sceAudioOutOutput",
-        Target = Generation.Gen4 | Generation.Gen5,
+        Target = Generation.Gen5,
         LibraryName = "libSceAudioOut")]
     public static int AudioOutOutput(CpuContext ctx)
     {
         var handle = unchecked((int)ctx[CpuRegister.Rdi]);
         var sourceAddress = ctx[CpuRegister.Rsi];
+        if (Volatile.Read(ref _shutdown))
+        {
+            return ctx.SetReturn(PaceShutdownPort(handle));
+        }
+
         if (!Ports.TryGetValue(handle, out var port))
         {
             // Host shutdown disposes the ports while guest audio threads are
@@ -357,19 +338,9 @@ public static class AudioOutExports
 
             TraceOutput(handle, port, source);
 
-            port.TotalSamplesPlayed += port.BufferLength;
-            port.LastOutputTimestamp = (ulong)Stopwatch.GetTimestamp();
-            if (port.RegisteredEventQueue != 0)
-            {
-                KernelEventQueueCompatExports.TriggerRegisteredEvents(
-                    (ulong)handle,
-                    KernelEventQueueCompatExports.KernelEventFilterUser,
-                    port.RegisteredEventUserData);
-            }
-
             if (port.Backend is null)
             {
-                port.Pace();
+                port.PaceSilence();
                 return ctx.SetReturn(0);
             }
 
@@ -380,8 +351,10 @@ public static class AudioOutExports
             try
             {
                 ConvertForHost(port, source, output.AsSpan(0, outputLength));
-                port.Backend.Submit(output.AsSpan(0, outputLength));
-                port.Pace();
+                if (!port.Backend.Submit(output.AsSpan(0, outputLength)))
+                {
+                    port.PaceSilence();
+                }
             }
             finally
             {
@@ -398,6 +371,11 @@ public static class AudioOutExports
 
     private static int SubmitOutputs(CpuContext ctx, ReadOnlySpan<OutputDescriptor> descriptors)
     {
+        if (Volatile.Read(ref _shutdown))
+        {
+            return PaceShutdownPorts(descriptors);
+        }
+
         var resolvedArray = ArrayPool<ResolvedOutput>.Shared.Rent(descriptors.Length);
         var resolved = resolvedArray.AsSpan(0, descriptors.Length);
         resolved.Clear();
@@ -510,31 +488,23 @@ public static class AudioOutExports
             for (var i = 0; i < resolved.Length; i++)
             {
                 ref var output = ref resolved[i];
-                output.Port.TotalSamplesPlayed += output.Port.BufferLength;
-                output.Port.LastOutputTimestamp = (ulong)Stopwatch.GetTimestamp();
-                if (output.Port.RegisteredEventQueue != 0)
+                if (output.HostBuffer is null ||
+                    output.Port.Backend is null ||
+                    !output.Port.Backend.Submit(
+                        output.HostBuffer.AsSpan(0, output.HostBufferLength)))
                 {
-                    KernelEventQueueCompatExports.TriggerRegisteredEvents(
-                        (ulong)output.Handle,
-                        KernelEventQueueCompatExports.KernelEventFilterUser,
-                        output.Port.RegisteredEventUserData);
-                }
-
-                if (output.HostBuffer is not null &&
-                    output.Port.Backend is not null)
-                {
-                    output.Port.Backend.Submit(
-                        output.HostBuffer.AsSpan(0, output.HostBufferLength));
-                }
-
-                if (pacingPort is null ||
-                    HasLongerBufferDuration(output.Port, pacingPort))
-                {
-                    pacingPort = output.Port;
+                    if (pacingPort is null ||
+                        HasLongerBufferDuration(output.Port, pacingPort))
+                    {
+                        pacingPort = output.Port;
+                    }
                 }
             }
 
-            pacingPort?.Pace();
+            // A batch is one guest scheduling point. When one or more ports have
+            // no usable backend, pace once using the longest affected buffer rather
+            // than sleeping once per port.
+            pacingPort?.PaceSilence();
             return checked((int)resolved[0].Port.BufferLength);
         }
         finally
@@ -560,13 +530,49 @@ public static class AudioOutExports
         (ulong)candidate.BufferLength * current.Frequency >
         (ulong)current.BufferLength * candidate.Frequency;
 
+    private static int PaceShutdownPort(int handle)
+    {
+        if (ShutdownPorts.TryGetValue(handle, out var port))
+        {
+            port.PaceSilence();
+        }
+        else
+        {
+            Thread.Sleep(1);
+        }
+
+        return 0;
+    }
+
+    private static int PaceShutdownPorts(ReadOnlySpan<OutputDescriptor> descriptors)
+    {
+        PortState? pacingPort = null;
+        for (var index = 0; index < descriptors.Length; index++)
+        {
+            if (ShutdownPorts.TryGetValue(descriptors[index].Handle, out var port) &&
+                (pacingPort is null || HasLongerBufferDuration(port, pacingPort)))
+            {
+                pacingPort = port;
+            }
+        }
+
+        if (pacingPort is null)
+        {
+            Thread.Sleep(1);
+        }
+        else
+        {
+            pacingPort.PaceSilence();
+        }
+
+        return 0;
+    }
+
     private static void ConvertForHost(PortState port, ReadOnlySpan<byte> source, Span<byte> destination)
     {
-        var masterGain = CraziiEmu.HLE.Configuration.CraziiEmuConfig.Instance.GetMasterGain();
-        var effectiveVolume = port.Volume * masterGain;
         if (port.PreservesGuestFormat)
         {
-            AudioPcmConversion.CopyWithVolume(source, destination, port.IsFloat, effectiveVolume);
+            AudioPcmConversion.CopyWithVolume(source, destination, port.IsFloat, port.Volume);
             return;
         }
 
@@ -577,7 +583,7 @@ public static class AudioOutExports
             port.Channels,
             port.BytesPerSample,
             port.IsFloat,
-            effectiveVolume);
+            port.Volume);
     }
 
     private static void TraceOutput(int handle, PortState port, ReadOnlySpan<byte> source)
@@ -643,115 +649,6 @@ public static class AudioOutExports
         return ctx.SetReturn(0);
     }
 
-    [SysAbiExport(
-        Nid = "8e0-jM5s7XY",
-        ExportName = "sceAudioOutRegisterOutputBufferEvent",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceAudioOut")]
-    public static int AudioOutRegisterOutputBufferEvent(CpuContext ctx)
-    {
-        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        var eventQueueHandle = ctx[CpuRegister.Rsi];
-        var userData = ctx[CpuRegister.Rdx];
-        if (!Ports.TryGetValue(handle, out var port))
-        {
-            return ctx.SetReturn(AudioOutErrorInvalidPort);
-        }
-
-        if (port.RegisteredEventQueue != 0)
-        {
-            KernelEventQueueCompatExports.DeleteRegisteredEvent(
-                port.RegisteredEventQueue,
-                (ulong)handle,
-                KernelEventQueueCompatExports.KernelEventFilterUser);
-        }
-
-        port.RegisteredEventQueue = eventQueueHandle;
-        port.RegisteredEventUserData = userData;
-
-        if (eventQueueHandle != 0)
-        {
-            KernelEventQueueCompatExports.RegisterEvent(
-                eventQueueHandle,
-                (ulong)handle,
-                KernelEventQueueCompatExports.KernelEventFilterUser,
-                userData,
-                KernelEventQueueCompatExports.KernelEventFlagClear);
-        }
-
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
-        Nid = "L-V5p18qXf0",
-        ExportName = "sceAudioOutUnregisterOutputBufferEvent",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceAudioOut")]
-    public static int AudioOutUnregisterOutputBufferEvent(CpuContext ctx)
-    {
-        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!Ports.TryGetValue(handle, out var port))
-        {
-            return ctx.SetReturn(AudioOutErrorInvalidPort);
-        }
-
-        if (port.RegisteredEventQueue != 0)
-        {
-            KernelEventQueueCompatExports.DeleteRegisteredEvent(
-                port.RegisteredEventQueue,
-                (ulong)handle,
-                KernelEventQueueCompatExports.KernelEventFilterUser);
-        }
-
-        port.RegisteredEventQueue = 0;
-        port.RegisteredEventUserData = 0;
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
-        Nid = "58E5yeb1P7s",
-        ExportName = "sceAudioOutGetPortTimestamp",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceAudioOut")]
-    public static int AudioOutGetPortTimestamp(CpuContext ctx)
-    {
-        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        var timestampAddress = ctx[CpuRegister.Rsi];
-        if (timestampAddress == 0 || !Ports.TryGetValue(handle, out var port))
-        {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-        }
-
-        Span<byte> timestamp = stackalloc byte[16];
-        timestamp.Clear();
-        BinaryPrimitives.WriteInt64LittleEndian(timestamp[0x00..], port.TotalSamplesPlayed);
-        BinaryPrimitives.WriteInt64LittleEndian(
-            timestamp[0x08..],
-            checked((long)(Stopwatch.GetTimestamp() * 1_000_000_000.0 / Stopwatch.Frequency)));
-        return ctx.Memory.TryWrite(timestampAddress, timestamp)
-            ? ctx.SetReturn(0)
-            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
-    }
-
-    [SysAbiExport(
-        Nid = "Ptlts326pds",
-        ExportName = "sceAudioOutGetLastOutputTime",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceAudioOut")]
-    public static int AudioOutGetLastOutputTime(CpuContext ctx)
-    {
-        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
-        var timeAddress = ctx[CpuRegister.Rsi];
-        if (timeAddress == 0 || !Ports.TryGetValue(handle, out var port))
-        {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-        }
-
-        return ctx.TryWriteUInt64(timeAddress, port.LastOutputTimestamp)
-            ? ctx.SetReturn(0)
-            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
-    }
-
     // Peak normalized amplitude [0,1] of an interleaved PCM buffer, used only by
     // the CRAZIIEMU_LOG_AUDIO_OUT diagnostic to distinguish real audio from silence.
     private static float PeakAmplitude(ReadOnlySpan<byte> source, bool isFloat, int bytesPerSample)
@@ -785,11 +682,13 @@ public static class AudioOutExports
 
     public static void ShutdownAllPorts()
     {
+        ShutdownPorts.Clear();
         Volatile.Write(ref _shutdown, true);
         foreach (var handle in Ports.Keys)
         {
             if (Ports.TryRemove(handle, out var port))
             {
+                ShutdownPorts[handle] = port;
                 port.Dispose();
             }
         }
@@ -808,6 +707,7 @@ public static class AudioOutExports
             }
         }
 
+        ShutdownPorts.Clear();
         _nextPortHandle = 0;
         _outputCount = 0;
         Volatile.Write(ref _shutdown, false);

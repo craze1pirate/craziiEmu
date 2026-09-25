@@ -1,4 +1,5 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers;
@@ -10,7 +11,7 @@ namespace CraziiEmu.Libs.Media;
 /// <summary>
 /// Decodes a .bk2 (or any FFmpeg-readable movie) directly via FFmpeg's C API
 /// through FFmpeg.AutoGen P/Invoke bindings against the dynamically linked
-/// libraries published by github.com/sharpemu/ffmpeg-core -- no native C
+/// libraries published by github.com/craziiEmu/ffmpeg-core -- no native C
 /// bridge of our own to build. See docs/bink2-bridge.md.
 /// </summary>
 internal sealed unsafe class FfmpegVideoDecoder : IMediaFrameDecoder
@@ -84,7 +85,8 @@ internal sealed unsafe class FfmpegVideoDecoder : IMediaFrameDecoder
         string path,
         uint maximumWidth,
         uint maximumHeight,
-        out FfmpegVideoDecoder? source)
+        out FfmpegVideoDecoder? source,
+        bool enableAudio = true)
     {
         source = null;
         EnsureRootPathInitialized();
@@ -151,25 +153,30 @@ internal sealed unsafe class FfmpegVideoDecoder : IMediaFrameDecoder
                 frameRate = new AVRational { num = 30, den = 1 };
             }
 
-            var audioStreamIndex = TryOpenAudioDecoder(
-                formatContext,
-                out audioCodecContext,
-                out var audioOutputSampleRate);
-            if (audioStreamIndex >= 0 && audioCodecContext is not null)
+            var audioStreamIndex = -1;
+            var audioOutputSampleRate = 0;
+            if (enableAudio)
             {
-                try
+                audioStreamIndex = TryOpenAudioDecoder(
+                    formatContext,
+                    out audioCodecContext,
+                    out audioOutputSampleRate);
+                if (audioStreamIndex >= 0 && audioCodecContext is not null)
                 {
-                    audioStream = HostPlatform.Current.Audio.OpenStereoPcm16Stream(
-                        checked((uint)audioOutputSampleRate));
-                }
-                catch (Exception exception) when (exception is InvalidOperationException or
-                                                     ArgumentOutOfRangeException)
-                {
-                    Console.Error.WriteLine(
-                        $"[LOADER][WARN] Bink audio output unavailable: {exception.Message}");
-                    ffmpeg.avcodec_free_context(&audioCodecContext);
-                    audioStreamIndex = -1;
-                    audioOutputSampleRate = 0;
+                    try
+                    {
+                        audioStream = HostPlatform.Current.Audio.OpenStereoPcm16Stream(
+                            checked((uint)audioOutputSampleRate));
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException or
+                                                         ArgumentOutOfRangeException)
+                    {
+                        Console.Error.WriteLine(
+                            $"[LOADER][WARN] Bink audio output unavailable: {exception.Message}");
+                        ffmpeg.avcodec_free_context(&audioCodecContext);
+                        audioStreamIndex = -1;
+                        audioOutputSampleRate = 0;
+                    }
                 }
             }
 

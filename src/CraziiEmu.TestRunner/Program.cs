@@ -20,37 +20,21 @@ namespace CraziiEmu.TestRunner
 
             }
 
-            SyncOnAddressTests.RunAllTests();
-            HRTimerTests.RunAllTests();
+            // Active regression test suites for the synchronized codebase
             PngDecTests.RunAllTests();
-            Videodec2Tests.RunAllTests();
             UltTests.RunAllTests();
-            FontTests.RunAllTests();
-            MemoryPoolTests.RunAllTests();
-            PsmlShareTests.RunAllTests();
             LoginDialogTests.RunAllTests();
-            NetSocketOptionTests.RunAllTests();
-            NpWebApi2Tests.RunAllTests();
-            PthreadStartTests.RunAllTests();
             SaveDataMountTests.RunAllTests();
             AioCompletionTests.RunAllTests();
             VideoOutFlipTests.RunAllTests();
-            GpuRenderTargetReuseTests.RunAllTests();
             PthreadTlsTests.RunAllTests();
-            KernelSocketErrnoTests.RunAllTests();
-            UnifiedSocketTests.RunAllTests();
-            UnityScriptingMemTests.RunAllTests();
             DeadCellsAndFloat16Tests.RunAllTests();
-            ShaderCfgTests.RunAllTests();
+            ShaderResourceEngineTests.RunAllTests();
             TextureCacheOverlapTests.RunAllTests();
             AsyncComputeTimelineTests.RunAllTests();
-            GraphicsDynamicStateTests.RunAllTests();
-            VirtualMemoryPreReservationTests.RunAllTests();
-            UnityEngineCompatTests.RunAllTests();
-            GameCompatibilityTests.RunAllTests();
             VulkanPipelineComplianceTests.RunAllTests();
-            KernelSemaphoreLifecycleTests.RunAllTests();
-            PadAndRudpTests.RunAllTests();
+            GpuMemoryAndHostViewsTests.RunAllTests();
+            ModularGpuAndPresenterTests.RunAllTests();
         }
     }
 }

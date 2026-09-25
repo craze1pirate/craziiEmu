@@ -19,6 +19,8 @@ public sealed class TrackedCpuMemory : ICpuMemory, ITrackedCpuMemory, IGuestMemo
 
     public ICpuMemory Inner => _inner;
 
+    public string DescribeReadRange(ulong address, ulong size) => _inner.DescribeReadRange(address, size);
+
     public bool TryRead(ulong virtualAddress, Span<byte> destination)
     {
         var result = _inner.TryRead(virtualAddress, destination);
@@ -41,8 +43,16 @@ public sealed class TrackedCpuMemory : ICpuMemory, ITrackedCpuMemory, IGuestMemo
         return result;
     }
 
+    public bool TryCompare(
+        ulong virtualAddress,
+        ReadOnlySpan<byte> expected,
+        out bool equal) =>
+        _inner.TryCompare(virtualAddress, expected, out equal);
+
     public bool TryCopy(ulong destinationAddress, ulong sourceAddress, ulong length) =>
         _inner.TryCopy(destinationAddress, sourceAddress, length);
+
+    public bool CanRead(ulong address, ulong size) => _inner.CanRead(address, size);
 
     public bool TryAllocateGuestMemory(ulong size, ulong alignment, out ulong address)
     {

@@ -15,9 +15,8 @@ using Avalonia.Threading;
 using Avalonia.Input.Platform;
 using System.Collections.ObjectModel;
 using CraziiEmu.Core.Cpu;
-using CraziiEmu.Core.Gpu;
-using CraziiEmu.Core.HLE;
 using Avalonia.Media.Imaging;
+
 using CraziiEmu.Core.Loader;
 using CraziiEmu.Core.Memory;
 using CraziiEmu.Core.Runtime;

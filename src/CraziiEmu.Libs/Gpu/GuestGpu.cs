@@ -7,11 +7,19 @@ using CraziiEmu.Libs.Gpu.Vulkan;
 namespace CraziiEmu.Libs.Gpu;
 
 /// <summary>
-/// Process-wide access point for the Vulkan guest-GPU backend.
+/// Process-wide access point for the guest-GPU backend, mirroring HostPlatform for the
+/// host seam: static HLE export classes resolve the renderer through <see cref="Current"/>.
+/// Vulkan is the default backend.
 /// </summary>
 internal static class GuestGpu
 {
-    private static readonly Lazy<IGuestGpuBackend> Instance = new(static () => new VulkanGuestGpuBackend());
+    private static readonly Lazy<IGuestGpuBackend> Instance = new(Create);
 
     public static IGuestGpuBackend Current => Instance.Value;
+
+    private static IGuestGpuBackend Create()
+    {
+        return new VulkanGuestGpuBackend();
+    }
 }
+

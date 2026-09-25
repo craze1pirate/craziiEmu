@@ -74,6 +74,7 @@ public enum SpirvOp : ushort
     ConvertFToS = 110,
     ConvertSToF = 111,
     ConvertUToF = 112,
+    ConvertUToPtr = 120,
     UConvert = 113,
     SConvert = 114,
     FConvert = 115,
@@ -144,6 +145,7 @@ public enum SpirvOp : ushort
     BitCount = 205,
     ControlBarrier = 224,
     MemoryBarrier = 225,
+    AtomicLoad = 227,
     AtomicExchange = 229,
     AtomicCompareExchange = 230,
     AtomicIIncrement = 232,
@@ -184,6 +186,15 @@ public enum SpirvOp : ushort
 public enum SpirvCapability : uint
 {
     Shader = 1,
+    InterpolationFunction = 52,
+    FragmentBarycentricKhr = 5284,
+    ClipDistance = 32,
+    CullDistance = 33,
+    SampledImageArrayDynamicIndexing = 29,
+    StorageImageArrayDynamicIndexing = 31,
+    SampleRateShading = 35,
+    Sampled1D = 43,
+    Image1D = 44,
     Float16 = 9,
     Float64 = 10,
     Int64 = 11,
@@ -197,7 +208,9 @@ public enum SpirvCapability : uint
     GroupNonUniformVote = 62,
     GroupNonUniformBallot = 64,
     GroupNonUniformShuffle = 65,
+    ShaderViewportIndexLayerExt = 5254,
     RuntimeDescriptorArray = 5302,
+    PhysicalStorageBufferAddresses = 5347,
 }
 
 public enum SpirvStorageClass : uint
@@ -212,6 +225,7 @@ public enum SpirvStorageClass : uint
     PushConstant = 9,
     Image = 11,
     StorageBuffer = 12,
+    PhysicalStorageBuffer = 5349,
 }
 
 public enum SpirvExecutionModel : uint
@@ -235,19 +249,28 @@ public enum SpirvDecoration : uint
     BuiltIn = 11,
     NoPerspective = 13,
     Flat = 14,
+    PerVertexKhr = 5285,
     Location = 30,
     Binding = 33,
     DescriptorSet = 34,
     Offset = 35,
     NoContraction = 42,
+    NonWritable = 24,
 }
 
 public enum SpirvBuiltIn : uint
 {
     Position = 0,
+    PointSize = 1,
+    ClipDistance = 3,
+    CullDistance = 4,
+    Layer = 9,
+    ViewportIndex = 10,
     VertexIndex = 42,
     InstanceIndex = 43,
     FragCoord = 15,
+    BaryCoordKhr = 5286,
+    BaryCoordNoPerspKhr = 5287,
     FrontFacing = 17,
     WorkgroupId = 26,
     LocalInvocationId = 27,
@@ -255,6 +278,8 @@ public enum SpirvBuiltIn : uint
     LocalInvocationIndex = 29,
     SubgroupSize = 36,
     SubgroupLocalInvocationId = 41,
+    SampleId = 18,
+    FragDepth = 22,
 }
 
 public enum SpirvImageDim : uint
@@ -351,6 +376,7 @@ public sealed class SpirvModuleBuilder
     private uint _nextId = 1;
     private uint? _voidType;
     private uint? _boolType;
+    private uint? _samplerType;
 
     public uint AllocateId() => _nextId++;
 
@@ -380,6 +406,23 @@ public sealed class SpirvModuleBuilder
 
     public void SetLogicalGlsl450MemoryModel() =>
         Emit(_memoryModel, SpirvOp.MemoryModel, 0, 1);
+
+    // PhysicalStorageBuffer64 addressing with the GLSL450 memory model, for device-address loads.
+    public void SetPhysicalStorageBuffer64MemoryModel() =>
+        Emit(_memoryModel, SpirvOp.MemoryModel, 5348, 1);
+
+    public uint TypeSampler()
+    {
+        if (_samplerType.HasValue)
+        {
+            return _samplerType.Value;
+        }
+
+        var id = AllocateId();
+        Emit(_typesConstantsGlobals, SpirvOp.TypeSampler, id);
+        _samplerType = id;
+        return id;
+    }
 
     public void AddEntryPoint(
         SpirvExecutionModel model,

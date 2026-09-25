@@ -1,7 +1,6 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
 using System;
 using System.Buffers.Binary;
@@ -74,43 +73,7 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe static int RawVectoredHandlerManaged(void* exceptionInfo)
 	{
-		if (TryHandleGuestImageWriteFault(exceptionInfo))
-		{
-			return -1;
-		}
-
 		return TryRecoverUnresolvedSentinel(exceptionInfo);
-	}
-
-	/// <summary>
-	/// Windows counterpart of the POSIX SIGSEGV bridge into
-	/// <see cref="CraziiEmu.HLE.GuestImageWriteTracker"/>. Guest code runs natively,
-	/// so a store into a surface the GPU backend has cached is an ordinary CPU
-	/// write with nothing to intercept — the page is write-protected instead and
-	/// the resulting fault is what tells the backend to re-upload. Without this
-	/// the cache serves the first upload forever, and anything the guest CPU
-	/// draws (a software-decoded movie frame, a memset fog layer) never reaches
-	/// the screen.
-	/// </summary>
-	private unsafe static bool TryHandleGuestImageWriteFault(void* exceptionInfo)
-	{
-		if (!CraziiEmu.HLE.GuestImageWriteTracker.Enabled)
-		{
-			return false;
-		}
-
-		var exceptionRecord = ((EXCEPTION_POINTERS*)exceptionInfo)->ExceptionRecord;
-		// STATUS_ACCESS_VIOLATION, and only the write flavour: ExceptionInformation
-		// is [accessKind, address] with 0=read, 1=write, 8=DEP execute.
-		if (exceptionRecord->ExceptionCode != 3221225477u ||
-			exceptionRecord->NumberParameters < 2 ||
-			exceptionRecord->ExceptionInformation[0] != 1uL)
-		{
-			return false;
-		}
-
-		return CraziiEmu.HLE.GuestImageWriteTracker.TryHandleWriteFault(
-			exceptionRecord->ExceptionInformation[1]);
 	}
 
 	private unsafe static int RawUnhandledFilterManaged(void* exceptionInfo)
@@ -202,6 +165,7 @@ public sealed partial class DirectExecutionBackend
 			return 18446744071562199042uL;
 		}
 		ImportStubEntry importStubEntry = _importEntries[importIndex];
+		using var registerPacketImport = CraziiEmu.Libs.Diagnostics.AgcRegisterPacketProfile.MeasureImport(importStubEntry.Nid);
 		if (_perfHleHistogram)
 		{
 			RecordPerfHleCall(importStubEntry.Export?.Name ?? importStubEntry.Nid);
@@ -247,6 +211,13 @@ public sealed partial class DirectExecutionBackend
 		cpuContext[CpuRegister.R14] = *(ulong*)(argPackPtr + 80);
 		cpuContext[CpuRegister.R15] = *(ulong*)(argPackPtr + 88);
 		cpuContext[CpuRegister.Rsp] = (ulong)argPackPtr + 96uL;
+		cpuContext.SetImportStackArguments(
+			ReadImportStackArgument(argPackPtr, 0),
+			ReadImportStackArgument(argPackPtr, 1),
+			ReadImportStackArgument(argPackPtr, 2),
+			ReadImportStackArgument(argPackPtr, 3),
+			ReadImportStackArgument(argPackPtr, 4),
+			ReadImportStackArgument(argPackPtr, 5));
 		ulong value = cpuContext[CpuRegister.Rdi];
 		ulong value2 = cpuContext[CpuRegister.Rsi];
 		ulong num3 = cpuContext[CpuRegister.Rdx];
@@ -611,52 +582,6 @@ public sealed partial class DirectExecutionBackend
 				{
 					DumpIl2CppExceptionDiagnostic(cpuContext, value, num7);
 				}
-
-				if (importStubEntry.Nid == "wJbW570R9C8")
-				{
-					// scePthreadMutexUnlock
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "NH6xARDOVv8")
-				{
-					// NH6xARDOVv8 is sceKernelGetOperationMode.
-					// Return 0 for standard operating mode.
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "BfBDZGbti7A")
-				{
-					// BfBDZGbti7A is sceAgcGetIsTrinityMode.
-					// Return 0 (false) for non-PS5-Pro (standard console) mode.
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "Zw7uUVPulbw")
-				{
-					// Zw7uUVPulbw is sceAgcDriverGetEqContextId.
-					// Writes EqContextId to the pointer in RDI.
-					if (value != 0)
-					{
-						*(uint*)value = 1; // Return context ID 1
-					}
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "VkqLPArfFdc")
-				{
-					// VkqLPArfFdc is sceImeKeyboardGetInfo.
-					// Returns 0 (success) to bypass IME initialization errors.
-					return 0ul;
-				}
-
-				if (importStubEntry.Nid == "dbOlWdppb4o")
-				{
-					// dbOlWdppb4o is unknown (IME/AGC related).
-					// Returns 0 (success) to prevent engine loops.
-					return 0ul;
-				}
-
 				Console.Error.WriteLine(
 					$"[LOADER][WARN] Import#{num} unresolved: nid={importStubEntry.Nid} ret=0x{num7:X16} " +
 					$"rdi=0x{value:X16} rsi=0x{value2:X16} rdx=0x{num3:X16} rcx=0x{num4:X16} r8=0x{num5:X16} r9=0x{num6:X16}");
@@ -1407,6 +1332,13 @@ public sealed partial class DirectExecutionBackend
 		cpuContext[CpuRegister.R14] = *(ulong*)(argPackPtr + 80);
 		cpuContext[CpuRegister.R15] = *(ulong*)(argPackPtr + 88);
 		cpuContext[CpuRegister.Rsp] = (ulong)argPackPtr + 96uL;
+		cpuContext.SetImportStackArguments(
+			ReadImportStackArgument(argPackPtr, 0),
+			ReadImportStackArgument(argPackPtr, 1),
+			ReadImportStackArgument(argPackPtr, 2),
+			ReadImportStackArgument(argPackPtr, 3),
+			ReadImportStackArgument(argPackPtr, 4),
+			ReadImportStackArgument(argPackPtr, 5));
 
 		if (_activeGuestThreadState is { } activeGuestThreadState)
 		{
@@ -1427,15 +1359,6 @@ public sealed partial class DirectExecutionBackend
 			Volatile.Write(ref activeGuestThreadState.LastReturnRip, returnRip);
 			Volatile.Write(ref activeGuestThreadState.LastImportNid, importStubEntry.Nid);
 		}
-
-		RecordRecentImportTrace(
-			dispatchIndex,
-			importStubEntry.Nid,
-			returnRip,
-			arg0,
-			*(ulong*)(argPackPtr + 8),
-			*(ulong*)(argPackPtr + 16));
-
 		if (_logImportPeriodic && dispatchIndex % 100000 == 0)
 		{
 			Console.Error.WriteLine(
@@ -1597,9 +1520,6 @@ public sealed partial class DirectExecutionBackend
 		var expectedMutexTrylockBusy =
 			(nid is "K-jXhbt2gn4" or "upoVrzMHFeE") &&
 			result == OrbisGen2Result.ORBIS_GEN2_ERROR_BUSY;
-		var expectedMutexDeadlock =
-			(nid is "9UK1vLZQft4" or "K-jXhbt2gn4" or "upoVrzMHFeE") &&
-			(result == OrbisGen2Result.ORBIS_GEN2_ERROR_DEADLOCK || resultValue == 11);
 		var expectedSemaphoreTrywaitAgain =
 			string.Equals(nid, "H2a+IN9TP0E", StringComparison.Ordinal) &&
 			result == OrbisGen2Result.ORBIS_GEN2_ERROR_TRY_AGAIN;
@@ -1622,7 +1542,6 @@ public sealed partial class DirectExecutionBackend
 			!expectedTimedWaitTimeout &&
 			!expectedEqueueTimeout &&
 			!expectedMutexTrylockBusy &&
-			!expectedMutexDeadlock &&
 			!expectedSemaphoreTrywaitAgain &&
 			!expectedPollSemaBusy &&
 			!expectedNetAcceptWouldBlock &&
@@ -1680,7 +1599,7 @@ public sealed partial class DirectExecutionBackend
 			"8aI7R7WaOlc" or // sceAmprCommandBufferConstructor
 			"zgXifHT9ErY" or // sceVideoOutIsFlipPending
 			"V++UgBtQhn0" or // sceAgcGetDataPacketPayloadAddress
-			"qj7QZpgr9Uw" or // Gen5 graphics type-2 packet
+			"qj7QZpgr9Uw" or // Graphics context-state operation
 			"LtTouSCZjHM" or // sceAgcCbNop
 			"k3GhuSNmBLU" or // sceAgcCbDispatch
 			"UZbQjYAwwXM" or // sceAgcCbSetShRegistersDirect
@@ -1858,12 +1777,6 @@ public sealed partial class DirectExecutionBackend
 
 	private unsafe bool TryYieldGuestThreadToHostStub(nint argPackPtr, long dispatchIndex, ulong returnRip, string nid, string reason)
 	{
-		if (unchecked((int)GetCurrentThreadId()) == Volatile.Read(ref _mainHostThreadId) ||
-		    GuestThreadExecution.IsMainThread)
-		{
-			return false;
-		}
-
 		ulong hostExit = ActiveEntryReturnSentinelRip;
 		if (hostExit < 65536 || !TryPatchActiveGuestReturnSlot(hostExit))
 		{
@@ -1950,10 +1863,17 @@ public sealed partial class DirectExecutionBackend
 	private static bool IsImportLoopGuardBoundary(string nid) =>
 		nid is
 			"1jfXLRVzisc" or // sceKernelUsleep
+			"1j3S3n-tTW4" or // sceKernelGetTscFrequency (polling/time base query)
 			"WKAXJ4XBPQ4" or // scePthreadCondWait
 			"BmMjYxmew1w" or // scePthreadCondTimedwait
 			"Op8TBGY5KHg" or // pthread_cond_wait
-			"27bAgiJmOh0";   // pthread_cond_timedwait
+			"27bAgiJmOh0" or // pthread_cond_timedwait
+			"n88vx3C5nW8" or // gettimeofday
+			"lLMT9vJAck0" or // clock_gettime
+			"-2IRUCO--PM" or // sceKernelReadTsc
+			"4J2sUJmuHZQ" or // sceKernelGetProcessTime
+			"fgxnMeTNUtY" or // sceKernelGetProcessTimeCounter
+			"yH17Q6NWtVg";   // sceUserServiceGetEvent (non-blocking event poll)
 
 	private void ResetImportLoopPattern()
 	{
@@ -2204,26 +2124,12 @@ public sealed partial class DirectExecutionBackend
 		if (!TryResolveModuleSymbolAddress(moduleHandle, symbolName, out var resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(symbolName, out resolvedAddress) &&
 			!TryResolveRuntimeSymbolAddress(ComputePsNid(symbolName), out resolvedAddress) &&
-			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress) &&
-			!TryResolveImportStubAddress(symbolName, out resolvedAddress))
+			!TryResolveRuntimeSymbolAlias(symbolName, out resolvedAddress))
 		{
-			if (_unresolvedReturnStub != 0)
-			{
-				resolvedAddress = (ulong)_unresolvedReturnStub;
-				Console.Error.WriteLine(
-					$"[LOADER][INFO] sceKernelDlsym fallback for symbol='{symbolName}' -> 0x{resolvedAddress:X16}");
-			}
-			else
-			{
-				Console.Error.WriteLine(
-					$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
-				if (outputAddress != 0L)
-				{
-					_ = TryWriteUInt64Compat(outputAddress, 0uL);
-				}
-				cpuContext[CpuRegister.Rax] = unchecked((ulong)-2147352573); // KERNEL_ERROR_ESRCH (0x80020003)
-				return OrbisGen2Result.ORBIS_GEN2_OK;
-			}
+			Console.Error.WriteLine(
+				$"[LOADER][WARN] sceKernelDlsym failed: handle=0x{cpuContext[CpuRegister.Rdi]:X} symbol='{symbolName}'");
+			cpuContext[CpuRegister.Rax] = 18446744073709551615uL;
+			return OrbisGen2Result.ORBIS_GEN2_OK;
 		}
 		if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_DLSYM"), "1", StringComparison.Ordinal))
 		{
@@ -2239,52 +2145,8 @@ public sealed partial class DirectExecutionBackend
 		return OrbisGen2Result.ORBIS_GEN2_OK;
 	}
 
-	private bool TryResolveImportStubAddress(string symbolName, out ulong address)
-	{
-		address = 0uL;
-		if (string.IsNullOrWhiteSpace(symbolName))
-		{
-			return false;
-		}
-
-		var nid = ComputePsNid(symbolName);
-		foreach (var entry in _importEntries)
-		{
-			if (string.Equals(entry.Nid, symbolName, StringComparison.Ordinal) ||
-				string.Equals(entry.Nid, nid, StringComparison.Ordinal) ||
-				(entry.Export != null && (string.Equals(entry.Export.Name, symbolName, StringComparison.Ordinal) ||
-										  string.Equals(entry.Export.Nid, nid, StringComparison.Ordinal))))
-			{
-				address = entry.Address;
-				return true;
-			}
-		}
-
-		if (_moduleManager.TryGetExportByName(symbolName, out var exportByName) ||
-			_moduleManager.TryGetExport(nid, out exportByName) ||
-			_moduleManager.TryGetExport(symbolName, out exportByName))
-		{
-			foreach (var entry in _importEntries)
-			{
-				if (string.Equals(entry.Nid, exportByName.Nid, StringComparison.Ordinal) ||
-					string.Equals(entry.Nid, exportByName.Name, StringComparison.Ordinal))
-				{
-					address = entry.Address;
-					return true;
-				}
-			}
-		}
-
-		return false;
-	}
-
 	private static bool TryResolveModuleSymbolAddress(int moduleHandle, string symbolName, out ulong address)
 	{
-		if (moduleHandle == 0)
-		{
-			moduleHandle = 1;
-		}
-
 		if (KernelModuleRegistry.TryResolveModuleSymbol(moduleHandle, symbolName, out address))
 		{
 			return true;
@@ -2316,127 +2178,16 @@ public sealed partial class DirectExecutionBackend
 	private bool TryResolveRuntimeSymbolAlias(string symbolName, out ulong address)
 	{
 		address = 0;
-		if (symbolName == "scriptingGetMem")
-		{
-			address = EnsureScriptingGetMemStub();
-			return address != 0;
-		}
-
 		var alias = symbolName switch
 		{
+			"scriptingGetMem" => "malloc",
 			"scriptingFreeMem" => "free",
 			"scriptingRealloc" => "realloc",
 			"scriptingCalloc" => "calloc",
 			_ => null,
 		};
 
-		if (alias != null && TryResolveRuntimeSymbolAddress(alias, out address))
-		{
-			return true;
-		}
-
-		for (var i = 0; i < _importEntries.Length; i++)
-		{
-			if (_importEntries[i].Export?.Name == symbolName)
-			{
-				address = _importEntries[i].Address;
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private unsafe ulong EnsureScriptingGetMemStub()
-	{
-		if (_scriptingGetMemStub != 0)
-		{
-			return (ulong)_scriptingGetMemStub;
-		}
-
-		if (!TryResolveRuntimeSymbolAddress("posix_memalign", out var posixMemalignAddr) &&
-			!TryResolveRuntimeSymbolAddress("cVSk9y8URbc", out posixMemalignAddr) &&
-			!TryResolveRuntimeSymbolAddress(ComputePsNid("posix_memalign"), out posixMemalignAddr))
-		{
-			if (TryResolveRuntimeSymbolAddress("malloc", out var mallocAddr))
-			{
-				Console.Error.WriteLine("[LOADER][WARN] scriptingGetMem: posix_memalign unavailable, falling back to malloc");
-				return mallocAddr;
-			}
-			return 0;
-		}
-
-		const nuint stubSize = 128u;
-		void* ptr = VirtualAlloc(null, stubSize, 12288u, 64u);
-		if (ptr == null)
-		{
-			return 0;
-		}
-
-		byte* p = (byte*)ptr;
-		var i = 0;
-
-		// sub rsp, 24
-		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xEC; p[i++] = 0x18;
-
-		// mov qword ptr [rsp+8], 0
-		p[i++] = 0x48; p[i++] = 0xC7; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x08;
-		p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
-
-		// cmp rdi, 16
-		// jae +7
-		// mov rdi, 16
-		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xFF; p[i++] = 0x10;
-		p[i++] = 0x73; p[i++] = 0x07;
-		p[i++] = 0x48; p[i++] = 0xC7; p[i++] = 0xC7; p[i++] = 0x10; p[i++] = 0x00; p[i++] = 0x00; p[i++] = 0x00;
-
-		// mov rdx, rsi (size)
-		p[i++] = 0x48; p[i++] = 0x89; p[i++] = 0xF2;
-
-		// mov rsi, rdi (alignment)
-		p[i++] = 0x48; p[i++] = 0x89; p[i++] = 0xFE;
-
-		// lea rdi, [rsp+8] (outPtr)
-		p[i++] = 0x48; p[i++] = 0x8D; p[i++] = 0x7C; p[i++] = 0x24; p[i++] = 0x08;
-
-		// mov rax, posixMemalignAddr
-		p[i++] = 0x48; p[i++] = 0xB8;
-		*(ulong*)(p + i) = posixMemalignAddr;
-		i += 8;
-
-		// call rax
-		p[i++] = 0xFF; p[i++] = 0xD0;
-
-		// test eax, eax
-		p[i++] = 0x85; p[i++] = 0xC0;
-
-		// jnz +10 (to .failed)
-		p[i++] = 0x75; p[i++] = 0x0A;
-
-		// mov rax, [rsp+8]
-		p[i++] = 0x48; p[i++] = 0x8B; p[i++] = 0x44; p[i++] = 0x24; p[i++] = 0x08;
-
-		// add rsp, 24
-		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xC4; p[i++] = 0x18;
-
-		// ret
-		p[i++] = 0xC3;
-
-		// .failed:
-		// xor eax, eax
-		p[i++] = 0x31; p[i++] = 0xC0;
-
-		// add rsp, 24
-		p[i++] = 0x48; p[i++] = 0x83; p[i++] = 0xC4; p[i++] = 0x18;
-
-		// ret
-		p[i++] = 0xC3;
-
-		FlushInstructionCache(GetCurrentProcess(), ptr, stubSize);
-		_importHandlerTrampolines.Add((nint)ptr);
-		_scriptingGetMemStub = (nint)ptr;
-		Console.Error.WriteLine($"[LOADER][INFO] scriptingGetMem native thunk installed at 0x{(ulong)_scriptingGetMemStub:X16} (posix_memalign=0x{posixMemalignAddr:X16})");
-		return (ulong)_scriptingGetMemStub;
+		return alias != null && TryResolveRuntimeSymbolAddress(alias, out address);
 	}
 
 	private OrbisGen2Result DispatchIl2CppApiLookupSymbol()
@@ -2472,11 +2223,6 @@ public sealed partial class DirectExecutionBackend
 	private bool TryResolveIl2CppApiAddress(string symbolName, out ulong address)
 	{
 		if (TryResolveRuntimeSymbolAddress(symbolName, out address))
-		{
-			return true;
-		}
-
-		if (TryResolveRuntimeSymbolAlias(symbolName, out address))
 		{
 			return true;
 		}
@@ -2526,17 +2272,18 @@ public sealed partial class DirectExecutionBackend
 		{
 			return false;
 		}
-		if (_runtimeSymbolsByName.TryGetValue(symbolName, out var value) && IsRuntimeSymbolAddressUsable(value))
+		var runtimeSymbolsByName = Volatile.Read(ref _runtimeSymbolsByName);
+		if (runtimeSymbolsByName.TryGetValue(symbolName, out var value) && IsRuntimeSymbolAddressUsable(value))
 		{
 			address = value;
 			return true;
 		}
-		if (symbolName.StartsWith("_", StringComparison.Ordinal) && _runtimeSymbolsByName.TryGetValue(symbolName[1..], out value) && IsRuntimeSymbolAddressUsable(value))
+		if (symbolName.StartsWith("_", StringComparison.Ordinal) && runtimeSymbolsByName.TryGetValue(symbolName[1..], out value) && IsRuntimeSymbolAddressUsable(value))
 		{
 			address = value;
 			return true;
 		}
-		if (_runtimeSymbolsByName.TryGetValue("_" + symbolName, out value) && IsRuntimeSymbolAddressUsable(value))
+		if (runtimeSymbolsByName.TryGetValue("_" + symbolName, out value) && IsRuntimeSymbolAddressUsable(value))
 		{
 			address = value;
 			return true;
@@ -2688,209 +2435,6 @@ public sealed partial class DirectExecutionBackend
 			{
 				VirtualProtect((void*)num, 5u, flNewProtect, &flNewProtect);
 			}
-		}
-	}
-
-	private readonly Dictionary<ulong, byte[]> _inlineDetourBackup = new();
-	private int _lastInlineDetourSymbolCount = -1;
-	private bool _inlineDetoursApplied;
-
-	private static bool IsPotentialInlineDetourSymbol(string symName)
-	{
-		if (string.IsNullOrWhiteSpace(symName))
-		{
-			return false;
-		}
-
-		return symName.Contains("cxa_guard", StringComparison.Ordinal) ||
-		       symName.Contains("umtx", StringComparison.Ordinal) ||
-		       symName.Contains("3GPpjQdAMTw", StringComparison.Ordinal) ||
-		       symName.Contains("9rAeANT2tyE", StringComparison.Ordinal) ||
-		       symName.Contains("S+B1-L6d+Wk", StringComparison.Ordinal) ||
-		       symName.Contains("2emaaluWzUw", StringComparison.Ordinal) ||
-		       symName.Contains("bZzZ2S54a10", StringComparison.Ordinal) ||
-		       symName.Contains("3D1uQc1oEFE", StringComparison.Ordinal);
-	}
-
-	private static bool IsInlineDetourTarget(string nid, string exportName)
-	{
-		if (string.IsNullOrWhiteSpace(exportName) && string.IsNullOrWhiteSpace(nid))
-		{
-			return false;
-		}
-
-		return exportName switch
-		{
-			"__cxa_guard_acquire" or
-			"__cxa_guard_release" or
-			"__cxa_guard_abort" or
-			"_umtx_op" => true,
-			_ => nid is "3GPpjQdAMTw" or "9rAeANT2tyE" or "S+B1-L6d+Wk" or "2emaaluWzUw" or "bZzZ2S54a10" or "3D1uQc1oEFE"
-		};
-	}
-
-	public unsafe void ApplyInlineHleDetours()
-	{
-		CpuContext? context = ActiveCpuContext;
-		if (context == null || !TryGetVirtualMemory(context, out var virtualMemory) || virtualMemory == null)
-		{
-			return;
-		}
-
-		KeyValuePair<string, ulong>[] runtimeSymbols = _runtimeSymbolsByAddress;
-		if (runtimeSymbols == null || runtimeSymbols.Length == 0)
-		{
-			return;
-		}
-
-		if (_inlineDetoursApplied && _lastInlineDetourSymbolCount == runtimeSymbols.Length)
-		{
-			return;
-		}
-
-		int patchedCount = 0;
-		foreach (KeyValuePair<string, ulong> kvp in runtimeSymbols)
-		{
-			string symName = kvp.Key;
-			if (!IsPotentialInlineDetourSymbol(symName))
-			{
-				continue;
-			}
-
-			ulong guestAddr = kvp.Value;
-			if (guestAddr == 0)
-			{
-				continue;
-			}
-
-			string cleanName = symName;
-			int hashIndex = cleanName.IndexOf('#');
-			if (hashIndex > 0)
-			{
-				cleanName = cleanName[..hashIndex];
-			}
-
-			if (!_moduleManager.TryGetExport(cleanName, out ExportedFunction? export) &&
-				!_moduleManager.TryGetExportByName(cleanName, out export))
-			{
-				continue;
-			}
-
-			if (export == null || PreferLleForLibcExport(export.Name) || !IsInlineDetourTarget(export.Nid, export.Name))
-			{
-				continue;
-			}
-
-			if (_inlineDetourBackup.ContainsKey(guestAddr))
-			{
-				continue;
-			}
-
-			int importIndex = -1;
-			for (int i = 0; i < _importEntries.Length; i++)
-			{
-				if (_importEntries[i].Address == guestAddr ||
-					string.Equals(_importEntries[i].Nid, export.Nid, StringComparison.Ordinal) ||
-					string.Equals(_importEntries[i].Nid, cleanName, StringComparison.Ordinal))
-				{
-					importIndex = i;
-					break;
-				}
-			}
-
-			if (importIndex < 0)
-			{
-				importIndex = _importEntries.Length;
-				Array.Resize(ref _importEntries, importIndex + 1);
-				_importEntries[importIndex] = new ImportStubEntry(
-					guestAddr,
-					export.Nid,
-					export,
-					IsLeafImport(export.Nid),
-					IsNoBlockLeafImport(export.Nid),
-					ShouldSuppressStrlenTrace(export.Nid),
-					IsImportLoopGuardBoundary(export.Nid),
-					StableHash64(export.Nid));
-			}
-
-			nint trampolineAddr = CreateImportHandlerTrampoline(importIndex, guestAddr);
-			if (trampolineAddr == 0)
-			{
-				Console.Error.WriteLine($"[LOADER][WARN] Failed to allocate HLE trampoline for inline detour: {export.Name} ({export.Nid}) at 0x{guestAddr:X16}");
-				continue;
-			}
-
-			long disp64 = (long)trampolineAddr - (long)(guestAddr + 5);
-			if (disp64 >= int.MinValue && disp64 <= int.MaxValue)
-			{
-				byte[] originalBytes = new byte[5];
-				if (!virtualMemory.TryRead(guestAddr, originalBytes))
-				{
-					Console.Error.WriteLine($"[LOADER][WARN] Failed to read original instructions for inline detour: {export.Name} at 0x{guestAddr:X16}");
-					continue;
-				}
-
-				byte[] detourBytes = new byte[5];
-				detourBytes[0] = 0xE9;
-				int disp32 = (int)disp64;
-				detourBytes[1] = (byte)(disp32 & 0xFF);
-				detourBytes[2] = (byte)((disp32 >> 8) & 0xFF);
-				detourBytes[3] = (byte)((disp32 >> 16) & 0xFF);
-				detourBytes[4] = (byte)((disp32 >> 24) & 0xFF);
-
-				if (virtualMemory.TryWrite(guestAddr, detourBytes))
-				{
-					_inlineDetourBackup[guestAddr] = originalBytes;
-					patchedCount++;
-					Console.Error.WriteLine($"[LOADER][INFO] Applied inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
-				}
-				else
-				{
-					Console.Error.WriteLine($"[LOADER][ERROR] Failed to write inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
-				}
-			}
-			else
-			{
-				// Out of ±2GB rel32 range: try 14-byte indirect absolute jump: jmp qword ptr [rip+0]
-				// FF 25 00 00 00 00 [8-byte trampolineAddr]
-				byte[] originalBytes14 = new byte[14];
-				if (!virtualMemory.TryRead(guestAddr, originalBytes14))
-				{
-					Console.Error.WriteLine($"[LOADER][WARN] Cannot apply inline detour for {export.Name}: trampoline at 0x{trampolineAddr:X16} out of ±2GB rel32 range from 0x{guestAddr:X16}");
-					continue;
-				}
-
-				byte[] detourBytes14 = new byte[14];
-				detourBytes14[0] = 0xFF;
-				detourBytes14[1] = 0x25;
-				detourBytes14[2] = 0x00;
-				detourBytes14[3] = 0x00;
-				detourBytes14[4] = 0x00;
-				detourBytes14[5] = 0x00;
-				fixed (byte* pDetour = detourBytes14)
-				{
-					*(ulong*)(pDetour + 6) = (ulong)trampolineAddr;
-				}
-
-				if (virtualMemory.TryWrite(guestAddr, detourBytes14))
-				{
-					_inlineDetourBackup[guestAddr] = originalBytes14;
-					patchedCount++;
-					Console.Error.WriteLine($"[LOADER][INFO] Applied 14-byte inline HLE detour for {export.Name} ({export.Nid}) at 0x{guestAddr:X16} -> trampoline 0x{trampolineAddr:X16}");
-				}
-				else
-				{
-					Console.Error.WriteLine($"[LOADER][ERROR] Failed to write 14-byte inline detour instructions for {export.Name} at 0x{guestAddr:X16}");
-				}
-			}
-		}
-
-		_inlineDetoursApplied = true;
-		_lastInlineDetourSymbolCount = runtimeSymbols.Length;
-
-		if (patchedCount > 0)
-		{
-			Console.Error.WriteLine($"[LOADER][INFO] Successfully applied {patchedCount} inline HLE export detours.");
 		}
 	}
 }

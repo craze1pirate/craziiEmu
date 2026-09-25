@@ -38,24 +38,23 @@ internal static class HostTiming
             }
 
             var remainingMicroseconds = remainingTicks * 1_000_000 / Stopwatch.Frequency;
-            if (remainingMicroseconds > 2200)
+            if (remainingMicroseconds > 3000)
             {
-                // Coarse sleep for the bulk; macOS overshoots ~0.5-1.5 ms.
-                Thread.Sleep((int)((remainingMicroseconds - 1200) / 1000));
+                // Sleep coarsely for the bulk with a safety margin to prevent Windows scheduler overshoots.
+                Thread.Sleep((int)((remainingMicroseconds - 1500) / 1000));
             }
-            else if (remainingMicroseconds > 1200)
+            else if (remainingMicroseconds > 1000)
             {
-                // A 1 ms nap typically wakes within the margin and costs no
-                // CPU, unlike yield-spinning through the whole tail.
-                Thread.Sleep(1);
-            }
-            else if (remainingMicroseconds > 100)
-            {
+                // Yield quantum to ready threads without entering kernel timer sleep
                 Thread.Sleep(0);
+            }
+            else if (remainingMicroseconds > 50)
+            {
+                Thread.Yield();
             }
             else
             {
-                Thread.SpinWait(64);
+                Thread.SpinWait(32);
             }
         }
     }

@@ -181,7 +181,7 @@ public static class CraziiEmuLog
 
     private static LogLevel ResolveMinimumLevelFromEnvironment()
     {
-        var raw = Environment.GetEnvironmentVariable("CraziiEmu_LOG_LEVEL");
+        var raw = Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_LEVEL");
         return TryParseLevel(raw, out var level) ? level : LogLevel.Info;
     }
 
@@ -192,7 +192,7 @@ public static class CraziiEmuLog
             return false;
         }
 
-        var raw = Environment.GetEnvironmentVariable("CraziiEmu_LOG_NO_COLOR");
+        var raw = Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_NO_COLOR");
         return !IsTrueLike(raw);
     }
 

@@ -17,12 +17,6 @@
           "NETStandard.Library": "1.6.1"
         }
       },
-      "ppy.SDL3-CS": {
-        "type": "Direct",
-        "requested": "[2026.629.0, )",
-        "resolved": "2026.629.0",
-        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
-      },
       "Silk.NET.Input": {
         "type": "Direct",
         "requested": "[2.23.0, )",
@@ -32,6 +26,12 @@
           "Silk.NET.Input.Common": "2.23.0",
           "Silk.NET.Input.Glfw": "2.23.0"
         }
+      },
+      "Silk.NET.Maths": {
+        "type": "Direct",
+        "requested": "[2.23.0, )",
+        "resolved": "2.23.0",
+        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
       },
       "Silk.NET.Vulkan": {
         "type": "Direct",
@@ -71,6 +71,12 @@
           "Silk.NET.Windowing.Common": "2.23.0",
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
+      },
+      "System.IO.Hashing": {
+        "type": "Direct",
+        "requested": "[10.0.0, )",
+        "resolved": "10.0.0",
+        "contentHash": "MqSp5IfX9RdWVwTED0WSRL1kZDNB7GlFj64O/NAJs4uO1beBHWEAFLlC7j8Fw/PkI+SUzooLVNvAe4aEkSwsRg=="
       },
       "Microsoft.DotNet.PlatformAbstractions": {
         "type": "Transitive",
@@ -156,8 +162,7 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.31.0-alpha, )",
-          "ppy.SDL3-CS": "[2026.629.0, )"
+          "CraziiEmu.Logging": "[0.33.0-alpha, )"
         }
       },
       "craziiemu.libatrac9": {
@@ -169,20 +174,14 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.31.0-alpha, )"
+          "CraziiEmu.HLE": "[0.33.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.31.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.33.0-alpha, )"
         }
-      },
-      "Silk.NET.Maths": {
-        "type": "CentralTransitive",
-        "requested": "[2.23.0, )",
-        "resolved": "2.23.0",
-        "contentHash": "r8PdIVzME8EH0qAgbmRPO87I4GfgR2j8TofT7EMuRJDf1QluoQwnVypDoFJjQ2ZBSRsGYk5unYxxogI05Ogsmw=="
       }
     }
   }

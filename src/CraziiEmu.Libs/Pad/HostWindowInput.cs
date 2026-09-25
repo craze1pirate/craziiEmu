@@ -12,7 +12,7 @@ using System.Collections.Generic;
 namespace CraziiEmu.Libs.Pad;
 
 /// <summary>
-/// Keyboard and gamepad state supplied from both Silk.NET window and cross-platform SDL game window,
+/// Keyboard and gamepad state supplied from the Silk.NET host window,
 /// feeding the host input seam. Incorporates CraziiEmuConfig bindings.
 /// </summary>
 public static class HostWindowInput

@@ -11,6 +11,8 @@ public interface IVirtualMemory : ICpuMemory
 {
     void Clear();
 
+    bool IsBackedView(ulong address);
+
     void Map(ulong virtualAddress, ulong memorySize, ulong fileOffset, ReadOnlySpan<byte> fileData, ProgramHeaderFlags protection);
 
     IReadOnlyList<VirtualMemoryRegion> SnapshotRegions();

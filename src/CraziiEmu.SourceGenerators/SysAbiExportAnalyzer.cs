@@ -103,17 +103,16 @@ public sealed class SysAbiExportAnalyzer : DiagnosticAnalyzer
         ConcurrentDictionary<string, IMethodSymbol> exportsByNid)
     {
         var method = (IMethodSymbol)context.Symbol;
-        AttributeData? exportAttribute = null;
+        var exportAttributes = ImmutableArray.CreateBuilder<AttributeData>();
         foreach (var attribute in method.GetAttributes())
         {
             if (SysAbiExportShape.IsSysAbiExportAttribute(attribute.AttributeClass))
             {
-                exportAttribute = attribute;
-                break;
+                exportAttributes.Add(attribute);
             }
         }
 
-        if (exportAttribute is null)
+        if (exportAttributes.Count == 0)
         {
             return;
         }
@@ -136,6 +135,28 @@ public sealed class SysAbiExportAnalyzer : DiagnosticAnalyzer
                 SysAbiDiagnostics.HandlerNotAccessible, location, methodDisplay));
         }
 
+        foreach (var exportAttribute in exportAttributes)
+        {
+            AnalyzeExportAttribute(
+                context,
+                catalogNames,
+                exportsByNid,
+                method,
+                exportAttribute,
+                location,
+                methodDisplay);
+        }
+    }
+
+    private static void AnalyzeExportAttribute(
+        SymbolAnalysisContext context,
+        HashSet<string>? catalogNames,
+        ConcurrentDictionary<string, IMethodSymbol> exportsByNid,
+        IMethodSymbol method,
+        AttributeData exportAttribute,
+        Location location,
+        string methodDisplay)
+    {
         var arguments = SysAbiExportShape.ReadArguments(exportAttribute);
         var hasNid = !string.IsNullOrWhiteSpace(arguments.Nid);
         var hasName = !string.IsNullOrWhiteSpace(arguments.ExportName);
@@ -189,9 +210,9 @@ public sealed class SysAbiExportAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        var existing = exportsByNid.GetOrAdd($"{arguments.LibraryName}_{effectiveNid}", method);
-        if (!SymbolEqualityComparer.Default.Equals(existing, method))
+        if (!exportsByNid.TryAdd(effectiveNid, method))
         {
+            var existing = exportsByNid[effectiveNid];
             context.ReportDiagnostic(Diagnostic.Create(
                 SysAbiDiagnostics.DuplicateNid,
                 location,

@@ -1,8 +1,12 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using SDL;
-using static SDL.SDL3;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using Silk.NET.Windowing;
 
 namespace CraziiEmu.Libs.VideoOut;
 
@@ -13,38 +17,26 @@ public sealed record HostDisplayInfo(
     string Name,
     IReadOnlyList<HostDisplayMode> Modes);
 
-public static unsafe class HostDisplayCatalog
+public static class HostDisplayCatalog
 {
-    private const SDL_InitFlags VideoFlag = SDL_InitFlags.SDL_INIT_VIDEO;
     private static int _queryFailureLogged;
 
     public static IReadOnlyList<HostDisplayInfo> Query()
     {
-        var initializedHere = false;
-        var videoReady = false;
         try
         {
-            initializedHere = (SDL_WasInit(VideoFlag) & VideoFlag) == 0;
-            if (initializedHere && !SDL_InitSubSystem(VideoFlag))
+            var monitors = Silk.NET.Windowing.Monitor.GetMonitors(null).ToArray();
+            if (monitors.Length == 0)
             {
-                LogQueryFailure(SDL_GetError() ?? "unknown SDL error");
-                return CreateFallback();
-            }
-            videoReady = true;
-
-            using var displays = SDL_GetDisplays();
-            if (displays is null || displays.Count == 0)
-            {
-                LogQueryFailure("SDL reported no displays");
                 return CreateFallback();
             }
 
-            var result = new List<HostDisplayInfo>(displays.Count);
-            for (var index = 0; index < displays.Count; index++)
+            var result = new List<HostDisplayInfo>(monitors.Length);
+            for (var index = 0; index < monitors.Length; index++)
             {
-                var display = displays[index];
-                var name = SDL_GetDisplayName(display);
-                var modes = ReadModes(display);
+                var monitor = monitors[index];
+                var name = monitor.Name;
+                var modes = ReadModes(monitor);
                 result.Add(new HostDisplayInfo(
                     index,
                     string.IsNullOrWhiteSpace(name) ? $"Display {index + 1}" : name,
@@ -58,31 +50,39 @@ public static unsafe class HostDisplayCatalog
             LogQueryFailure(exception.Message);
             return CreateFallback();
         }
-        finally
-        {
-            if (initializedHere && videoReady)
-            {
-                SDL_QuitSubSystem(VideoFlag);
-            }
-        }
     }
 
-    private static IReadOnlyList<HostDisplayMode> ReadModes(SDL_DisplayID display)
+    private static IReadOnlyList<HostDisplayMode> ReadModes(IMonitor monitor)
     {
         var modes = new HashSet<HostDisplayMode>();
-        using (var fullscreenModes = SDL_GetFullscreenDisplayModes(display))
+        try
         {
-            if (fullscreenModes is not null)
+            foreach (var mode in monitor.GetAllVideoModes())
             {
-                for (var index = 0; index < fullscreenModes.Count; index++)
+                if (mode.Resolution.HasValue && mode.Resolution.Value.X > 0 && mode.Resolution.Value.Y > 0)
                 {
-                    var mode = fullscreenModes[index];
-                    AddMode(modes, &mode);
+                    modes.Add(new HostDisplayMode(
+                        mode.Resolution.Value.X,
+                        mode.Resolution.Value.Y,
+                        mode.RefreshRate ?? 60));
                 }
             }
         }
+        catch
+        {
+            // Some platforms may throw on enumeration; fallback to current mode
+        }
 
-        AddMode(modes, SDL_GetDesktopDisplayMode(display));
+        if (monitor.VideoMode.Resolution.HasValue &&
+            monitor.VideoMode.Resolution.Value.X > 0 &&
+            monitor.VideoMode.Resolution.Value.Y > 0)
+        {
+            modes.Add(new HostDisplayMode(
+                monitor.VideoMode.Resolution.Value.X,
+                monitor.VideoMode.Resolution.Value.Y,
+                monitor.VideoMode.RefreshRate ?? 60));
+        }
+
         if (modes.Count == 0)
         {
             return CreateFallbackModes();
@@ -93,19 +93,6 @@ public static unsafe class HostDisplayCatalog
             .ThenByDescending(mode => mode.Width)
             .ThenByDescending(mode => mode.RefreshRate)
             .ToArray();
-    }
-
-    private static void AddMode(HashSet<HostDisplayMode> modes, SDL_DisplayMode* mode)
-    {
-        if (mode is null || mode->w <= 0 || mode->h <= 0)
-        {
-            return;
-        }
-
-        var refreshRate = mode->refresh_rate > 0
-            ? Math.Max(1, (int)Math.Round(mode->refresh_rate, MidpointRounding.AwayFromZero))
-            : 0;
-        modes.Add(new HostDisplayMode(mode->w, mode->h, refreshRate));
     }
 
     private static IReadOnlyList<HostDisplayInfo> CreateFallback() =>
@@ -123,7 +110,7 @@ public static unsafe class HostDisplayCatalog
     {
         if (Interlocked.Exchange(ref _queryFailureLogged, 1) == 0)
         {
-            Console.Error.WriteLine($"[GUI][WARN] SDL display query failed: {message}");
+            Console.Error.WriteLine($"[GUI][WARN] Display query failed: {message}");
         }
     }
 }

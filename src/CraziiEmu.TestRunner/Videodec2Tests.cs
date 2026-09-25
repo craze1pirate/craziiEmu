@@ -11,7 +11,8 @@ using CraziiEmu.Core.Cpu;
 using CraziiEmu.Core.Memory;
 using CraziiEmu.HLE;
 using CraziiEmu.Libs.AvPlayer;
-using CraziiEmu.Libs.Videodec2;
+using CraziiEmu.Libs.Codec;
+
 
 namespace CraziiEmu.TestRunner;
 

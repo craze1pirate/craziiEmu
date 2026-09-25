@@ -1,6 +1,6 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
 namespace CraziiEmu.Libs.VideoOut;
 
@@ -26,6 +26,21 @@ public enum HostHdrMode
     Off,
 }
 
+public enum PerformanceOverlayCorner
+{
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+}
+
+public enum PerformanceOverlayMode
+{
+    Full,
+    Minimal,
+    TitleBar,
+}
+
 public sealed record HostVideoOptions
 {
     public static HostVideoOptions Default { get; } = new();
@@ -38,15 +53,20 @@ public sealed record HostVideoOptions
 
     public int Height { get; init; } = 1080;
 
+    public float ResolutionScale { get; init; } = 1.0f;
+
     public int DisplayIndex { get; init; }
+
 
     public int RefreshRate { get; init; }
 
     public bool VSync { get; init; } = true;
 
-    public HostHdrMode HdrMode { get; init; } = HostHdrMode.Off;
+    public HostHdrMode HdrMode { get; init; } = HostHdrMode.Auto;
 
-    public float ResolutionScale { get; init; } = 1.0f;
+    public bool OverlayEnabled { get; init; } = true;
+    public PerformanceOverlayCorner OverlayCorner { get; init; } = PerformanceOverlayCorner.TopRight;
+    public PerformanceOverlayMode OverlayMode { get; init; } = PerformanceOverlayMode.Full;
 
     public HostVideoOptions Normalize() => this with
     {
@@ -54,14 +74,23 @@ public sealed record HostVideoOptions
         Height = Math.Clamp(Height, 360, 16384),
         DisplayIndex = Math.Max(0, DisplayIndex),
         RefreshRate = Math.Clamp(RefreshRate, 0, 1000),
-        ResolutionScale = ResolutionScale > 0f ? Math.Clamp(ResolutionScale, 0.25f, 4.0f) : 1.0f,
-        ScalingMode = Enum.IsDefined(ScalingMode) ? ScalingMode : HostScalingMode.Fit,
-        HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Off,
+        HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Auto,
+        OverlayCorner = Enum.IsDefined(OverlayCorner) ? OverlayCorner : PerformanceOverlayCorner.TopRight,
+        OverlayMode = Enum.IsDefined(OverlayMode) ? OverlayMode : PerformanceOverlayMode.Full,
     };
 }
 
 public static class HostVideoHost
 {
-    public static bool TryConfigureVideo(HostVideoOptions options) =>
-        VulkanVideoPresenter.TryConfigureVideo(options.Normalize());
+    private static HostVideoOptions _currentOptions = HostVideoOptions.Default;
+
+    public static HostVideoOptions CurrentOptions => Volatile.Read(ref _currentOptions);
+
+    public static bool TryConfigureVideo(HostVideoOptions options)
+    {
+        var normalized = options.Normalize();
+        Volatile.Write(ref _currentOptions, normalized);
+        return VulkanVideoPresenter.TryConfigureVideo(normalized);
+    }
 }
+

@@ -29,7 +29,7 @@ public interface IHostMemory
     /// <summary>Releases an entire allocation or reservation by its base address.</summary>
     bool Free(ulong address);
 
-    /// <summary>Decommits a range of pages back to the OS while preserving reservation.</summary>
+    /// <summary>Decommits pages inside a previously committed range without releasing address space.</summary>
     bool Decommit(ulong address, ulong size);
 
     /// <summary>

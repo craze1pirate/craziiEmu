@@ -2,8 +2,6 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using CraziiEmu.HLE.Host.Sdl;
-
 namespace CraziiEmu.HLE.Host.Windows;
 
 internal sealed class WindowsHostPlatform : IHostPlatform
@@ -14,7 +12,7 @@ internal sealed class WindowsHostPlatform : IHostPlatform
 
     public IHostSymbolResolver Symbols { get; } = new WindowsHostSymbolResolver();
 
-    public IHostAudioOutput Audio { get; } = new SdlHostAudio();
+    public IHostAudioOutput Audio { get; } = new WindowsWaveOutAudio();
 
-    public IHostInput Input { get; } = new WindowHostInput();
+    public IHostInput Input { get; } = new WindowsHostInput();
 }

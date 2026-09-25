@@ -7,7 +7,7 @@ using System.Collections.Concurrent;
 
 namespace CraziiEmu.Libs.Network;
 
-public static class HttpExports
+public static partial class HttpExports
 {
     private const int HttpErrorInvalidId = unchecked((int)0x80431100);
     private const int HttpErrorInvalidValue = unchecked((int)0x804311FE);

@@ -1,199 +1,29 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
-using System;
-using System.Buffers.Binary;
-using System.Collections.Generic;
-using System.Threading;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Psml;
 
 public static class PsmlExports
 {
-    public const uint SHARED_RESOURCES_MAGIC = 0xA9C4;
-    public const uint CONTEXT_MAGIC = 0x9231;
-    public const int PSML_ERROR_NOT_INITIALIZED = unchecked((int)0x80540001);
-    public const int PSML_ERROR_INVALID_POINTER = unchecked((int)0x80540002);
-    public const int PSML_ERROR_INVALID_OBJECT = unchecked((int)0x80540003);
-
-    private static bool _isInitialized;
-
+    // Empirically for Astro Bot (PPSA21567):
+    //   [0] must be 0x80 (sizeThis / r9); any other value в†’ Allocate length=0
+    //   AllocateMainDirectMemory(length=[0]*[16], alignment=[8], type=0xC)
+    // So put desired byte size in [8] (becomes alignment) and page size in [16].
+    private const ulong RequirementStructSize = 0x80;
     private const ulong SharedResourcesPageSize = 0x10000;
-    private const ulong SharedResourcesDefaultBufferSize = 0x800_0000; // 128 MiB
-    private const ulong SharedResourcesDefaultContextSize = 0x200_0000; // 32 MiB
-    private const ulong RequirementStructSize = 0x40;
-    private const ulong DefaultContextStructSize = 0x80;
+    private const ulong SharedResourcesBufferSizeBytes = 0x2000000;
+    private const ulong SharedResourcesContextSizeBytes = 0x100000;
+    private const ulong ContextBufferSizeBytes = 0x800000;
+    private const ulong ContextBufferAuxSizeBytes = 0x100000;
 
-    private static readonly object SharedResourcesGate = new();
+    private static int _mfsrInitialized;
+    private static readonly Lock SharedResourcesGate = new();
     private static readonly Dictionary<ulong, SharedResourcesState> SharedResourcesByDescriptor = new();
-
-    private static readonly object ContextGate = new();
+    private static readonly Lock ContextGate = new();
     private static readonly Dictionary<ulong, ContextState> ContextsByAddress = new();
-
-    public static void ResetStateForTest()
-    {
-        _isInitialized = false;
-        lock (SharedResourcesGate)
-        {
-            SharedResourcesByDescriptor.Clear();
-        }
-        lock (ContextGate)
-        {
-            ContextsByAddress.Clear();
-        }
-    }
-
-    public static int PsmlInitialize(CpuContext ctx)
-    {
-        _isInitialized = true;
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlGetMainMemoryRequirements(CpuContext ctx)
-    {
-        if (!_isInitialized)
-        {
-            return PSML_ERROR_NOT_INITIALIZED;
-        }
-
-        var outPtr = ctx[CpuRegister.Rdi];
-        var paramsPtr = ctx[CpuRegister.Rsi];
-        if (outPtr == 0 || paramsPtr == 0)
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        Span<byte> modeBytes = stackalloc byte[4];
-        if (!ctx.Memory.TryRead(paramsPtr, modeBytes))
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        var mode = BinaryPrimitives.ReadUInt32LittleEndian(modeBytes);
-        ulong blockCount = mode switch
-        {
-            1 => 196,
-            2 => 148,
-            _ => 52,
-        };
-
-        Span<byte> outBuf = stackalloc byte[24];
-        outBuf.Clear();
-        BinaryPrimitives.WriteUInt64LittleEndian(outBuf[16..24], blockCount);
-        if (!ctx.Memory.TryWrite(outPtr, outBuf))
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlSharedResourcesInitialize(CpuContext ctx)
-    {
-        if (!_isInitialized)
-        {
-            return PSML_ERROR_NOT_INITIALIZED;
-        }
-
-        var resPtr = ctx[CpuRegister.Rdi];
-        var paramsPtr = ctx[CpuRegister.Rsi];
-        if (resPtr == 0 || paramsPtr == 0)
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        Span<byte> header = stackalloc byte[48];
-        header.Clear();
-        BinaryPrimitives.WriteUInt32LittleEndian(header[0..4], SHARED_RESOURCES_MAGIC);
-        if (!ctx.Memory.TryWrite(resPtr, header))
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlContextInitialize(CpuContext ctx)
-    {
-        if (!_isInitialized)
-        {
-            return PSML_ERROR_NOT_INITIALIZED;
-        }
-
-        var ctxPtr = ctx[CpuRegister.Rdi];
-        var paramsPtr = ctx[CpuRegister.Rsi];
-        if (ctxPtr == 0 || paramsPtr == 0)
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        Span<byte> header = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32LittleEndian(header, CONTEXT_MAGIC);
-        if (!ctx.Memory.TryWrite(ctxPtr, header))
-        {
-            return PSML_ERROR_INVALID_POINTER;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlGetWorkAreaSize(CpuContext ctx)
-    {
-        var outSizePtr = ctx[CpuRegister.Rsi];
-        if (outSizePtr != 0)
-        {
-            Span<byte> sizeBytes = stackalloc byte[4];
-            BinaryPrimitives.WriteUInt32LittleEndian(sizeBytes, 0x600);
-            _ = ctx.Memory.TryWrite(outSizePtr, sizeBytes);
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlGetProgress(CpuContext ctx)
-    {
-        var outProgressPtr = ctx[CpuRegister.Rsi];
-        if (outProgressPtr != 0)
-        {
-            Span<byte> progressBytes = stackalloc byte[4];
-            BinaryPrimitives.WriteSingleLittleEndian(progressBytes, 0.0f);
-            _ = ctx.Memory.TryWrite(outProgressPtr, progressBytes);
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
-
-    public static int PsmlValidateObject(CpuContext ctx)
-    {
-        var objPtr = ctx[CpuRegister.Rdi];
-        if (objPtr == 0)
-        {
-            return PSML_ERROR_INVALID_OBJECT;
-        }
-
-        Span<byte> magicBytes = stackalloc byte[4];
-        if (!ctx.Memory.TryRead(objPtr, magicBytes))
-        {
-            return PSML_ERROR_INVALID_OBJECT;
-        }
-
-        var magic = BinaryPrimitives.ReadUInt32LittleEndian(magicBytes);
-        if (magic != SHARED_RESOURCES_MAGIC && magic != CONTEXT_MAGIC)
-        {
-            return PSML_ERROR_INVALID_OBJECT;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return 0;
-    }
 
     [SysAbiExport(
         Nid = "3WVD91e12ZQ",
@@ -202,8 +32,11 @@ public static class PsmlExports
         LibraryName = "libScePsml")]
     public static int PsmlMfsrInit(CpuContext ctx)
     {
-        var initParamsAddress = ctx[CpuRegister.Rdi];
-        TracePsml($"mfsr_init params=0x{initParamsAddress:X16}");
+        var arg0 = ctx[CpuRegister.Rdi];
+        var arg1 = ctx[CpuRegister.Rsi];
+        var arg2 = ctx[CpuRegister.Rdx];
+        Interlocked.Exchange(ref _mfsrInitialized, 1);
+        TracePsml($"mfsr_init arg0=0x{arg0:X} arg1=0x{arg1:X} arg2=0x{arg2:X}");
         return ctx.SetReturn(0);
     }
 
@@ -214,20 +47,25 @@ public static class PsmlExports
         LibraryName = "libScePsml")]
     public static int PsmlMfsrGetSharedResourcesInitRequirement(CpuContext ctx)
     {
-        var requirementAddress = ctx[CpuRegister.Rdi];
-        if (requirementAddress == 0)
+        var bufferRequirementAddress = ctx[CpuRegister.Rdi];
+        var contextRequirementAddress = ctx[CpuRegister.Rsi];
+        var flags = ctx[CpuRegister.Rdx];
+        var configAddress = ctx[CpuRegister.Rcx];
+        if (bufferRequirementAddress == 0 || contextRequirementAddress == 0)
         {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!WriteMemoryRequirement(ctx, requirementAddress, SharedResourcesDefaultBufferSize))
+        if (!WriteMemoryRequirement(ctx, bufferRequirementAddress, SharedResourcesBufferSizeBytes) ||
+            !WriteMemoryRequirement(ctx, contextRequirementAddress, SharedResourcesContextSizeBytes))
         {
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TracePsml(
-            $"mfsr_get_shared_resources_init_req out=0x{requirementAddress:X16} " +
-            $"size=0x{SharedResourcesDefaultBufferSize:X} page=0x{SharedResourcesPageSize:X}");
+            $"mfsr_get_shared_resources_init_requirement buf=0x{bufferRequirementAddress:X16} " +
+            $"ctx=0x{contextRequirementAddress:X16} flags=0x{flags:X} config=0x{configAddress:X16} " +
+            $"buf_size=0x{SharedResourcesBufferSizeBytes:X} ctx_size=0x{SharedResourcesContextSizeBytes:X}");
         return ctx.SetReturn(0);
     }
 
@@ -239,20 +77,19 @@ public static class PsmlExports
     public static int PsmlMfsrCreateSharedResources(CpuContext ctx)
     {
         var descriptorAddress = ctx[CpuRegister.Rdi];
-        var requirementAddress = ctx[CpuRegister.Rsi];
+        var contextRequirementAddress = ctx[CpuRegister.Rsi];
         var directMemoryAddress = ctx[CpuRegister.Rdx];
-
-        if (descriptorAddress == 0)
+        if (descriptorAddress == 0 || contextRequirementAddress == 0 || directMemoryAddress == 0)
         {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        var bufferSize = ReadRequirementSize(ctx, requirementAddress, SharedResourcesDefaultBufferSize);
+        var contextSizeBytes = ReadRequirementSize(ctx, contextRequirementAddress, SharedResourcesContextSizeBytes);
         var state = new SharedResourcesState(
             DescriptorAddress: descriptorAddress,
             DirectMemoryAddress: directMemoryAddress,
-            BufferSizeBytes: bufferSize,
-            ContextSizeBytes: SharedResourcesDefaultContextSize,
+            BufferSizeBytes: SharedResourcesBufferSizeBytes,
+            ContextSizeBytes: contextSizeBytes,
             PageSizeBytes: SharedResourcesPageSize);
 
         if (!WriteSharedResourcesDescriptor(ctx, state))
@@ -266,8 +103,9 @@ public static class PsmlExports
         }
 
         TracePsml(
-            $"mfsr_create_shared_resources desc=0x{descriptorAddress:X16} req=0x{requirementAddress:X16} " +
-            $"direct=0x{directMemoryAddress:X16} buf_size=0x{bufferSize:X}");
+            $"mfsr_create_shared_resources desc=0x{descriptorAddress:X16} req=0x{contextRequirementAddress:X16} " +
+            $"direct=0x{directMemoryAddress:X16} buf_size=0x{state.BufferSizeBytes:X} " +
+            $"ctx_size=0x{state.ContextSizeBytes:X} page=0x{state.PageSizeBytes:X}");
         return ctx.SetReturn(0);
     }
 
@@ -278,20 +116,24 @@ public static class PsmlExports
         LibraryName = "libScePsml")]
     public static int PsmlMfsrGetContextBufferRequirement800M3_2(CpuContext ctx)
     {
-        var requirementAddress = ctx[CpuRegister.Rdi];
-        if (requirementAddress == 0)
+        var bufferRequirementAddress = ctx[CpuRegister.Rdi];
+        var contextRequirementAddress = ctx[CpuRegister.Rsi];
+        var directMemoryAddress = ctx[CpuRegister.Rdx];
+        if (bufferRequirementAddress == 0 || contextRequirementAddress == 0 || directMemoryAddress == 0)
         {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (!WriteMemoryRequirement(ctx, requirementAddress, SharedResourcesDefaultContextSize))
+        if (!WriteMemoryRequirement(ctx, bufferRequirementAddress, ContextBufferSizeBytes) ||
+            !WriteMemoryRequirement(ctx, contextRequirementAddress, ContextBufferAuxSizeBytes))
         {
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
         }
 
         TracePsml(
-            $"mfsr_get_context_req_800m3_2 out=0x{requirementAddress:X16} " +
-            $"size=0x{SharedResourcesDefaultContextSize:X} page=0x{SharedResourcesPageSize:X}");
+            $"mfsr_get_context_buffer_requirement_800m3_2 buf=0x{bufferRequirementAddress:X16} " +
+            $"ctx=0x{contextRequirementAddress:X16} direct=0x{directMemoryAddress:X16} " +
+            $"buf_size=0x{ContextBufferSizeBytes:X} aux_size=0x{ContextBufferAuxSizeBytes:X}");
         return ctx.SetReturn(0);
     }
 
@@ -304,24 +146,19 @@ public static class PsmlExports
     {
         var contextAddress = ctx[CpuRegister.Rdi];
         var requirementAddress = ctx[CpuRegister.Rsi];
-        var sharedResourcesDescriptor = ctx[CpuRegister.Rdx];
+        var structSize = ctx[CpuRegister.Rdx];
         var sharedDirectMemory = ctx[CpuRegister.Rcx];
-
-        if (contextAddress == 0)
+        var pageSize = ctx[CpuRegister.R8];
+        if (contextAddress == 0 || sharedDirectMemory == 0)
         {
-            return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        var sharedState = TryFindSharedResources(sharedDirectMemory, sharedResourcesDescriptor);
-        var bufferSize = ReadRequirementSize(
-            ctx,
-            requirementAddress,
-            sharedState?.ContextSizeBytes ?? SharedResourcesDefaultContextSize);
-        var effectivePageSize = sharedState?.PageSizeBytes ?? SharedResourcesPageSize;
-        var effectiveStructSize = DefaultContextStructSize;
-        var sharedDescriptor = sharedResourcesDescriptor != 0
-            ? sharedResourcesDescriptor
-            : (sharedState?.DescriptorAddress ?? 0);
+        var sharedState = TryFindSharedResources(sharedDirectMemory, contextAddress);
+        var effectiveStructSize = structSize != 0 ? structSize : RequirementStructSize;
+        var effectivePageSize = pageSize != 0 ? pageSize : SharedResourcesPageSize;
+        var sharedDescriptor = sharedState?.DescriptorAddress ?? contextAddress - 0x30;
+        var bufferSize = sharedState?.BufferSizeBytes ?? ContextBufferSizeBytes;
 
         var state = new ContextState(
             ContextAddress: contextAddress,
@@ -362,6 +199,7 @@ public static class PsmlExports
             return fallback;
         }
 
+        // Guest requirement structs use size @8; reject pointer-like garbage.
         return sizeBytes > 0x1000_0000UL ? fallback : sizeBytes;
     }
 
@@ -401,6 +239,8 @@ public static class PsmlExports
 
     private static bool WriteSharedResourcesDescriptor(CpuContext ctx, SharedResourcesState state)
     {
+        // Stamp a compact self-describing blob so follow-up PSML calls can treat the
+        // descriptor as initialized guest memory instead of an all-zero placeholder.
         return ctx.TryWriteUInt64(state.DescriptorAddress + 0x00, RequirementStructSize) &&
                ctx.TryWriteUInt64(state.DescriptorAddress + 0x08, state.DirectMemoryAddress) &&
                ctx.TryWriteUInt64(state.DescriptorAddress + 0x10, state.DirectMemoryAddress) &&
@@ -411,6 +251,9 @@ public static class PsmlExports
                ctx.TryWriteUInt64(state.DescriptorAddress + 0x38, state.BufferSizeBytes + state.ContextSizeBytes);
     }
 
+
+    // Astro logo path: SizeInDwords then GetDispatchMfsrPacket900 (RUNLFro+qok).
+    // Unresolved 900 returns non-zero and trips GfxRenderStagePSSR.cpp:266.
     private const int SoftPacketSizeInDwords = 0x80;
     private const ulong SoftPacketSizeBytes = SoftPacketSizeInDwords * 4UL;
 
@@ -421,6 +264,9 @@ public static class PsmlExports
         LibraryName = "libScePsml")]
     public static int PsmlMfsrGetDispatchMfsrPacketSizeInDwords(CpuContext ctx)
     {
+        // Logo/PSSR path: guest asserts ret == 0, then calls GetDispatchMfsrPacket900
+        // with rdi=SoftPacketSizeInDwords (observed 0x80). Returning the size in rax
+        // tripped :266 and skipped the 900 call (tDISP-s6). SCE_OK keeps the chain.
         var arg0 = ctx[CpuRegister.Rdi];
         TracePsml(
             $"mfsr_get_dispatch_packet_size_dwords arg0=0x{arg0:X} " +
@@ -458,7 +304,8 @@ public static class PsmlExports
         var arg1 = ctx[CpuRegister.Rsi];
         var arg2 = ctx[CpuRegister.Rdx];
         var arg3 = ctx[CpuRegister.Rcx];
-
+        // Logo call shape (tDISP-s3): rdi=size_dwords (0x80), rsi/rdx = guest
+        // packet/param buffers. Clear the first mapped buffer arg.
         var packetAddress = 0UL;
         foreach (var candidate in new[] { arg1, arg2, arg3 })
         {
@@ -496,10 +343,7 @@ public static class PsmlExports
 
     private static void TracePsml(string message)
     {
-        if (string.Equals(
-                Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PSML") ?? Environment.GetEnvironmentVariable("SHARPEMU_LOG_PSML"),
-                "1",
-                StringComparison.Ordinal))
+        if (string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_LOG_PSML"), "1", StringComparison.Ordinal))
         {
             Console.Error.WriteLine($"[LOADER][TRACE] psml.{message}");
         }

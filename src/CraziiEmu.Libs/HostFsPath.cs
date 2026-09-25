@@ -1,3 +1,4 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -13,7 +14,9 @@ namespace CraziiEmu.Libs;
 /// </summary>
 internal static class HostFsPath
 {
-    public static readonly StringComparer Comparer = StringComparer.OrdinalIgnoreCase;
+    public static readonly StringComparer Comparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
-    public static readonly StringComparison Comparison = StringComparison.OrdinalIgnoreCase;
+    public static readonly StringComparison Comparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }

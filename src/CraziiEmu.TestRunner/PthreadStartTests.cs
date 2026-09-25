@@ -166,7 +166,15 @@ public static class PthreadStartTests
             return true;
         }
 
+        public bool TryCallGuestFunction(CpuContext callerContext, ulong entryPoint, ulong arg0, ulong arg1, ulong arg2, ulong arg3, ulong stackAddress, ulong stackSize, string reason, out ulong returnValue, out string? error)
+        {
+            returnValue = 0;
+            error = null;
+            return true;
+        }
+
         public bool TryCallGuestContinuation(CpuContext callerContext, GuestCpuContinuation continuation, string reason, out string? error)
+
         {
             error = null;
             return true;
@@ -181,6 +189,10 @@ public static class PthreadStartTests
         public bool HasPendingGuestException(ulong threadHandle) => hasException();
 
         public bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle) => deliverException();
+
+        public bool HasPendingGuestExceptionForCurrentThread() => hasException();
+
+        public void DeliverPendingGuestExceptionIfReady(CpuContext context) => deliverException();
     }
 
     private sealed class MockMemory : ICpuMemory, IGuestMemoryAllocator

@@ -14,8 +14,8 @@ internal sealed unsafe partial class WindowsHostMemory : IHostMemory
 {
     private const uint MEM_COMMIT = 0x1000;
     private const uint MEM_RESERVE = 0x2000;
-    private const uint MEM_DECOMMIT = 0x4000;
     private const uint MEM_RELEASE = 0x8000;
+    private const uint MEM_DECOMMIT = 0x4000;
     private const uint MEM_FREE = 0x10000;
 
     private const uint PAGE_NOACCESS = 0x01;

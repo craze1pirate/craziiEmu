@@ -15,7 +15,6 @@ namespace CraziiEmu.Libs.Json;
 public static class JsonExports
 {
     private const int ValueObjectSize = 0x20;
-    private const int StringObjectSize = 0x08;
     private const ulong MaximumJsonBufferSize = 16 * 1024 * 1024;
     private const int SceJsonParserErrorInvalidToken = unchecked((int)0x80920101);
     private const int SceJsonParserErrorEmptyBuffer = unchecked((int)0x80920105);

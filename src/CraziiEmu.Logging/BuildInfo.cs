@@ -13,8 +13,8 @@ namespace CraziiEmu.Logging;
 /// </summary>
 public static class BuildInfo
 {
-    private const string ProjectUrl = "https://github.com/sharpemu/sharpemu";
-    private const string CanonicalRepository = "sharpemu/sharpemu";
+    private const string ProjectUrl = "https://github.com/craziiEmu/craziiEmu";
+    private const string CanonicalRepository = "craziiEmu/craziiEmu";
 
     /// <summary>Short commit hash the build was produced from, or <c>null</c>.</summary>
     public static string? CommitSha { get; }
@@ -77,9 +77,9 @@ public static class BuildInfo
     /// <summary>
     /// The multi-line banner, e.g.
     /// <code>
-    /// CraziiEmu UNOFFICIAL f11ac59 — https://github.com/sharpemu/sharpemu
+    /// CraziiEmu UNOFFICIAL f11ac59 — https://github.com/craziiEmu/craziiEmu
     ///
-    /// Built from branch "main" of "sharpemu/sharpemu" by GitHub Actions workflow run https://github.com/sharpemu/sharpemu/actions/runs/123.
+    /// Built from branch "main" of "craziiEmu/craziiEmu" by GitHub Actions workflow run https://github.com/craziiEmu/craziiEmu/actions/runs/123.
     /// </code>
     /// Official release builds drop the <c>UNOFFICIAL</c> tag. Falls back to a
     /// local-build line when no CI provenance is present.

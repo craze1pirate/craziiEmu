@@ -12,6 +12,8 @@ public sealed class VirtualMemory : IVirtualMemory
     private readonly object _gate = new();
     private readonly List<MappedRegion> _regions = new();
 
+    public bool IsBackedView(ulong address) => false;
+
     public void Clear()
     {
         lock (_gate)

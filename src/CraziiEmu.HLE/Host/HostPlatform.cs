@@ -8,7 +8,10 @@ using CraziiEmu.HLE.Host.Windows;
 namespace CraziiEmu.HLE.Host;
 
 /// <summary>
-/// Process-wide access point for the Windows host platform backend.
+/// Process-wide access point for the host platform backend. Static HLE export
+/// classes (which cannot receive constructor injection) resolve host primitives
+/// through <see cref="Current"/>; injectable components should instead accept an
+/// <see cref="IHostPlatform"/> and merely default to this.
 /// </summary>
 public static class HostPlatform
 {
@@ -18,12 +21,17 @@ public static class HostPlatform
 
     private static IHostPlatform Create()
     {
+        // The Windows backend executes guest x86-64 natively and emits x86-64
+        // stubs, so a native ARM64 process must be rejected here rather than
+        // crash undefined later (x64 processes under emulation report X64).
         if (OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
         {
             return new WindowsHostPlatform();
         }
 
         throw new PlatformNotSupportedException(
-            "CraziiEmu requires an x86-64 process on Windows.");
+            "CraziiEmu native guest execution requires an x86-64 process on Windows. " +
+            "macOS and Linux support is excluded.");
     }
 }
+

@@ -13,7 +13,6 @@ public static class HostSessionControl
     private static Action<string>? _shutdownHandler;
     private static string? _pendingShutdownReason;
     private static int _shutdownRequested;
-
     private static long _embeddedHostWindow;
     private static long _embeddedHostDisplay;
 
@@ -33,6 +32,7 @@ public static class HostSessionControl
         Interlocked.Exchange(ref _embeddedHostWindow, window);
         Interlocked.Exchange(ref _embeddedHostDisplay, display);
     }
+
 
     /// <summary>
     /// Starts a fresh session after the previous guest has fully left its

@@ -1,7 +1,6 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
@@ -12,11 +11,12 @@ namespace CraziiEmu.Libs.Pad;
 
 public static class PadExports
 {
-    private const int OrbisPadErrorInvalidArg = unchecked((int)0x80920001);
     private const int OrbisPadErrorInvalidHandle = unchecked((int)0x80920003);
     private const int OrbisPadErrorNotInitialized = unchecked((int)0x80920005);
     private const int OrbisPadErrorDeviceNotConnected = unchecked((int)0x80920007);
     private const int OrbisPadErrorDeviceNoHandle = unchecked((int)0x80920008);
+    private const int OrbisPadErrorInvalidArg = unchecked((int)0x80920002);
+    private const int PadDeviceClassDataSize = 0x20;
     // Keep the pad session on the same retail user id returned by
     // libSceUserService.  A mismatched emulator-local id makes games pass a
     // valid 0x10000000 user to scePadOpen and receive DEVICE_NOT_CONNECTED,
@@ -26,7 +26,6 @@ public static class PadExports
     private const int PrimaryPadHandle = 1;
     private const int ControllerInformationSize = 0x1C;
     private const int PadDataSize = 0x78;
-    private const int PadDeviceClassDataSize = 24;
 
     // Real firmware hands out small non-negative handles; 0 is valid. Some titles
     // (Monster Truck Championship) read pad state with handle 0, and rejecting it
@@ -76,8 +75,6 @@ public static class PadExports
     // (and the game loop that drives it) misbehaved. Same validation as
     // scePadOpen — the one primary pad — returning its handle or a not-connected
     // error, never opening or logging.
-    private static bool IsPrimaryUser(int userId) => userId is PrimaryUserId or 1000 or 1 or 0;
-
     [SysAbiExport(
         Nid = "u1GRHp+oWoY",
         ExportName = "scePadGetHandle",
@@ -93,7 +90,7 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorNotInitialized);
         }
 
-        if (!IsPrimaryUser(userId) || type is not (0 or 1 or 2) || index != 0)
+        if (userId != PrimaryUserId || type is not (0 or 1 or 2) || index != 0)
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
@@ -119,8 +116,8 @@ public static class PadExports
             return ctx.SetReturn(OrbisPadErrorDeviceNoHandle);
         }
 
-        var typeAccepted = type is 0 or 1 or 2;
-        if (!IsPrimaryUser(userId) || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
+        var typeAccepted = extended ? type is 0 or 1 or 2 : type == StandardPortType;
+        if (userId != PrimaryUserId || !typeAccepted || index != 0 || (!extended && parameterAddress != 0))
         {
             return ctx.SetReturn(OrbisPadErrorDeviceNotConnected);
         }
@@ -965,8 +962,6 @@ public static class PadExports
             data[offset + 4] = point.Id;
         }
     }
-
-    // Removed hardcoded keyboard and analog mapping functions
 
     private static byte MergeAxis(byte controller, byte keyboard)
     {

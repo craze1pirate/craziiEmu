@@ -1,11 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using CraziiEmu.Libs.Gpu;
 
 namespace CraziiEmu.Libs.VideoOut;
@@ -63,15 +59,10 @@ internal static class GuestDepthExtentResolver
                 return false;
             }
 
-            var textureSize = VulkanVideoPresenter.GetGuestImageByteCount(
-                texture.Format,
-                texture.Pitch > 0 ? Math.Max(texture.Pitch, texture.Width) : texture.Width,
-                texture.Height,
-                texture.Depth);
-            var depthSize = (ulong)depth.Width * depth.Height * (depth.GuestFormat == 1 ? 2UL : 4UL);
+            ulong textureSize = (ulong)texture.Width * texture.Height * 4UL;
+            ulong depthSize = (ulong)depth.Width * depth.Height * (depth.GuestFormat == 1 ? 2UL : 4UL);
 
-            return GuestTexturePageTracker<object>.ImageRangeOverlaps(
-                texture.Address, textureSize, depth.Address, depthSize);
+            return texture.Address < depth.Address + depthSize && depth.Address < texture.Address + textureSize;
         });
 
         if (overlappingTexture is not null)

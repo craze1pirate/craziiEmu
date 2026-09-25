@@ -35,14 +35,6 @@ public enum Gen5OperandKind
     LiteralConstant,
 }
 
-public enum Gen5ShaderResourceKind
-{
-    ReadOnlyTexture,
-    ReadWriteTexture,
-    Sampler,
-    ConstantBuffer,
-}
-
 public enum Gen5PixelOutputKind
 {
     Float,
@@ -50,10 +42,105 @@ public enum Gen5PixelOutputKind
     Sint,
 }
 
+/// <summary>
+/// Selects the logical shader component for each physical color component.
+/// Each component uses two bits in <see cref="Packed"/>.
+/// </summary>
+public readonly record struct Gen5ColorComponentMapping
+{
+    public const byte IdentityPacked = 0xE4;
+    private readonly byte _encoded;
+
+    public Gen5ColorComponentMapping(byte packed)
+    {
+        _encoded = (byte)(packed ^ IdentityPacked);
+    }
+
+    public byte Packed => (byte)(_encoded ^ IdentityPacked);
+
+    public static Gen5ColorComponentMapping Identity { get; } = new(IdentityPacked);
+
+    public uint Map(uint physicalComponent) =>
+        physicalComponent < 4
+            ? (uint)(Packed >> checked((int)(physicalComponent * 2))) & 0x3u
+            : physicalComponent;
+
+    public uint ApplyMask(uint logicalMask)
+    {
+        var mappedMask = 0u;
+        for (var physicalComponent = 0u; physicalComponent < 4; physicalComponent++)
+        {
+            mappedMask |= ((logicalMask >> checked((int)Map(physicalComponent))) & 1u)
+                << checked((int)physicalComponent);
+        }
+
+        return mappedMask;
+    }
+
+    public Gen5ColorComponentMapping Then(Gen5ColorComponentMapping next)
+    {
+        var packed = 0u;
+        for (var physicalComponent = 0u; physicalComponent < 4; physicalComponent++)
+        {
+            packed |= next.Map(Map(physicalComponent))
+                << checked((int)(physicalComponent * 2));
+        }
+
+        return new Gen5ColorComponentMapping(checked((byte)packed));
+    }
+
+    public bool IsIdentity => Packed == IdentityPacked;
+
+    public static bool TryResolveRenderTarget(
+        uint componentSwap,
+        uint componentCount,
+        out Gen5ColorComponentMapping mapping)
+    {
+        var packed = (componentSwap, componentCount) switch
+        {
+            (0, >= 1 and <= 4) => IdentityPacked,
+            (1, 1) => 0xE1,
+            (1, 2) => 0x6C,
+            (1, 3) => 0xB4,
+            (1, 4) => 0xC6,
+            (2, 1) => 0xC6,
+            (2, 2) => 0xE1,
+            (2, 3) => 0xC6,
+            (2, 4) => 0x1B,
+            (3, 1) => 0x27,
+            (3, 2) => 0x63,
+            (3, 3) => 0x87,
+            (3, 4) => 0x93,
+            _ => -1,
+        };
+        mapping = packed >= 0
+            ? new Gen5ColorComponentMapping(checked((byte)packed))
+            : default;
+        return packed >= 0;
+    }
+}
+
 public readonly record struct Gen5PixelOutputBinding(
     uint GuestSlot,
     uint HostLocation,
-    Gen5PixelOutputKind Kind);
+    Gen5PixelOutputKind Kind,
+    Gen5ColorComponentMapping ComponentMapping)
+{
+    public Gen5PixelOutputBinding(
+        uint guestSlot,
+        uint hostLocation,
+        Gen5PixelOutputKind kind)
+        : this(guestSlot, hostLocation, kind, Gen5ColorComponentMapping.Identity)
+    {
+    }
+}
+
+public enum Gen5ShaderResourceKind
+{
+    Texture,
+    Sampler,
+    Buffer,
+}
 
 public readonly record struct Gen5ShaderResourceMapping(
     Gen5ShaderResourceKind Kind,
@@ -127,6 +214,7 @@ public sealed record Gen5ShaderState(
     Gen5ComputeSystemRegisters? ComputeSystemRegisters = null,
     uint UserDataScalarRegisterBase = 0);
 
+
 public readonly record struct Gen5Operand(Gen5OperandKind Kind, uint Value)
 {
     public static Gen5Operand Scalar(uint index) =>
@@ -189,13 +277,20 @@ public sealed record Gen5ImageControl(
 public sealed record Gen5GlobalMemoryControl(
     uint DwordCount,
     uint VectorAddress,
-    uint VectorData,
+    uint SourceVectorRegister,
+    uint DestinationVectorRegister,
     uint ScalarAddress,
     int OffsetBytes,
     bool Glc,
     bool Slc,
-    bool UsesFlatAddress = false) : Gen5InstructionControl;
+    bool UsesFlatAddress = false) : Gen5InstructionControl
+{
+    public uint VectorData => SourceVectorRegister;
+}
 
+
+// A typed access carries the unified format from the instruction; a formatted
+// untyped access reads the descriptor format when it executes.
 public sealed record Gen5BufferMemoryControl(
     uint DwordCount,
     uint VectorAddress,
@@ -205,7 +300,9 @@ public sealed record Gen5BufferMemoryControl(
     bool IndexEnabled,
     bool OffsetEnabled,
     bool Glc,
-    bool Slc) : Gen5InstructionControl;
+    bool Slc,
+    bool Typed = false,
+    uint TypedFormat = 0) : Gen5InstructionControl;
 
 public sealed record Gen5ExportControl(
     uint Target,
@@ -271,7 +368,13 @@ public sealed record Gen5ScalarMemoryControl(
 public sealed record Gen5DataShareControl(
     uint Offset0,
     uint Offset1,
-    bool Gds) : Gen5InstructionControl;
+    bool Gds) : Gen5InstructionControl
+{
+    // Single-address DS instructions encode one 16-bit byte offset across
+    // OFFSET0 and OFFSET1. The paired read2/write2 forms instead interpret
+    // them as two independent scaled 8-bit offsets.
+    public uint SingleOffsetBytes => Offset0 | (Offset1 << 8);
+}
 
 public sealed record Gen5ImageBinding(
     uint Pc,
@@ -349,32 +452,13 @@ public sealed record Gen5ShaderProgram(
     private const uint PixelColorTargetCount = 8;
     private const int PixelColorMaskBits = 4;
     private readonly uint _pixelColorExportMasks = ComputePixelColorExportMasks(Instructions);
+    private readonly uint _parameterExportMask = ComputeParameterExportMask(Instructions);
     private const int ScalarRegisterCount = 256;
     private IReadOnlySet<uint>? _runtimeScalarRegisters;
 
     public uint PixelColorExportMasks => _pixelColorExportMasks;
 
-    private static uint ComputePixelColorExportMasks(
-        IReadOnlyList<Gen5ShaderInstruction> instructions)
-    {
-        var masks = 0u;
-        foreach (var instruction in instructions)
-        {
-            if (instruction.Control is Gen5ExportControl export &&
-                export.Target < PixelColorTargetCount)
-            {
-                masks |= (export.EnableMask & 0xFu) <<
-                    (int)(export.Target * PixelColorMaskBits);
-            }
-        }
-
-        return masks;
-    }
-
-    public IEnumerable<Gen5ImageControl> ImageResources =>
-        Instructions
-            .Select(instruction => instruction.Control)
-            .OfType<Gen5ImageControl>();
+    public uint ParameterExportMask => _parameterExportMask;
 
     /// <summary>
     /// The set of scalar registers the program reads or writes as runtime
@@ -422,4 +506,44 @@ public sealed record Gen5ShaderProgram(
 
         return registers;
     }
+
+    private static uint ComputePixelColorExportMasks(
+        IReadOnlyList<Gen5ShaderInstruction> instructions)
+    {
+        var masks = 0u;
+        foreach (var instruction in instructions)
+        {
+            if (instruction.Control is Gen5ExportControl export &&
+                export.Target < PixelColorTargetCount)
+            {
+                masks |= (export.EnableMask & 0xFu) <<
+                    (int)(export.Target * PixelColorMaskBits);
+            }
+        }
+
+        return masks;
+    }
+
+    private static uint ComputeParameterExportMask(
+        IReadOnlyList<Gen5ShaderInstruction> instructions)
+    {
+        var mask = 0u;
+        foreach (var instruction in instructions)
+        {
+            if (instruction.Control is Gen5ExportControl export &&
+                export.Target is >= 32 and < 64 &&
+                export.EnableMask != 0)
+            {
+                mask |= 1u << (int)(export.Target - 32);
+            }
+        }
+
+        return mask;
+    }
+
+    public IEnumerable<Gen5ImageControl> ImageResources =>
+        Instructions
+            .Select(instruction => instruction.Control)
+            .OfType<Gen5ImageControl>();
 }
+

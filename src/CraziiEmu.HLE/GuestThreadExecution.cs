@@ -63,6 +63,14 @@ public interface IGuestThreadScheduler
     int WakeBlockedThreads(string wakeKey, int maxCount = int.MaxValue);
 
     /// <summary>
+    /// Reports whether the current guest thread has an exception that waits for an import safe point.
+    /// </summary>
+    bool HasPendingGuestExceptionForCurrentThread();
+
+    // Host waits must allow exception delivery before the import call returns.
+    void DeliverPendingGuestExceptionIfReady(CpuContext context) { }
+
+    /// <summary>
     /// Applies a new guest scheduling priority to a live thread, mapping it
     /// onto the host thread if one is running. Returns false when the thread
     /// handle is unknown.
@@ -99,6 +107,19 @@ public interface IGuestThreadScheduler
         out ulong returnValue,
         out string? error);
 
+    bool TryCallGuestFunction(
+        CpuContext callerContext,
+        ulong entryPoint,
+        ulong arg0,
+        ulong arg1,
+        ulong arg2,
+        ulong arg3,
+        ulong stackAddress,
+        ulong stackSize,
+        string reason,
+        out ulong returnValue,
+        out string? error);
+
     bool TryCallGuestContinuation(
         CpuContext callerContext,
         GuestCpuContinuation continuation,
@@ -117,19 +138,6 @@ public interface IGuestThreadScheduler
         ulong handler,
         int exceptionType,
         out string? error);
-
-    /// <summary>
-    /// Checks whether there is a queued kernel exception waiting to be delivered
-    /// to the specified guest thread.
-    /// </summary>
-    bool HasPendingGuestException(ulong threadHandle);
-
-    /// <summary>
-    /// Delivers any pending kernel exception queued for the specified thread
-    /// by executing its installed exception handler on its exception stack.
-    /// Returns true if an exception was delivered.
-    /// </summary>
-    bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle);
 }
 
 public readonly record struct GuestImportCallFrame(
@@ -184,9 +192,6 @@ public static class GuestThreadExecution
 
     [ThreadStatic]
     private static ulong _currentGuestThreadHandle;
-
-    [ThreadStatic]
-    private static bool _isMainThread;
 
     [ThreadStatic]
     private static ulong _currentFiberAddress;
@@ -263,23 +268,17 @@ public static class GuestThreadExecution
 
     public static bool IsGuestThread => _currentGuestThreadHandle != 0;
 
-    public static bool IsMainThread => _isMainThread;
-
     public static ulong CurrentGuestThreadHandle => _currentGuestThreadHandle;
+
+    public static bool HasPendingCurrentThreadBlock => _pendingBlockReason is not null;
 
     public static ulong CurrentFiberAddress => _currentFiberAddress;
 
-    public static bool HasPendingGuestException(ulong threadHandle) =>
-        Scheduler?.HasPendingGuestException(threadHandle) ?? false;
-
-    public static bool TryDeliverPendingGuestException(CpuContext context, ulong threadHandle) =>
-        Scheduler?.TryDeliverPendingGuestException(context, threadHandle) ?? false;
-
-    public static ulong EnterGuestThread(ulong threadHandle, bool isMainThread = false)
+    public static ulong EnterGuestThread(ulong threadHandle)
     {
+        GpuMemory.GpuMemoryAccessProfile.InitializeCurrentThread();
         var previous = _currentGuestThreadHandle;
         _currentGuestThreadHandle = threadHandle;
-        _isMainThread = isMainThread;
         _pendingBlockReason = null;
         _pendingBlockContinuationValid = false;
         _pendingBlockContinuation = default;
@@ -301,7 +300,6 @@ public static class GuestThreadExecution
     public static void RestoreGuestThread(ulong previousThreadHandle)
     {
         _currentGuestThreadHandle = previousThreadHandle;
-        _isMainThread = false;
         _pendingBlockReason = null;
         _pendingBlockContinuationValid = false;
         _pendingBlockContinuation = default;
@@ -340,7 +338,7 @@ public static class GuestThreadExecution
         IGuestThreadBlockWaiter? waiter = null,
         long blockDeadlineTimestamp = 0)
     {
-        if (!IsGuestThread || _isMainThread)
+        if (!IsGuestThread)
         {
             return false;
         }

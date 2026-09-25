@@ -15,7 +15,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <PackageVersion Include="ELFSharp" Version="2.17.1" />
     <PackageVersion Include="FFmpeg.AutoGen" Version="7.1.1" />
     <PackageVersion Include="NLayer" Version="1.14.0" />
-    <PackageVersion Include="ppy.SDL3-CS" Version="2026.629.0" />
     <PackageVersion Include="System.Management" Version="9.0.0" />
     <PackageVersion Include="Iced" Version="1.21.0" />
     <PackageVersion Include="Microsoft.Build.Framework" Version="17.14.8" />
@@ -33,6 +32,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <PackageVersion Include="Tmds.DBus.Protocol" Version="0.21.3" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.1" />
+    <PackageVersion Include="System.IO.Hashing" Version="10.0.0" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
   </ItemGroup>
 </Project>

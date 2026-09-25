@@ -1,9 +1,11 @@
-// Copyright (C) 2026 CraziiEmu Emulator Project
+// Copyright (C) 2026 SharpEmu Emulator Project
+// Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Diagnostics;
 using System.Threading;
 using CraziiEmu.Libs.Agc;
+using CraziiEmu.Libs.VideoOut;
 
 namespace CraziiEmu.Libs.Diagnostics;
 
@@ -138,13 +140,14 @@ public static class LoadProgressDiagnostics
             return;
         }
 
-        var snapshot = GpuWaitRegistry.SnapshotOutstanding(memory);
+        // Blocked command-stream heads replaced the wait registry; the trace keeps its shape.
+        var snapshot = VulkanVideoPresenter.SnapshotBlockedCommandStream(memory as CraziiEmu.HLE.ICpuMemory);
         Console.Error.WriteLine(
             $"[LOADER][TRACE] load_progress.gpu_waits count={count} " +
-            $"outstanding={snapshot.Outstanding} latched={snapshot.Latched} " +
-            $"oldest_ms={snapshot.OldestAgeMs} " +
-            $"sample_addr=0x{snapshot.SampleWaitAddress:X16} " +
-            $"sample_queue={snapshot.SampleQueueName ?? "-"}");
+            $"outstanding={snapshot?.Outstanding ?? 0} latched=0 " +
+            $"oldest_ms={snapshot?.OldestAgeMilliseconds ?? 0:F0} " +
+            $"sample_addr=0x{snapshot?.SampleWaitAddress ?? 0:X16} " +
+            $"sample_queue={(snapshot is { SampleQueueId: >= 0 } sample ? (sample.SampleQueueId == 0 ? "dcb.graphics" : $"acb.compute[{0x20 + sample.SampleQueueId - 1}]") : "-")}");
     }
 
     private static bool ShouldTrace(ref long counter, out long count)

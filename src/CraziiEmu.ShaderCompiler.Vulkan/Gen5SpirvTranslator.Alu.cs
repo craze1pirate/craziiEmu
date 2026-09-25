@@ -116,26 +116,19 @@ public static partial class Gen5SpirvTranslator
                     break;
                 case "VWritelaneB32":
                 {
-                    // vdst[lane(src1)] = src0
-                    // Per-lane: if current lane == src1, write src0, else keep old value.
                     var oldValue = LoadV(destination);
-                    var src0 = GetRawSource(instruction, 0);
-                    var laneSelect = GetRawSource(instruction, 1);
-                    var currentLane = _subgroupInvocationIdInput != 0
-                        ? BitwiseAnd(
-                            Load(_uintType, _subgroupInvocationIdInput),
-                            UInt(RdnaWaveLaneCount - 1))
-                        : UInt(0);
+                    var sourceValue = GetRawSource(instruction, 0);
+                    var selectedLane = BitwiseAnd(GetRawSource(instruction, 1), UInt(_waveLaneCount - 1));
                     var isTargetLane = _module.AddInstruction(
                         SpirvOp.IEqual,
                         _boolType,
-                        currentLane,
-                        laneSelect);
+                        GuestWaveLane(),
+                        selectedLane);
                     result = _module.AddInstruction(
                         SpirvOp.Select,
                         _uintType,
                         isTargetLane,
-                        src0,
+                        sourceValue,
                         oldValue);
                     // Writelane writes to a specific lane regardless of exec mask.
                     StoreV(destination, result, guardWithExec: false);
@@ -284,6 +277,12 @@ public static partial class Gen5SpirvTranslator
                         instruction,
                         Ext(32, _floatType, GetFloatSource(instruction, 0)));
                     break;
+                case "VRsqF16":
+                    result = EmitFloat16Result(
+                        instruction,
+                        destination,
+                        Ext(32, _floatType, GetFloat16Source(instruction, 0)));
+                    break;
                 case "VFractF32":
                     result = EmitFloatResult(
                         instruction,
@@ -393,6 +392,17 @@ public static partial class Gen5SpirvTranslator
                             GetFloatSource(instruction, 1),
                             GetFloatSource(instruction, 2)));
                     break;
+                case "VFmaF16":
+                    result = EmitFloat16Result(
+                        instruction,
+                        destination,
+                        Ext(
+                            50,
+                            _floatType,
+                            GetFloat16Source(instruction, 0),
+                            GetFloat16Source(instruction, 1),
+                            GetFloat16Source(instruction, 2)));
+                    break;
                 case "VMacF32":
                 case "VFmacF32":
                 {
@@ -421,6 +431,10 @@ public static partial class Gen5SpirvTranslator
                     break;
                 case "VXorB32":
                     result = EmitIntegerBinary(instruction, SpirvOp.BitwiseXor);
+                    break;
+                case "VXor3B32":
+                    result = _module.AddInstruction(SpirvOp.BitwiseXor, _uintType,
+                        EmitIntegerBinary(instruction, SpirvOp.BitwiseXor), GetRawSource(instruction, 2));
                     break;
                 case "VXnorB32":
                 {
@@ -452,6 +466,12 @@ public static partial class Gen5SpirvTranslator
                 case "VAddU32":
                     result = EmitIntegerBinary(instruction, SpirvOp.IAdd);
                     break;
+                case "VAddNcU16":
+                    result = EmitInteger16Binary(
+                        instruction,
+                        destination,
+                        SpirvOp.IAdd);
+                    break;
                 case "VAddcU32":
                 case "VAddCoCiU32":
                     result = EmitAddWithCarry(instruction);
@@ -470,6 +490,16 @@ public static partial class Gen5SpirvTranslator
                 case "VSubbrevU32":
                     result = EmitSubtractWithBorrow(instruction, reverse: true);
                     break;
+                case "VMulI32I24":
+                {
+                    var signedLeft = _module.AddInstruction(SpirvOp.BitFieldSExtract, _intType,
+                        Bitcast(_intType, GetRawSource(instruction, 0)), UInt(0), UInt(24));
+                    var signedRight = _module.AddInstruction(SpirvOp.BitFieldSExtract, _intType,
+                        Bitcast(_intType, GetRawSource(instruction, 1)), UInt(0), UInt(24));
+                    result = _module.AddInstruction(SpirvOp.IMul, _uintType,
+                        Bitcast(_uintType, signedLeft), Bitcast(_uintType, signedRight));
+                    break;
+                }
                 case "VMulLoU32":
                 case "VMulLoI32":
                 case "VMulU32U24":
@@ -677,6 +707,11 @@ public static partial class Gen5SpirvTranslator
                     result = IAdd(shifted, GetRawSource(instruction, 2));
                     break;
                 }
+                case "VXadU32":
+                    result = IAdd(
+                        BitwiseXor(GetRawSource(instruction, 0), GetRawSource(instruction, 1)),
+                        GetRawSource(instruction, 2));
+                    break;
                 case "VLshlOrU32":
                 {
                     var shifted = ShiftLeftLogical(
@@ -722,6 +757,21 @@ public static partial class Gen5SpirvTranslator
                             GetRawSource(instruction, 1)),
                         GetRawSource(instruction, 2));
                     break;
+                case "VSadU32":
+                {
+                    var source0 = GetRawSource(instruction, 0);
+                    var source1 = GetRawSource(instruction, 1);
+                    var minimum = Ext(38, _uintType, source0, source1);
+                    var maximum = Ext(41, _uintType, source0, source1);
+                    result = IAdd(
+                        _module.AddInstruction(
+                            SpirvOp.ISub,
+                            _uintType,
+                            maximum,
+                            minimum),
+                        GetRawSource(instruction, 2));
+                    break;
+                }
                 case "VMinU32":
                     result = Ext(
                         38,
@@ -977,6 +1027,23 @@ public static partial class Gen5SpirvTranslator
                         vector);
                     break;
                 }
+                case "VCvtPkU16U32":
+                {
+                    var low = Ext(38, _uintType, GetRawSource(instruction, 0), UInt(0xFFFF));
+                    var high = Ext(38, _uintType, GetRawSource(instruction, 1), UInt(0xFFFF));
+                    result = BitwiseOr(low, ShiftLeftLogical(high, UInt(16)));
+                    break;
+                }
+                case "VCvtPkI16I32":
+                {
+                    var minimum = Bitcast(_intType, UInt(0xFFFF8000));
+                    var maximum = Bitcast(_intType, UInt(0x7FFF));
+                    var low = Ext(45, _intType, Bitcast(_intType, GetRawSource(instruction, 0)), minimum, maximum);
+                    var high = Ext(45, _intType, Bitcast(_intType, GetRawSource(instruction, 1)), minimum, maximum);
+                    result = BitwiseOr(BitwiseAnd(Bitcast(_uintType, low), UInt(0xFFFF)),
+                        ShiftLeftLogical(Bitcast(_uintType, high), UInt(16)));
+                    break;
+                }
                 case "VCvtPknormI16F32":
                 case "VCvtPknormU16F32":
                 {
@@ -1137,18 +1204,6 @@ public static partial class Gen5SpirvTranslator
             {
                 error = $"missing vop3p control for {instruction.Opcode}";
                 return false;
-            }
-
-            var sourceCount = instruction.Opcode == "VPkFmaF16" ? 3 : 2;
-            for (var index = 0; index < sourceCount; index++)
-            {
-                var source = instruction.Sources[index];
-                if (source.Kind is not (Gen5OperandKind.VectorRegister or Gen5OperandKind.ScalarRegister))
-                {
-                    error =
-                        $"unsupported vop3p operand {source} for {instruction.Opcode} (first slice: registers only)";
-                    return false;
-                }
             }
 
             var low = EmitPackedF16Lane(instruction, control, highLane: false);
@@ -1729,8 +1784,14 @@ public static partial class Gen5SpirvTranslator
             }
             else if (opcode is not ("VCmpClassF32" or "VCmpxClassF32"))
             {
-                var left = GetRawSource(instruction, 0);
-                var right = GetRawSource(instruction, 1);
+                var compare64 = opcode.EndsWith("U64", StringComparison.Ordinal) ||
+                    opcode.EndsWith("I64", StringComparison.Ordinal);
+                var left = compare64
+                    ? GetRawSource64(instruction, 0)
+                    : GetRawSource(instruction, 0);
+                var right = compare64
+                    ? GetRawSource64(instruction, 1)
+                    : GetRawSource(instruction, 1);
                 var signed = opcode.EndsWith("I32", StringComparison.Ordinal);
                 if (signed)
                 {
@@ -1744,6 +1805,7 @@ public static partial class Gen5SpirvTranslator
                     "VCmpEqU32" or "VCmpxEqU32" => SpirvOp.IEqual,
                     "VCmpNeI32" or "VCmpxNeI32" or
                     "VCmpNeU32" or "VCmpxNeU32" => SpirvOp.INotEqual,
+                    "VCmpxNeU64" => SpirvOp.INotEqual,
                     "VCmpLtI32" or "VCmpxLtI32" => SpirvOp.SLessThan,
                     "VCmpLeI32" or "VCmpxLeI32" => SpirvOp.SLessThanEqual,
                     "VCmpGtI32" or "VCmpxGtI32" => SpirvOp.SGreaterThan,
@@ -1763,13 +1825,13 @@ public static partial class Gen5SpirvTranslator
                 condition = _module.AddInstruction(operation, _boolType, left, right);
             }
 
-            if (_state.Program.Address == 0x0000000500781200ul &&
+            if (_request.Program.Address == 0x0000000500781200ul &&
                 ((instruction.Pc == 0x4D4 &&
                   Environment.GetEnvironmentVariable(
-                      "SHARPEMU_FORCE_TITLE_COMPARE_4D4") == "1") ||
+                      "CRAZIIEMU_FORCE_TITLE_COMPARE_4D4") == "1") ||
                  (instruction.Pc == 0x540 &&
                   Environment.GetEnvironmentVariable(
-                      "SHARPEMU_FORCE_TITLE_COMPARE_540") == "1")))
+                      "CRAZIIEMU_FORCE_TITLE_COMPARE_540") == "1")))
             {
                 condition = _module.ConstantBool(true);
             }
@@ -1864,11 +1926,60 @@ public static partial class Gen5SpirvTranslator
 
             if (instruction.Opcode == "SGetpcB64")
             {
-                var pc = _state.Program.Address +
-                    instruction.Pc +
-                    (ulong)(instruction.Words.Count * sizeof(uint));
-                StoreS(destination, UInt((uint)pc));
-                StoreS(destination + 1, UInt((uint)(pc >> 32)));
+                {
+                    // The draw's shader base comes from push data, so one module serves every address.
+                    var (baseLow, baseHigh) = LoadShaderBase();
+                    var next = IAdd64(
+                        Pair64(baseLow, baseHigh),
+                        ULong(instruction.Pc + (ulong)(instruction.Words.Count * sizeof(uint))));
+                    StoreS(destination, Narrow(next));
+                    StoreS(destination + 1, Narrow(ShiftRightLogical64(next, ULong(32))));
+                    return true;
+                }
+            }
+
+            if (instruction.Opcode == "SBcnt1I32B64")
+            {
+                var wideCount = _module.AddInstruction(
+                    SpirvOp.BitCount,
+                    _ulongType,
+                    GetRawSource64(instruction, 0));
+                var bitCountResult = _module.AddInstruction(
+                    SpirvOp.UConvert,
+                    _uintType,
+                    wideCount);
+                StoreS(destination, bitCountResult);
+                Store(_scc, IsNotZero(bitCountResult));
+                return true;
+            }
+
+            if (instruction.Opcode == "SFF1I32B64")
+            {
+                var wide = GetRawSource64(instruction, 0);
+                var low = _module.AddInstruction(
+                    SpirvOp.UConvert,
+                    _uintType,
+                    wide);
+                var high = _module.AddInstruction(
+                    SpirvOp.UConvert,
+                    _uintType,
+                    ShiftRightLogical64(
+                        wide,
+                        _module.Constant64(_ulongType, 32)));
+                var lowIndex = Ext(73, _uintType, low);
+                var highIndex = IAdd(Ext(73, _uintType, high), UInt(32));
+                var bitIndex = _module.AddInstruction(
+                    SpirvOp.Select,
+                    _uintType,
+                    IsNotZero(low),
+                    lowIndex,
+                    _module.AddInstruction(
+                        SpirvOp.Select,
+                        _uintType,
+                        IsNotZero(high),
+                        highIndex,
+                        UInt(uint.MaxValue)));
+                StoreS(destination, bitIndex);
                 return true;
             }
 
@@ -1940,6 +2051,35 @@ public static partial class Gen5SpirvTranslator
                     StoreS(destination, result);
                     Store(_scc, IsNotZero(result));
                     return true;
+                case "SAbsI32":
+                {
+                    var sign = _module.AddInstruction(SpirvOp.ISub, _uintType, UInt(0), ShiftRightLogical(left, UInt(31)));
+                    var magnitude = _module.AddInstruction(SpirvOp.BitwiseXor, _uintType, left, sign);
+                    result = _module.AddInstruction(SpirvOp.ISub, _uintType, magnitude, sign);
+                    StoreS(destination, result);
+                    Store(_scc, IsNotZero(result));
+                    return true;
+                }
+                case "SWqmB32":
+                {
+                    var quadAny = BitwiseAnd(
+                        BitwiseOr(
+                            left,
+                            BitwiseOr(
+                                ShiftRightLogical(left, UInt(1)),
+                                BitwiseOr(
+                                    ShiftRightLogical(left, UInt(2)),
+                                    ShiftRightLogical(left, UInt(3))))),
+                        UInt(0x1111_1111));
+                    result = _module.AddInstruction(
+                        SpirvOp.IMul,
+                        _uintType,
+                        quadAny,
+                        UInt(0xF));
+                    StoreS(destination, result);
+                    Store(_scc, IsNotZero(result));
+                    return true;
+                }
                 case "SBrevB32":
                     result = _module.AddInstruction(SpirvOp.BitReverse, _uintType, left);
                     StoreS(destination, result);
@@ -1953,14 +2093,14 @@ public static partial class Gen5SpirvTranslator
                 case "SFF1I32B32":
                     result = Ext(73, _uintType, left);
                     StoreS(destination, result);
-                    Store(_scc, IsNotZero(result));
                     return true;
+                case "SBitset0B32":
                 case "SBitset1B32":
                     result = _module.AddInstruction(
                         SpirvOp.BitFieldInsert,
                         _uintType,
                         LoadS(destination),
-                        UInt(1),
+                        UInt(instruction.Opcode == "SBitset0B32" ? 0u : 1u),
                         BitwiseAnd(left, UInt(31)),
                         UInt(1));
                     StoreS(destination, result);
@@ -2325,6 +2465,22 @@ public static partial class Gen5SpirvTranslator
             {
                 error = "missing scalar compare source";
                 return false;
+            }
+
+            if (instruction.Opcode is "SCmpEqU64" or "SCmpLgU64")
+            {
+                var wideLeft = GetRawSource64(instruction, 0);
+                var wideRight = GetRawSource64(instruction, 1);
+                Store(
+                    _scc,
+                    _module.AddInstruction(
+                        instruction.Opcode == "SCmpEqU64"
+                            ? SpirvOp.IEqual
+                            : SpirvOp.INotEqual,
+                        _boolType,
+                        wideLeft,
+                        wideRight));
+                return true;
             }
 
             var left = GetRawSource(instruction, 0);
@@ -3451,6 +3607,41 @@ public static partial class Gen5SpirvTranslator
             return _module.AddInstruction(operation, _uintType, left, right);
         }
 
+        private uint EmitInteger16Binary(
+            Gen5ShaderInstruction instruction,
+            uint destination,
+            SpirvOp operation)
+        {
+            var control = instruction.Control as Gen5Vop3Control;
+            var left = GetRawSource(instruction, 0, applySdwaIntegerModifiers: false);
+            var right = GetRawSource(instruction, 1, applySdwaIntegerModifiers: false);
+
+            if ((control?.OperandSelect & 0x1) != 0)
+            {
+                left = ShiftRightLogical(left, UInt(16));
+            }
+
+            if ((control?.OperandSelect & 0x2) != 0)
+            {
+                right = ShiftRightLogical(right, UInt(16));
+            }
+
+            left = BitwiseAnd(left, UInt(0xFFFF));
+            right = BitwiseAnd(right, UInt(0xFFFF));
+            var low16 = BitwiseAnd(
+                _module.AddInstruction(operation, _uintType, left, right),
+                UInt(0xFFFF));
+            var current = LoadV(destination);
+
+            return (control?.OperandSelect & 0x8) != 0
+                ? BitwiseOr(
+                    BitwiseAnd(current, UInt(0x0000_FFFF)),
+                    ShiftLeftLogical(low16, UInt(16)))
+                : BitwiseOr(
+                    BitwiseAnd(current, UInt(0xFFFF_0000)),
+                    low16);
+        }
+
         private enum CubeCoordinate
         {
             Id,
@@ -3802,24 +3993,35 @@ public static partial class Gen5SpirvTranslator
             }
 
             var destination = instruction.Destinations[0].Value;
-            var src0 = GetRawSource(instruction, 0);
+            var sourceValue = GetRawSource(instruction, 0);
+            var selectedLane = BitwiseAnd(GetRawSource(instruction, 1), UInt(_waveLaneCount - 1));
 
-            if (_subgroupInvocationIdInput != 0)
+            if (_emulateWave64)
             {
-                // sdst = vsrc0[lane(src1)] — broadcast from the specified lane.
-                var laneSelect = GetRawSource(instruction, 1);
+                // The selected guest lane can belong to another host subgroup.
+                // Read it even when the guest execution mask disables that lane.
+                var isSelectedLane = _module.AddInstruction(
+                    SpirvOp.IEqual, _boolType, GuestWaveLane(), selectedLane);
+                EmitConditional(isSelectedLane, () => Store(WaveBroadcastScratchPointer(), sourceValue));
+                EmitWave64Barrier();
+                var broadcast = Load(_uintType, WaveBroadcastScratchPointer());
+                EmitWave64Barrier();
+                StoreS(destination, broadcast);
+            }
+            else if (_subgroupInvocationIdInput != 0)
+            {
                 var broadcast = _module.AddInstruction(
                     SpirvOp.GroupNonUniformBroadcast,
                     _uintType,
-                    UInt(3),  // Subgroup scope
-                    src0,
-                    laneSelect);
+                    UInt(3),
+                    sourceValue,
+                    selectedLane);
                 StoreS(destination, broadcast);
             }
             else
             {
                 // Fallback: no subgroup ops, read current lane's value.
-                StoreS(destination, src0);
+                StoreS(destination, sourceValue);
             }
 
             return true;

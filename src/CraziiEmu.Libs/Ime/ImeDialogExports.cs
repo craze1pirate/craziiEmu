@@ -12,12 +12,11 @@ namespace CraziiEmu.Libs.Ime;
 public static class ImeDialogExports
 {
     private const int StatusNone = 0;
-    private const int StatusRunning = 1;
     private const int StatusFinished = 2;
 
     private const int EndStatusOk = 0;
 
-    private const ulong ParamMaxTextLengthOffset = 0x20;
+    private const ulong ParamMaxTextLengthOffset = 0x24;
     private const ulong ParamInputTextBufferOffset = 0x28;
 
     private const int ImeDialogErrorInvalidAddress = unchecked((int)0x80BC0001);

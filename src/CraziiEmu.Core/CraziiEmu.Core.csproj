@@ -1,6 +1,5 @@
 <!--
-Copyright (C) 2026 SharpEmu Emulator Project
-Copyright (C) 2026 CraziiEmu Project
+Copyright (C) 2026 CraziiEmu Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -9,18 +8,20 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <ProjectReference Include="..\CraziiEmu.HLE\CraziiEmu.HLE.csproj" />
     <ProjectReference Include="..\CraziiEmu.Libs\CraziiEmu.Libs.csproj" />
     <ProjectReference Include="..\CraziiEmu.Logging\CraziiEmu.Logging.csproj" />
+      <PackageReference Include="Silk.NET.Windowing" />
+    <PackageReference Include="Silk.NET.Input" />
+    <PackageReference Include="Silk.NET.Maths" />
+    <PackageReference Include="Silk.NET.OpenGL" />
+
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Iced" />
-    <PackageReference Include="Silk.NET.OpenGL" />
-    <PackageReference Include="Silk.NET.Windowing" />
-    <PackageReference Include="Silk.NET.Input" />
-    <PackageReference Include="Silk.NET.Maths" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="CraziiEmu.Libs.Tests" />
+    <InternalsVisibleTo Include="CraziiEmu.TestRunner" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -31,4 +32,3 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>
-

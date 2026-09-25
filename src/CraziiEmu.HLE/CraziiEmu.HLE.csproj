@@ -1,6 +1,5 @@
 <!--
-Copyright (C) 2026 SharpEmu Emulator Project
-Copyright (C) 2026 CraziiEmu Project
+Copyright (C) 2026 CraziiEmu Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
@@ -16,6 +15,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <ItemGroup>
     <InternalsVisibleTo Include="CraziiEmu.Core" />
     <InternalsVisibleTo Include="CraziiEmu.Libs.Tests" />
+    <InternalsVisibleTo Include="CraziiEmu.TestRunner" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,8 +23,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="ppy.SDL3-CS" />
-  </ItemGroup>
+    </ItemGroup>
 
   <ItemGroup>
     <!-- Forces build ordering for the aerolib task below; loaded as a build component,

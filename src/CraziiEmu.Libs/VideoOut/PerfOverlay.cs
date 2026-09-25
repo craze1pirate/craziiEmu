@@ -1,14 +1,16 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System.Diagnostics;
+using System;
+using System.Threading;
 using CraziiEmu.Libs.Metrics;
 using CraziiEmu.Libs.VideoOut.Overlay;
 
 namespace CraziiEmu.Libs.VideoOut;
 
 /// <summary>
-/// Modern telemetry and performance overlay for CraziiEmu.
+/// Telemetry and performance overlay for CraziiEmu.
 /// Toggled with F3 or F1; cycles through Minimal, Standard, Detailed, and Off.
 /// </summary>
 public static class PerfOverlay
@@ -39,6 +41,12 @@ public static class PerfOverlay
 
     public static void SetGuestBufferCacheBytes(ulong bytes) =>
         Interlocked.Exchange(ref _guestBufferCacheBytes, checked((long)bytes));
+
+    public static void SetGuestCacheStatistics(ulong bufferBytes, ulong imageBytes, int liveAllocations, int peakAllocations)
+    {
+        SetGuestBufferCacheBytes(bufferBytes);
+    }
+
 
     public static void Fill(Span<byte> destination, int pendingWork = 0, int pendingSubmissions = 0)
     {

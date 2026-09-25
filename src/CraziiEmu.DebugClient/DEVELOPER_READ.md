@@ -1,13 +1,13 @@
 <!--
-Copyright (C) 2026 CraziiEmu Emulator Project
+Copyright (C) 2026 SharpEmu Emulator Project
 SPDX-License-Identifier: GPL-2.0-or-later
 -->
 
-# CraziiEmu.DebugClient
+# SharpEmu.DebugClient
 
-A small, standalone command-line client that connects to the CraziiEmu
+A small, standalone command-line client that connects to the SharpEmu
 emulator's **live debug server** and drives it interactively. It ships as its
-own executable (`CraziiEmu.DebugClient`) and takes no dependency on the emulator
+own executable (`SharpEmu.DebugClient`) and takes no dependency on the emulator
 assemblies — it speaks the server's line-delimited JSON protocol directly over
 TCP, so you can also drive the server from `nc`, a script, or your own tool.
 
@@ -22,7 +22,7 @@ TCP, so you can also drive the server from `nc`, a script, or your own tool.
 
 ```
 +-------------------------+           TCP (JSON lines)         +----------------------+
-|  CraziiEmu (emulator)    |  <------------------------------>  |  CraziiEmu.DebugClient |
+|  SharpEmu (emulator)    |  <------------------------------>  |  SharpEmu.DebugClient |
 |  --debug-server         |                                    |  (this executable)    |
 |                         |                                    |                       |
 |  DebuggerServerHost     |                                    |  REPL / --exec        |
@@ -38,7 +38,7 @@ socket as JSON.
 ## Building
 
 ```bash
-dotnet build src/CraziiEmu.DebugClient/CraziiEmu.DebugClient.csproj
+dotnet build src/SharpEmu.DebugClient/SharpEmu.DebugClient.csproj
 ```
 
 ## Quick start
@@ -48,16 +48,16 @@ dotnet build src/CraziiEmu.DebugClient/CraziiEmu.DebugClient.csproj
    its first frame until you continue:
 
    ```bash
-   CraziiEmu --debug-server "/path/to/game/eboot.bin"
+   SharpEmu --debug-server "/path/to/game/eboot.bin"
    # or choose an endpoint:
-   CraziiEmu --debug-server=127.0.0.1:5714 "/path/to/game/eboot.bin"
+   SharpEmu --debug-server=127.0.0.1:5714 "/path/to/game/eboot.bin"
    ```
 
 2. In another terminal, attach the client:
 
    ```bash
-   CraziiEmu.DebugClient                 # defaults to 127.0.0.1:5714
-   CraziiEmu.DebugClient 127.0.0.1:5714  # explicit endpoint
+   SharpEmu.DebugClient                 # defaults to 127.0.0.1:5714
+   SharpEmu.DebugClient 127.0.0.1:5714  # explicit endpoint
    ```
 
 3. Drive the target:
@@ -73,7 +73,7 @@ dotnet build src/CraziiEmu.DebugClient/CraziiEmu.DebugClient.csproj
 ## Invocation
 
 ```
-CraziiEmu.DebugClient [host:port] [--exec "<command>"]... [--quiet]
+SharpEmu.DebugClient [host:port] [--exec "<command>"]... [--quiet]
 ```
 
 | Option        | Meaning                                                        |
@@ -86,7 +86,7 @@ CraziiEmu.DebugClient [host:port] [--exec "<command>"]... [--quiet]
 Non-interactive example (scriptable):
 
 ```bash
-CraziiEmu.DebugClient --exec "break 0x8801234a0" --exec "continue"
+SharpEmu.DebugClient --exec "break 0x8801234a0" --exec "continue"
 ```
 
 ## Commands

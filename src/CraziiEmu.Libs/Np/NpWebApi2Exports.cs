@@ -2,8 +2,6 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using CraziiEmu.HLE;
 
 namespace CraziiEmu.Libs.Np;
@@ -12,29 +10,12 @@ public static class NpWebApi2Exports
 {
     private const int NpWebApi2ErrorInvalidArgument = unchecked((int)0x80553402);
 
-    public sealed class UserContextState
-    {
-        public int UserContextId { get; }
-        public int LibContextId { get; }
-        public int UserId { get; }
-
-        public UserContextState(int userContextId, int libContextId, int userId)
-        {
-            UserContextId = userContextId;
-            LibContextId = libContextId;
-            UserId = userId;
-        }
-    }
-
     private static int _initialized;
-    private static int _nextFilterId;
-    private static int _nextUserContextId;
-    private static readonly ConcurrentDictionary<int, UserContextState> _userContexts = new();
-
-    public static bool TryGetUserContext(int userContextId, out UserContextState? state)
-    {
-        return _userContexts.TryGetValue(userContextId, out state);
-    }
+    private static int _nextLibraryContextHandle;
+    private static int _nextPushEventHandle;
+    private static int _nextUserContextHandle = 1000;
+    private static readonly object _contextGate = new();
+    private static readonly HashSet<int> _libraryContexts = [];
 
     [SysAbiExport(
         Nid = "+o9816YQhqQ",
@@ -51,69 +32,10 @@ public static class NpWebApi2Exports
             return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
         }
 
+        var libraryContextId = CreateLibraryContextId();
         Interlocked.Exchange(ref _initialized, 1);
         TraceNpWebApi2("init", httpContextId, poolSize);
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
-        Nid = "WV1GwM32NgY",
-        ExportName = "sceNpWebApi2PushEventCreateHandle",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNpWebApi2")]
-    public static int NpWebApi2InitializeAlt(CpuContext ctx)
-    {
-        Interlocked.Exchange(ref _initialized, 1);
-        TraceNpWebApi2("init-alt", unchecked((int)ctx[CpuRegister.Rdi]), ctx[CpuRegister.Rsi]);
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
-        Nid = "sk54bi6FtYM",
-        ExportName = "sceNpWebApi2CreateUserContext",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNpWebApi2")]
-    public static int NpWebApi2CreateUserContext(CpuContext ctx)
-    {
-        var libCtxId = unchecked((int)ctx[CpuRegister.Rdi]);
-        var userId = unchecked((int)ctx[CpuRegister.Rsi]);
-
-        var userContextId = Interlocked.Increment(ref _nextUserContextId);
-        var userCtxState = new UserContextState(userContextId, libCtxId, userId);
-        _userContexts[userContextId] = userCtxState;
-
-        TraceNpWebApi2("create-user-context", userContextId, (ulong)userId);
-        return ctx.SetReturn(userContextId);
-    }
-
-    [SysAbiExport(
-        Nid = "9X9+cneTGUU",
-        ExportName = "sceNpWebApi2DeleteUserContext",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNpWebApi2")]
-    public static int NpWebApi2DeleteUserContext(CpuContext ctx)
-    {
-        var userContextId = unchecked((int)ctx[CpuRegister.Rdi]);
-        if (!_userContexts.TryRemove(userContextId, out _))
-        {
-            return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
-        }
-
-        TraceNpWebApi2("delete-user-context", userContextId, 0);
-        return ctx.SetReturn(0);
-    }
-
-    [SysAbiExport(
-        Nid = "fIATVMo4Y1w",
-        ExportName = "sceNpWebApi2PushEventDeleteHandle",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNpWebApi2")]
-    public static int NpWebApi2PushEventDeleteHandle(CpuContext ctx)
-    {
-        var libCtxId = unchecked((int)ctx[CpuRegister.Rdi]);
-        var handleId = unchecked((int)ctx[CpuRegister.Rsi]);
-        TraceNpWebApi2("push-event-delete-handle", libCtxId, unchecked((ulong)handleId));
-        return ctx.SetReturn(0);
+        return ctx.SetReturn(libraryContextId);
     }
 
     [SysAbiExport(
@@ -123,40 +45,60 @@ public static class NpWebApi2Exports
         LibraryName = "libSceNpWebApi2")]
     public static int NpWebApi2PushEventCreateFilter(CpuContext ctx)
     {
-        var libCtxId = unchecked((int)ctx[CpuRegister.Rdi]);
-        var handleId = unchecked((int)ctx[CpuRegister.Rsi]);
-        var nameAddress = ctx[CpuRegister.Rdx];
-        var serviceLabel = unchecked((uint)ctx[CpuRegister.Rcx]);
-        var filterParam = ctx[CpuRegister.R8];
-        var filterParamNum = ctx[CpuRegister.R9];
-
-        var filterId = Interlocked.Increment(ref _nextFilterId);
-        TraceNpWebApi2("push-event-create-filter", libCtxId, unchecked((ulong)filterId));
-        return ctx.SetReturn(filterId);
-    }
-
-    private static int _nextCallbackId = 1;
-
-    [SysAbiExport(
-        Nid = "fY3QqeNkF8k",
-        ExportName = "sceNpWebApi2PushEventRegisterCallback",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libSceNpWebApi2")]
-    public static int NpWebApi2PushEventRegisterCallback(CpuContext ctx)
-    {
-        var userContextId = unchecked((int)ctx[CpuRegister.Rdi]);
-        var filterId = unchecked((int)ctx[CpuRegister.Rsi]);
-        var callback = ctx[CpuRegister.Rdx];
-        var userArg = ctx[CpuRegister.Rcx];
-
-        if (!_userContexts.ContainsKey(userContextId))
+        var libraryContextId = unchecked((int)ctx[CpuRegister.Rdi]);
+        if (!IsValidLibraryContextId(libraryContextId))
         {
             return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
         }
 
-        var callbackId = Interlocked.Increment(ref _nextCallbackId);
-        TraceNpWebApi2("push-event-register-callback", userContextId, unchecked((ulong)callbackId));
-        return ctx.SetReturn(callbackId);
+        var filterHandle = Interlocked.Increment(ref _nextPushEventHandle);
+        TraceNpWebApi2("push-event-create-filter", libraryContextId, (ulong)filterHandle);
+        return ctx.SetReturn(filterHandle);
+    }
+
+    [SysAbiExport(
+        Nid = "WV1GwM32NgY",
+        ExportName = "sceNpWebApi2PushEventCreateHandle",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2InitializeAlt(CpuContext ctx)
+    {
+        var libraryContextId = unchecked((int)ctx[CpuRegister.Rdi]);
+        if (!IsValidLibraryContextId(libraryContextId))
+        {
+            return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
+        }
+
+        var handle = CreatePushEventHandle();
+        Interlocked.Exchange(ref _initialized, 1);
+        TraceNpWebApi2("init-alt", libraryContextId, 0);
+        return ctx.SetReturn(handle);
+    }
+
+    [SysAbiExport(
+        Nid = "sk54bi6FtYM",
+        ExportName = "sceNpWebApi2CreateUserContext",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceNpWebApi2")]
+    public static int NpWebApi2CreateUserContext(CpuContext ctx)
+    {
+        var libraryContextId = unchecked((int)ctx[CpuRegister.Rdi]);
+        var userId = unchecked((int)ctx[CpuRegister.Rsi]);
+
+        TraceNpWebApi2(
+            "create-user-context",
+            libraryContextId,
+            unchecked((uint)userId));
+
+        if (Volatile.Read(ref _initialized) == 0 ||
+            !IsValidLibraryContextId(libraryContextId) ||
+            userId == -1)
+        {
+            return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
+        }
+
+        var userContextId = Interlocked.Increment(ref _nextUserContextHandle);
+        return ctx.SetReturn(userContextId);
     }
 
     [SysAbiExport(
@@ -167,10 +109,55 @@ public static class NpWebApi2Exports
     public static int NpWebApi2Terminate(CpuContext ctx)
     {
         var libraryContextId = unchecked((int)ctx[CpuRegister.Rdi]);
-        _userContexts.Clear();
-        Interlocked.Exchange(ref _initialized, 0);
+        if (!IsValidLibraryContextId(libraryContextId))
+        {
+            return ctx.SetReturn(NpWebApi2ErrorInvalidArgument);
+        }
+
+        RemoveLibraryContextId(libraryContextId);
         TraceNpWebApi2("term", libraryContextId, 0);
         return ctx.SetReturn(0);
+    }
+
+    private static int CreateLibraryContextId()
+    {
+        var handle = Interlocked.Increment(ref _nextLibraryContextHandle);
+        lock (_contextGate)
+        {
+            _libraryContexts.Add(handle);
+        }
+
+        return handle;
+    }
+
+    private static int CreatePushEventHandle()
+    {
+        return Interlocked.Increment(ref _nextPushEventHandle);
+    }
+
+    private static bool IsValidLibraryContextId(int libraryContextId)
+    {
+        if (libraryContextId <= 0 || libraryContextId >= 0x8000)
+        {
+            return false;
+        }
+
+        lock (_contextGate)
+        {
+            return _libraryContexts.Contains(libraryContextId);
+        }
+    }
+
+    private static void RemoveLibraryContextId(int libraryContextId)
+    {
+        lock (_contextGate)
+        {
+            _libraryContexts.Remove(libraryContextId);
+            if (_libraryContexts.Count == 0)
+            {
+                Interlocked.Exchange(ref _initialized, 0);
+            }
+        }
     }
 
     private static void TraceNpWebApi2(string operation, int id, ulong arg0)

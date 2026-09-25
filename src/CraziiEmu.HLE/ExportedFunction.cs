@@ -6,7 +6,13 @@ namespace CraziiEmu.HLE;
 
 public sealed class ExportedFunction
 {
-    public ExportedFunction(string libraryName, string nid, string name, Generation target, SysAbiFunction function)
+    public ExportedFunction(
+        string libraryName,
+        string nid,
+        string name,
+        Generation target,
+        SysAbiFunction function,
+        bool preferLle = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(libraryName);
         ArgumentException.ThrowIfNullOrWhiteSpace(nid);
@@ -18,6 +24,7 @@ public sealed class ExportedFunction
         Name = name;
         Target = target;
         Function = function;
+        PreferLle = preferLle;
     }
 
     public string LibraryName { get; }
@@ -29,4 +36,10 @@ public sealed class ExportedFunction
     public Generation Target { get; }
 
     public SysAbiFunction Function { get; }
+
+    /// <summary>
+    /// A loaded guest export is authoritative for this registration. The HLE function
+    /// remains available as an explicit fallback when no usable guest target exists.
+    /// </summary>
+    public bool PreferLle { get; }
 }

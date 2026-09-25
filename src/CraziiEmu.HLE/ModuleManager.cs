@@ -31,22 +31,14 @@ public sealed class ModuleManager : IModuleManager
             var registeredCount = 0;
             foreach (var export in exports)
             {
-                _exportNameTable.TryAdd(export.Name, export);
-                if (!string.IsNullOrEmpty(export.LibraryName))
-                {
-                    var qualifiedNid = $"{export.LibraryName}:{export.Nid}";
-                    _dispatchTable.TryAdd(qualifiedNid, export.Function);
-                    _exportTable.TryAdd(qualifiedNid, export);
-                    _exportNameTable.TryAdd($"{export.LibraryName}:{export.Name}", export);
-                }
-
                 if (!_dispatchTable.TryAdd(export.Nid, export.Function))
                 {
-                    _warmupAssemblies.Add(export.Function.Method.Module.Assembly);
+                    Console.Error.WriteLine($"[HLE] Duplicate NID '{export.Nid}' ({export.Name}) — already registered, skipping.");
                     continue;
                 }
 
                 _exportTable[export.Nid] = export;
+                _exportNameTable.TryAdd(export.Name, export);
                 // The warm sweep in Freeze() covers every assembly that contributed a
                 // handler (generated thunks resolve to their home assembly too).
                 _warmupAssemblies.Add(export.Function.Method.Module.Assembly);
@@ -256,47 +248,13 @@ public sealed class ModuleManager : IModuleManager
     public bool TryGetFunction(string nid, out Delegate function)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nid);
-        if (_dispatchTable.TryGetValue(nid, out function!))
-        {
-            return true;
-        }
-
-        if (!nid.Contains(':'))
-        {
-            foreach (var kvp in _dispatchTable)
-            {
-                if (kvp.Key.EndsWith($":{nid}", StringComparison.Ordinal))
-                {
-                    function = kvp.Value;
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return _dispatchTable.TryGetValue(nid, out function!);
     }
 
     public bool TryGetExport(string nid, out ExportedFunction export)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nid);
-        if (_exportTable.TryGetValue(nid, out export!))
-        {
-            return true;
-        }
-
-        if (!nid.Contains(':'))
-        {
-            foreach (var kvp in _exportTable)
-            {
-                if (kvp.Key.EndsWith($":{nid}", StringComparison.Ordinal))
-                {
-                    export = kvp.Value;
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return _exportTable.TryGetValue(nid, out export!);
     }
 
     public bool TryGetExportByName(string exportName, out ExportedFunction export)

@@ -7,7 +7,13 @@ using System.Runtime.InteropServices;
 namespace CraziiEmu.HLE;
 
 /// <summary>
-/// Host virtual memory API forwarding directly to Win32 kernel32.
+/// Cross-platform host virtual memory API with Win32 semantics.
+/// On Windows this forwards directly to kernel32. On POSIX systems it is
+/// implemented over mmap/mprotect/munmap with a shadow region table that
+/// answers VirtualQuery-style questions and tracks page protections.
+/// POSIX anonymous mappings are demand-paged by the kernel, so Win32
+/// "reserve-only" regions are mapped as committed memory directly and
+/// commit requests become protection changes.
 /// </summary>
 public static unsafe class HostMemory
 {
@@ -25,6 +31,8 @@ public static unsafe class HostMemory
     public const uint PAGE_EXECUTE_READ = 0x20;
     public const uint PAGE_EXECUTE_READWRITE = 0x40;
 
+    private const ulong PageSize = 0x1000;
+
     /// <summary>Win32 MEMORY_BASIC_INFORMATION (64-bit) layout.</summary>
     public struct BasicInfo
     {
@@ -37,56 +45,6 @@ public static unsafe class HostMemory
         public uint Protect;
         public uint Type;
         public uint Alignment2;
-    }
-
-    public const uint MEM_REPLACE_PLACEHOLDER = 0x00004000;
-    public const uint MEM_RESERVE_PLACEHOLDER = 0x00040000;
-    public const uint MEM_PRESERVE_PLACEHOLDER = 0x00000002;
-
-    private static readonly bool s_hasVirtualAlloc2 = CheckVirtualAlloc2Supported();
-
-    public static bool IsVirtualAlloc2Supported => s_hasVirtualAlloc2;
-
-    private static bool CheckVirtualAlloc2Supported()
-    {
-        if (!OperatingSystem.IsWindows()) return false;
-        if (NativeLibrary.TryLoad("kernelbase.dll", out var handle))
-        {
-            try
-            {
-                return NativeLibrary.TryGetExport(handle, "VirtualAlloc2", out _);
-            }
-            finally
-            {
-                NativeLibrary.Free(handle);
-            }
-        }
-        return false;
-    }
-
-    public static void* Alloc2(
-        void* address,
-        nuint size,
-        uint allocationType,
-        uint protect,
-        void* process = null)
-    {
-        if (s_hasVirtualAlloc2)
-        {
-            var targetProcess = process != null ? process : Win32GetCurrentProcess();
-            return Win32VirtualAlloc2(targetProcess, address, size, allocationType, protect, null, 0);
-        }
-        return null;
-    }
-
-    public static bool FreeEx(
-        void* address,
-        nuint size,
-        uint freeType,
-        void* process = null)
-    {
-        var targetProcess = process != null ? process : Win32GetCurrentProcess();
-        return Win32VirtualFreeEx(targetProcess, address, size, freeType);
     }
 
     public static void* Alloc(void* address, nuint size, uint allocationType, uint protect) =>
@@ -103,24 +61,6 @@ public static unsafe class HostMemory
 
     public static void FlushInstructionCache(void* address, nuint size) =>
         Win32FlushInstructionCache(Win32GetCurrentProcess(), address, size);
-
-    [DllImport("kernelbase.dll", EntryPoint = "VirtualAlloc2", SetLastError = true)]
-    private static extern void* Win32VirtualAlloc2(
-        void* Process,
-        void* BaseAddress,
-        nuint Size,
-        uint AllocationType,
-        uint PageProtection,
-        void* ExtendedParameters,
-        uint ParameterCount);
-
-    [DllImport("kernel32.dll", EntryPoint = "VirtualFreeEx", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool Win32VirtualFreeEx(
-        void* hProcess,
-        void* lpAddress,
-        nuint dwSize,
-        uint dwFreeType);
 
     [DllImport("kernel32.dll", EntryPoint = "VirtualAlloc", SetLastError = true)]
     private static extern void* Win32VirtualAlloc(void* lpAddress, nuint dwSize, uint flAllocationType, uint flProtect);

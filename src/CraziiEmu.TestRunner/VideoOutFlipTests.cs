@@ -4,8 +4,8 @@
 
 using System;
 using System.Collections.Generic;
-using CraziiEmu.Core.Gpu;
 using CraziiEmu.HLE;
+
 using CraziiEmu.Libs.VideoOut;
 using CraziiEmu.ShaderCompiler;
 

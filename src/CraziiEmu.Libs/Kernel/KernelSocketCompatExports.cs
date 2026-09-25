@@ -1,46 +1,116 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Referred from KytyPS5 project
 
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using CraziiEmu.HLE;
-using CraziiEmu.Libs.Network;
 
 namespace CraziiEmu.Libs.Kernel;
 
 internal static class KernelSocketCompatExports
 {
-    private const int PosixEperm = 1;
-    private const int PosixEnoent = 2;
-    private const int PosixEbadf = 9;
-    private const int PosixEacces = 13;
-    private const int PosixEfault = 14;
-    private const int PosixEbusy = 16;
-    private const int PosixEinval = 22;
-    private const int PosixEmfile = 24;
-    private const int PosixEwouldblock = 35;
-    private const int PosixEinprogress = 36;
-    private const int PosixEalready = 37;
-    private const int PosixEaddrinuse = 48;
-    private const int PosixEisconn = 56;
-    private const int PosixEnotconn = 57;
-    private const int PosixEtimedout = 60;
-    private const int PosixEconnrefused = 61;
+    private sealed class EmulatedSocketState
+    {
+        public int Family;
+        public int Type;
+        public int Protocol;
+        public TcpClient? Client;
+        public NetworkStream? Stream;
+        public System.Net.Sockets.Socket? DatagramSocket;
+        public IPAddress BoundAddress = IPAddress.Any;
+        public int BoundPort;
+        public bool Bound;
+        public bool Connected;
+        public bool ReuseAddress;
+        public bool KeepAlive;
+        public bool Broadcast;
+        public bool ReusePort;
+        public bool IPv6Only;
+        public bool NoDelay;
+        public int SendBufferSize;
+        public int ReceiveBufferSize;
+        public int SendLowWater = 1;
+        public int ReceiveLowWater = 1;
+    }
 
     private static readonly object Gate = new();
+    private static readonly Dictionary<int, EmulatedSocketState> Sockets = new();
 
     internal static bool IsEmulatedSocketFd(int fd)
     {
-        return SocketRegistry.IsSocket(fd);
+        lock (Gate)
+        {
+            return Sockets.ContainsKey(fd);
+        }
+    }
+
+    internal static bool TryGetReadEventState(
+        int fd,
+        ulong lowWater,
+        out bool ready,
+        out ulong availableBytes,
+        out ushort eventFlags)
+    {
+        ready = false;
+        availableBytes = 0;
+        eventFlags = 0;
+
+        lock (Gate)
+        {
+            if (!Sockets.TryGetValue(fd, out var state))
+            {
+                return false;
+            }
+
+            if (!state.Connected || state.Client is null)
+            {
+                return true;
+            }
+
+            try
+            {
+                var socket = state.Client.Client;
+                var readSignaled = socket.Poll(0, SelectMode.SelectRead);
+                availableBytes = unchecked((ulong)Math.Max(0, socket.Available));
+                if (readSignaled && availableBytes == 0)
+                {
+                    ready = true;
+                    eventFlags = KernelEventQueueCompatExports.KernelEventFlagEof;
+                }
+                else
+                {
+                    ready = availableBytes >= Math.Max(1UL, lowWater);
+                }
+            }
+            catch (SocketException)
+            {
+                ready = true;
+                eventFlags = KernelEventQueueCompatExports.KernelEventFlagEof;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     internal static bool TryCloseSocketFd(int fd)
     {
-        return SocketRegistry.TryClose(fd);
+        lock (Gate)
+        {
+            if (!Sockets.Remove(fd, out var state))
+            {
+                return false;
+            }
+
+            DisposeEmulatedSocket(state);
+            return true;
+        }
     }
 
     internal static bool TryReadSocketFd(
@@ -120,6 +190,329 @@ internal static class KernelSocketCompatExports
         return true;
     }
 
+    internal static int PosixSetSocketOption(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var level = unchecked((int)ctx[CpuRegister.Rsi]);
+        var option = unchecked((int)ctx[CpuRegister.Rdx]);
+        var valueAddress = ctx[CpuRegister.Rcx];
+        var valueLength = unchecked((int)ctx[CpuRegister.R8]);
+
+        if (valueAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        if (valueLength < sizeof(int))
+        {
+            return PosixSocketFailure(ctx, 22);
+        }
+
+        Span<byte> valueBytes = stackalloc byte[sizeof(int)];
+        if (!ctx.Memory.TryRead(valueAddress, valueBytes))
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        var value = BinaryPrimitives.ReadInt32LittleEndian(valueBytes);
+        lock (Gate)
+        {
+            if (!Sockets.TryGetValue(fd, out var state))
+            {
+                return PosixSocketFailure(ctx, 9);
+            }
+
+            if (!TrySetSocketOptionLocked(state, level, option, value))
+            {
+                LogNet($"setsockopt unsupported: fd={fd} level=0x{level:X} option=0x{option:X}");
+                return PosixSocketFailure(ctx, 22);
+            }
+        }
+
+        LogNet($"setsockopt: fd={fd} level=0x{level:X} option=0x{option:X} value={value}");
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    internal static int PosixSendTo(CpuContext ctx)
+    {
+        const int msgDontRoute = 0x4;
+        const int msgDontWait = 0x80;
+        const int msgNoSignal = 0x20000;
+
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var bufferAddress = ctx[CpuRegister.Rsi];
+        var length = ctx[CpuRegister.Rdx];
+        var flags = unchecked((int)ctx[CpuRegister.Rcx]);
+        var sockaddrAddress = ctx[CpuRegister.R8];
+        var addrlen = unchecked((int)ctx[CpuRegister.R9]);
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            return PosixSocketFailure(ctx, 9);
+        }
+
+        if (state.Type != 2 || state.DatagramSocket is null)
+        {
+            return PosixSocketFailure(ctx, 41);
+        }
+
+        if (length > int.MaxValue)
+        {
+            return PosixSocketFailure(ctx, 40);
+        }
+
+        if (length != 0 && bufferAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        if (sockaddrAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 39);
+        }
+
+        const int supportedFlags = msgDontRoute | msgDontWait | msgNoSignal;
+        if ((flags & ~supportedFlags) != 0)
+        {
+            return PosixSocketFailure(ctx, 45);
+        }
+
+        if (!TryParseGuestSockaddrIn(sockaddrAddress, addrlen, ctx, out var ipAddress, out var port))
+        {
+            return PosixSocketFailure(ctx, 47);
+        }
+
+        var redirectApplied = TryApplyNetRedirect(ref ipAddress);
+        if (!IsGuestSocketOutboundAllowed(ipAddress, redirectApplied))
+        {
+            LogNet($"sendto denied by outbound policy: fd={fd} ip={ipAddress} port={port} len={length}");
+            return PosixSocketFailure(ctx, 51);
+        }
+
+        var payload = GC.AllocateUninitializedArray<byte>(checked((int)length));
+        if (payload.Length != 0 && !ctx.Memory.TryRead(bufferAddress, payload))
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        var socketFlags = (flags & msgDontRoute) != 0
+            ? SocketFlags.DontRoute
+            : SocketFlags.None;
+        var socket = state.DatagramSocket;
+        var restoreBlocking = false;
+        var priorBlocking = socket.Blocking;
+        try
+        {
+            if ((flags & msgDontWait) != 0 && priorBlocking)
+            {
+                socket.Blocking = false;
+                restoreBlocking = true;
+            }
+
+            var sent = socket.SendTo(payload, socketFlags, new IPEndPoint(ipAddress, port));
+            LogNet($"sendto: fd={fd} ip={ipAddress} port={port} len={length} sent={sent} flags=0x{flags:X}");
+            return ctx.SetReturn(sent, typeof(long));
+        }
+        catch (SocketException exception)
+        {
+            var errno = MapSocketErrorToPosixErrno(exception.SocketErrorCode);
+            LogNet($"sendto failed: fd={fd} ip={ipAddress} port={port} len={length} socket_error={exception.SocketErrorCode} errno={errno}");
+            return PosixSocketFailure(ctx, errno);
+        }
+        catch (ObjectDisposedException)
+        {
+            return PosixSocketFailure(ctx, 9);
+        }
+        finally
+        {
+            if (restoreBlocking)
+            {
+                try { socket.Blocking = priorBlocking; } catch (SocketException) { }
+                catch (ObjectDisposedException) { }
+            }
+        }
+    }
+
+    internal static int PosixReceiveFrom(CpuContext ctx)
+    {
+        const int msgPeek = 0x2;
+        const int msgDontRoute = 0x4;
+        const int msgWaitAll = 0x40;
+        const int msgDontWait = 0x80;
+        const int msgNoSignal = 0x20000;
+
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var bufferAddress = ctx[CpuRegister.Rsi];
+        var length = ctx[CpuRegister.Rdx];
+        var flags = unchecked((int)ctx[CpuRegister.Rcx]);
+        var sourceAddress = ctx[CpuRegister.R8];
+        var sourceLengthAddress = ctx[CpuRegister.R9];
+
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        {
+            return PosixSocketFailure(ctx, 9);
+        }
+
+        if (state.Type != 2 || state.DatagramSocket is null)
+        {
+            return PosixSocketFailure(ctx, 41);
+        }
+
+        if (length > int.MaxValue)
+        {
+            return PosixSocketFailure(ctx, 40);
+        }
+
+        if (length != 0 && bufferAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        if (sourceAddress != 0 && sourceLengthAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        const int supportedFlags = msgPeek | msgDontRoute | msgWaitAll | msgDontWait | msgNoSignal;
+        if ((flags & ~supportedFlags) != 0)
+        {
+            return PosixSocketFailure(ctx, 45);
+        }
+
+        uint sourceCapacity = 0;
+        if (sourceAddress != 0)
+        {
+            Span<byte> sourceLengthBytes = stackalloc byte[sizeof(uint)];
+            if (!ctx.Memory.TryRead(sourceLengthAddress, sourceLengthBytes))
+            {
+                return PosixSocketFailure(ctx, 14);
+            }
+
+            sourceCapacity = BinaryPrimitives.ReadUInt32LittleEndian(sourceLengthBytes);
+        }
+
+        var payload = GC.AllocateUninitializedArray<byte>(checked((int)length));
+        var socketFlags = SocketFlags.None;
+        if ((flags & msgPeek) != 0)
+        {
+            socketFlags |= SocketFlags.Peek;
+        }
+        if ((flags & msgDontRoute) != 0)
+        {
+            socketFlags |= SocketFlags.DontRoute;
+        }
+        // MSG_WAITALL does not change datagram boundaries.
+
+        var socket = state.DatagramSocket;
+        var restoreBlocking = false;
+        var priorBlocking = socket.Blocking;
+        try
+        {
+            if ((flags & msgDontWait) != 0 && priorBlocking)
+            {
+                socket.Blocking = false;
+                restoreBlocking = true;
+            }
+
+            EndPoint endpoint = new IPEndPoint(IPAddress.Any, 0);
+            var received = socket.ReceiveFrom(payload, socketFlags, ref endpoint);
+            if (received != 0 && !ctx.Memory.TryWrite(bufferAddress, payload.AsSpan(0, received)))
+            {
+                return PosixSocketFailure(ctx, 14);
+            }
+
+            if (sourceAddress != 0 && endpoint is IPEndPoint sourceEndpoint)
+            {
+                Span<byte> guestAddress = stackalloc byte[16];
+                guestAddress[0] = 16;
+                guestAddress[1] = 2;
+                BinaryPrimitives.WriteUInt16BigEndian(guestAddress[2..4], checked((ushort)sourceEndpoint.Port));
+                sourceEndpoint.Address.MapToIPv4().GetAddressBytes().CopyTo(guestAddress[4..8]);
+                var writeLength = (int)Math.Min(sourceCapacity, (uint)guestAddress.Length);
+                if ((writeLength != 0 && !ctx.Memory.TryWrite(sourceAddress, guestAddress[..writeLength])) ||
+                    !TryWriteUInt32(ctx, sourceLengthAddress, (uint)guestAddress.Length))
+                {
+                    return PosixSocketFailure(ctx, 14);
+                }
+            }
+
+            LogNet($"recvfrom: fd={fd} len={length} received={received} flags=0x{flags:X} source={endpoint}");
+            return ctx.SetReturn(received, typeof(long));
+        }
+        catch (SocketException exception)
+        {
+            var errno = MapSocketErrorToPosixErrno(exception.SocketErrorCode);
+            if (errno != 35)
+            {
+                LogNet($"recvfrom failed: fd={fd} len={length} socket_error={exception.SocketErrorCode} errno={errno}");
+            }
+            return PosixSocketFailure(ctx, errno);
+        }
+        catch (ObjectDisposedException)
+        {
+            return PosixSocketFailure(ctx, 9);
+        }
+        finally
+        {
+            if (restoreBlocking)
+            {
+                try { socket.Blocking = priorBlocking; } catch (SocketException) { }
+                catch (ObjectDisposedException) { }
+            }
+        }
+    }
+
+    internal static int PosixGetSocketOption(CpuContext ctx)
+    {
+        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
+        var level = unchecked((int)ctx[CpuRegister.Rsi]);
+        var option = unchecked((int)ctx[CpuRegister.Rdx]);
+        var valueAddress = ctx[CpuRegister.Rcx];
+        var lengthAddress = ctx[CpuRegister.R8];
+        if (valueAddress == 0 || lengthAddress == 0)
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        Span<byte> lengthBytes = stackalloc byte[sizeof(int)];
+        if (!ctx.Memory.TryRead(lengthAddress, lengthBytes))
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        if (BinaryPrimitives.ReadInt32LittleEndian(lengthBytes) < sizeof(int))
+        {
+            return PosixSocketFailure(ctx, 22);
+        }
+
+        int value;
+        lock (Gate)
+        {
+            if (!Sockets.TryGetValue(fd, out var state))
+            {
+                return PosixSocketFailure(ctx, 9);
+            }
+
+            if (!TryGetSocketOptionLocked(state, level, option, out value))
+            {
+                return PosixSocketFailure(ctx, 22);
+            }
+        }
+
+        Span<byte> valueBytes = stackalloc byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32LittleEndian(valueBytes, value);
+        BinaryPrimitives.WriteInt32LittleEndian(lengthBytes, sizeof(int));
+        if (!ctx.Memory.TryWrite(valueAddress, valueBytes) ||
+            !ctx.Memory.TryWrite(lengthAddress, lengthBytes))
+        {
+            return PosixSocketFailure(ctx, 14);
+        }
+
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
     [SysAbiExport(
         Nid = "TU-d9PfIHPM",
         ExportName = "socket",
@@ -130,13 +523,34 @@ internal static class KernelSocketCompatExports
         var family = unchecked((int)ctx[CpuRegister.Rdi]);
         var type = unchecked((int)ctx[CpuRegister.Rsi]);
         var protocol = unchecked((int)ctx[CpuRegister.Rdx]);
-        if (family == 0 && type == 0 && protocol == 0)
+        System.Net.Sockets.Socket? datagramSocket = null;
+        if (family == 2 && type == 2 && protocol is 0 or 17)
         {
-            family = 2; // AF_INET
-            type = 1;   // SOCK_STREAM
-            protocol = 6; // IPPROTO_TCP
+            try
+            {
+                datagramSocket = new System.Net.Sockets.Socket(
+                    AddressFamily.InterNetwork,
+                    SocketType.Dgram,
+                    ProtocolType.Udp);
+            }
+            catch (SocketException exception)
+            {
+                return PosixSocketFailure(ctx, MapSocketErrorToPosixErrno(exception.SocketErrorCode));
+            }
         }
-        var fd = SocketRegistry.Allocate(family, type, protocol);
+
+        var fd = KernelMemoryCompatExports.AllocateGuestFileDescriptor();
+        lock (Gate)
+        {
+            Sockets[fd] = new EmulatedSocketState
+            {
+                Family = family,
+                Type = type,
+                Protocol = protocol,
+                DatagramSocket = datagramSocket,
+            };
+        }
+
         ctx[CpuRegister.Rax] = unchecked((ulong)fd);
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -152,16 +566,8 @@ internal static class KernelSocketCompatExports
         var sockaddrAddress = ctx[CpuRegister.Rsi];
         var addrlen = unchecked((int)ctx[CpuRegister.Rdx]);
 
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        if (!TryGetEmulatedSocketState(fd, out _))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (sockaddrAddress == 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -169,14 +575,6 @@ internal static class KernelSocketCompatExports
         if (!TryParseGuestSockaddrIn(sockaddrAddress, addrlen, ctx, out var ipAddress, out var port))
         {
             LogNet($"connect sockaddr parse failed: fd={fd} addr=0x{sockaddrAddress:X} len={addrlen}");
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (state.Connected)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEisconn);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -190,42 +588,13 @@ internal static class KernelSocketCompatExports
         if (!IsGuestTcpOutboundAllowed(ipAddress, redirectApplied))
         {
             LogNet($"connect denied by outbound policy: fd={fd} ip={ipAddress} port={port}");
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEacces);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        if (state.NonBlocking)
-        {
-            if (TryEstablishHostTcpConnection(ipAddress, port, 0, out var client, out var stream))
-            {
-                lock (Gate)
-                {
-                    DisposeEmulatedSocket(state);
-                    state.Client = client;
-                    state.Stream = stream;
-                    state.Connected = true;
-                    state.BoundAddress = ipAddress;
-                    state.BoundPort = port;
-                    state.Bound = true;
-                    state.LastError = 0;
-                }
-
-                ctx[CpuRegister.Rax] = 0;
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            state.LastError = PosixEconnrefused;
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinprogress);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryEstablishHostTcpConnection(ipAddress, port, 500, out var clientBlocking, out var streamBlocking))
+        if (!TryEstablishHostTcpConnection(ipAddress, port, out var client, out var stream))
         {
             LogNet($"connect failed: fd={fd} ip={ipAddress} port={port}");
-            state.LastError = PosixEconnrefused;
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEconnrefused);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -234,14 +603,22 @@ internal static class KernelSocketCompatExports
 
         lock (Gate)
         {
+            if (!Sockets.TryGetValue(fd, out var state) || state is null)
+            {
+                try { stream.Dispose(); } catch (IOException) { }
+                try { client.Dispose(); } catch (IOException) { }
+                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
+                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            }
+
             DisposeEmulatedSocket(state);
-            state.Client = clientBlocking;
-            state.Stream = streamBlocking;
+            state.Client = client;
+            state.Stream = stream;
             state.Connected = true;
             state.BoundAddress = ipAddress;
             state.BoundPort = port;
             state.Bound = true;
-            state.LastError = 0;
+            ApplySocketOptions(state);
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -261,347 +638,44 @@ internal static class KernelSocketCompatExports
 
         if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         if (!TryParseGuestSockaddrIn(sockaddrAddress, addrlen, ctx, out var ipAddress, out var port))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        state.BoundAddress = ipAddress;
-        state.BoundPort = port;
-        state.Bound = true;
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "fZOeZIOEmLw",
-        ExportName = "send",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Send(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var bufferAddress = ctx[CpuRegister.Rsi];
-        var len = unchecked((int)ctx[CpuRegister.Rdx]);
-        var flags = unchecked((int)ctx[CpuRegister.Rcx]);
-
-        if (bufferAddress == 0)
+        if (state.DatagramSocket is not null)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (len < 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        var payload = GC.AllocateUninitializedArray<byte>(len);
-        if (len > 0 && !ctx.Memory.TryRead(bufferAddress, payload))
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!state.Connected)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEnotconn);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryWriteSocketFd(ctx, fd, payload, out _))
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEnotconn);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] = unchecked((ulong)len);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "fFxGkxF2bVo",
-        ExportName = "setsockopt",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Setsockopt(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var level = unchecked((int)ctx[CpuRegister.Rsi]);
-        var optname = unchecked((int)ctx[CpuRegister.Rdx]);
-        var optvalAddress = ctx[CpuRegister.Rcx];
-        var optlen = unchecked((int)ctx[CpuRegister.R8]);
-
-        if (optvalAddress == 0 || optlen < 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if ((level == 6 || level == 0xFFFF) && optname == 1 && optlen >= 4) // TCP_NODELAY
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
+            try
             {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                if (state.NativeSocket is not null) state.NativeSocket.NoDelay = valInt != 0;
-            }
-        }
-        else if (optname == 0x1200 && optlen >= 4) // SO_NBIO
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                state.SetNonBlocking(valInt != 0);
-            }
-        }
-        else if (optname == 0x0004 && optlen >= 4) // SO_REUSEADDR
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
-            }
-        }
-        else if (optname == 0x0020 && optlen >= 4) // SO_BROADCAST
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                if (state.NativeSocket is not null) state.NativeSocket.EnableBroadcast = valInt != 0;
-            }
-        }
-        else if (optname == 0x0200 && optlen >= 4) // SO_REUSEPORT
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, valInt != 0);
-            }
-        }
-        else if (optname == 0x0800) // SO_NOSIGPIPE
-        {
-            // BSD signal suppression, no-op
-        }
-        else if (optname == 0x0008 && optlen >= 4) // SO_KEEPALIVE
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                state.NativeSocket?.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, valInt != 0);
-            }
-        }
-        else if (optname == 0x1001 && optlen >= 4) // SO_RCVBUF
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                if (state.NativeSocket is not null) state.NativeSocket.ReceiveBufferSize = valInt;
-            }
-        }
-        else if (optname == 0x1002 && optlen >= 4) // SO_SNDBUF
-        {
-            Span<byte> val = stackalloc byte[4];
-            if (ctx.Memory.TryRead(optvalAddress, val))
-            {
-                var valInt = BinaryPrimitives.ReadInt32LittleEndian(val);
-                if (state.NativeSocket is not null) state.NativeSocket.SendBufferSize = valInt;
-            }
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    [SysAbiExport(
-        Nid = "6O8EwYOgH9Y",
-        ExportName = "getsockopt",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Getsockopt(CpuContext ctx)
-    {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var level = unchecked((int)ctx[CpuRegister.Rsi]);
-        var optname = unchecked((int)ctx[CpuRegister.Rdx]);
-        var optvalAddress = ctx[CpuRegister.Rcx];
-        var optlenAddress = ctx[CpuRegister.R8];
-
-        if (optvalAddress == 0 || optlenAddress == 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        Span<byte> optlenBuf = stackalloc byte[4];
-        if (!ctx.Memory.TryRead(optlenAddress, optlenBuf))
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        var optlen = BinaryPrimitives.ReadInt32LittleEndian(optlenBuf);
-        if (optlen <= 0)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if ((level == 6 || level == 0xFFFF) && optname == 1 && optlen >= 4) // TCP_NODELAY
-        {
-            Span<byte> val = stackalloc byte[4];
-            BinaryPrimitives.WriteInt32LittleEndian(val, state.NativeSocket?.NoDelay == true ? 1 : 0);
-            if (!ctx.Memory.TryWrite(optvalAddress, val))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
-            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-        }
-        else if (optname == 0x1008 && optlen >= 4) // SO_TYPE
-        {
-            Span<byte> val = stackalloc byte[4];
-            BinaryPrimitives.WriteInt32LittleEndian(val, state.Type != 0 ? state.Type : 1);
-            if (!ctx.Memory.TryWrite(optvalAddress, val))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
-            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-        }
-        else if (optname == 0x1200 && optlen >= 4) // SO_NBIO
-        {
-            Span<byte> val = stackalloc byte[4];
-            BinaryPrimitives.WriteInt32LittleEndian(val, state.IsNonBlocking() ? 1 : 0);
-            if (!ctx.Memory.TryWrite(optvalAddress, val))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
-            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-        }
-        else if (optname == 0x1007 && optlen >= 4) // SO_ERROR
-        {
-            Span<byte> val = stackalloc byte[4];
-            var err = state.LastError;
-            if (err == 0 && state.NativeSocket is not null)
-            {
-                try
+                state.DatagramSocket.Bind(new IPEndPoint(ipAddress, port));
+                if (state.DatagramSocket.LocalEndPoint is IPEndPoint localEndpoint)
                 {
-                    var rawErr = state.NativeSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Error);
-                    var errCode = rawErr is int errInt ? errInt : 0;
-                    if (errCode == (int)SocketError.ConnectionRefused) err = PosixEconnrefused;
-                    else if (errCode == (int)SocketError.TimedOut) err = PosixEtimedout;
-                    else if (errCode == (int)SocketError.InProgress || errCode == (int)SocketError.WouldBlock) err = PosixEinprogress;
-                    else if (errCode != 0) err = errCode;
+                    ipAddress = localEndpoint.Address;
+                    port = localEndpoint.Port;
                 }
-                catch { }
             }
-            BinaryPrimitives.WriteInt32LittleEndian(val, err);
-            state.LastError = 0;
-            if (!ctx.Memory.TryWrite(optvalAddress, val))
+            catch (SocketException exception)
             {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                return PosixSocketFailure(ctx, MapSocketErrorToPosixErrno(exception.SocketErrorCode));
             }
-
-            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, 4);
-            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
+            catch (ObjectDisposedException)
             {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+                return PosixSocketFailure(ctx, 9);
             }
         }
-        else
+
+        lock (Gate)
         {
-            var writeLen = Math.Min(optlen, 4);
-            Span<byte> zeroVal = stackalloc byte[writeLen];
-            zeroVal.Clear();
-            if (!ctx.Memory.TryWrite(optvalAddress, zeroVal))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
-
-            BinaryPrimitives.WriteInt32LittleEndian(optlenBuf, writeLen);
-            if (!ctx.Memory.TryWrite(optlenAddress, optlenBuf))
-            {
-                KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-                ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-                return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-            }
+            state.BoundAddress = ipAddress;
+            state.BoundPort = port;
+            state.Bound = true;
         }
-
+        LogNet($"bind: fd={fd} ip={ipAddress} port={port}");
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -617,16 +691,8 @@ internal static class KernelSocketCompatExports
         var sockaddrAddress = ctx[CpuRegister.Rsi];
         var addrlenAddress = ctx[CpuRegister.Rdx];
 
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        if (!TryGetEmulatedSocketState(fd, out var state) || state is null || !state.Bound)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        if (!state.Bound)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -634,15 +700,12 @@ internal static class KernelSocketCompatExports
         Span<byte> addrlenBuffer = stackalloc byte[4];
         if (!ctx.Memory.TryRead(addrlenAddress, addrlenBuffer))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         var addrlen = BinaryPrimitives.ReadInt32LittleEndian(addrlenBuffer);
         if (addrlen < 8)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
@@ -660,17 +723,13 @@ internal static class KernelSocketCompatExports
         var writeLength = Math.Min(addrlen, 16);
         if (!ctx.Memory.TryWrite(sockaddrAddress, sockaddr.Slice(0, writeLength)))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         BinaryPrimitives.WriteInt32LittleEndian(addrlenBuffer, writeLength);
         if (!ctx.Memory.TryWrite(addrlenAddress, addrlenBuffer))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         ctx[CpuRegister.Rax] = 0;
@@ -711,9 +770,8 @@ internal static class KernelSocketCompatExports
         var dstAddress = ctx[CpuRegister.Rdx];
         if (af != 2 || srcAddress == 0 || dstAddress == 0)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
             ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
         if (!TryReadCString(srcAddress, ctx, out var text) ||
@@ -730,8 +788,7 @@ internal static class KernelSocketCompatExports
         packed[3] = octets[3];
         if (!ctx.Memory.TryWrite(dstAddress, packed))
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEfault);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
         }
 
         ctx[CpuRegister.Rax] = 1;
@@ -751,102 +808,140 @@ internal static class KernelSocketCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    [SysAbiExport(
-        Nid = "TUuiYS2kE8s",
-        ExportName = "shutdown",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Shutdown(CpuContext ctx)
+    private static bool TryGetEmulatedSocketState(int fd, out EmulatedSocketState? state)
     {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var how = unchecked((int)ctx[CpuRegister.Rsi]);
-
-        if (how is < 0 or > 2)
+        lock (Gate)
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEinval);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            return Sockets.TryGetValue(fd, out state);
+        }
+    }
+
+    private static bool TrySetSocketOptionLocked(
+        EmulatedSocketState state,
+        int level,
+        int option,
+        int value)
+    {
+        switch (level, option)
+        {
+            case (0xFFFF, 0x0004):
+                state.ReuseAddress = value != 0;
+                break;
+            case (0xFFFF, 0x0008):
+                state.KeepAlive = value != 0;
+                break;
+            case (0xFFFF, 0x0020):
+                state.Broadcast = value != 0;
+                break;
+            case (0xFFFF, 0x0200):
+                state.ReusePort = value != 0;
+                break;
+            case (0xFFFF, 0x1001) when value > 0:
+                state.SendBufferSize = value;
+                break;
+            case (0xFFFF, 0x1002) when value > 0:
+                state.ReceiveBufferSize = value;
+                break;
+            case (0xFFFF, 0x1003) when value > 0:
+                state.SendLowWater = value;
+                break;
+            case (0xFFFF, 0x1004) when value > 0:
+                state.ReceiveLowWater = value;
+                break;
+            case (41, 27) when state.Family == 28:
+                state.IPv6Only = value != 0;
+                break;
+            case (6, 1) when state.Type == 1:
+                state.NoDelay = value != 0;
+                break;
+            default:
+                return false;
         }
 
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
+        ApplySocketOptions(state);
+        return true;
+    }
+
+    private static bool TryGetSocketOptionLocked(
+        EmulatedSocketState state,
+        int level,
+        int option,
+        out int value)
+    {
+        value = (level, option) switch
         {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+            (0xFFFF, 0x0004) => state.ReuseAddress ? 1 : 0,
+            (0xFFFF, 0x0008) => state.KeepAlive ? 1 : 0,
+            (0xFFFF, 0x0020) => state.Broadcast ? 1 : 0,
+            (0xFFFF, 0x0200) => state.ReusePort ? 1 : 0,
+            (0xFFFF, 0x1001) => state.SendBufferSize,
+            (0xFFFF, 0x1002) => state.ReceiveBufferSize,
+            (0xFFFF, 0x1003) => state.SendLowWater,
+            (0xFFFF, 0x1004) => state.ReceiveLowWater,
+            (41, 27) when state.Family == 28 => state.IPv6Only ? 1 : 0,
+            (6, 1) when state.Type == 1 => state.NoDelay ? 1 : 0,
+            _ => -1,
+        };
+        return value >= 0;
+    }
+
+    private static void ApplySocketOptions(EmulatedSocketState state)
+    {
+        var socket = state.DatagramSocket ?? state.Client?.Client;
+        if (socket is null)
+        {
+            return;
         }
 
         try
         {
-            if (state.Client?.Client is { } socket && socket.Connected)
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, state.ReuseAddress);
+            if (socket.SocketType == SocketType.Stream)
             {
-                var socketShutdown = how switch
-                {
-                    0 => SocketShutdown.Receive,
-                    1 => SocketShutdown.Send,
-                    2 => SocketShutdown.Both,
-                    _ => SocketShutdown.Both
-                };
-                socket.Shutdown(socketShutdown);
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, state.KeepAlive);
+            }
+
+            if (socket.SocketType == SocketType.Dgram)
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, state.Broadcast);
+            }
+            if (state.SendBufferSize > 0)
+            {
+                socket.SendBufferSize = state.SendBufferSize;
+            }
+
+            if (state.ReceiveBufferSize > 0)
+            {
+                socket.ReceiveBufferSize = state.ReceiveBufferSize;
+            }
+            if (socket.AddressFamily == AddressFamily.InterNetworkV6)
+            {
+                socket.DualMode = !state.IPv6Only;
+            }
+
+            if (socket.SocketType == SocketType.Stream)
+            {
+                socket.NoDelay = state.NoDelay;
             }
         }
-        catch (Exception)
+        catch (SocketException)
         {
-            // Socket operation error or already closed
+            // The guest option remains stored when the host cannot apply it.
         }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    [SysAbiExport(
-        Nid = "pxnCmagrtao",
-        ExportName = "listen",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Listen(CpuContext ctx)
+    private static int PosixSocketFailure(CpuContext ctx, int errno)
     {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var backlog = unchecked((int)ctx[CpuRegister.Rsi]);
-
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        ctx[CpuRegister.Rax] = 0;
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+        KernelRuntimeCompatExports.TrySetErrno(ctx, errno);
+        ctx[CpuRegister.Rax] = ulong.MaxValue;
+        return -1;
     }
 
-    [SysAbiExport(
-        Nid = "3e+4Iv7IJ8U",
-        ExportName = "accept",
-        Target = Generation.Gen4 | Generation.Gen5,
-        LibraryName = "libKernel")]
-    public static int Accept(CpuContext ctx)
+    private static bool TryWriteUInt32(CpuContext ctx, ulong address, uint value)
     {
-        var fd = unchecked((int)ctx[CpuRegister.Rdi]);
-        var sockaddrAddress = ctx[CpuRegister.Rsi];
-        var addrlenAddress = ctx[CpuRegister.Rdx];
-
-        if (!TryGetEmulatedSocketState(fd, out var state) || state is null)
-        {
-            KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEbadf);
-            ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-            return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-        }
-
-        // Return -1 (EWOULDBLOCK / EAGAIN) when no incoming host client connection exists,
-        // so guest socket polling loops do not deadlock on a fake socket descriptor.
-        KernelRuntimeCompatExports.TrySetErrno(ctx, PosixEwouldblock);
-        ctx[CpuRegister.Rax] = unchecked((ulong)0xFFFFFFFFFFFFFFFF);
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
-    private static bool TryGetEmulatedSocketState(int fd, out SocketRegistry.EmulatedSocket? state)
-    {
-        return SocketRegistry.TryGet(fd, out state);
+        Span<byte> bytes = stackalloc byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes, value);
+        return ctx.Memory.TryWrite(address, bytes);
     }
 
     private static bool TryParseGuestSockaddrIn(
@@ -880,9 +975,15 @@ internal static class KernelSocketCompatExports
         return true;
     }
 
-    private static void DisposeEmulatedSocket(SocketRegistry.EmulatedSocket state)
+    private static void DisposeEmulatedSocket(EmulatedSocketState state)
     {
-        state.Dispose();
+        try { state.Stream?.Dispose(); } catch (IOException) { }
+        try { state.Client?.Dispose(); } catch (IOException) { }
+        try { state.DatagramSocket?.Dispose(); } catch (SocketException) { }
+        state.Stream = null;
+        state.Client = null;
+        state.DatagramSocket = null;
+        state.Connected = false;
     }
 
     private static void LogNet(string message)
@@ -918,19 +1019,51 @@ internal static class KernelSocketCompatExports
 
     private static bool IsGuestTcpOutboundAllowed(IPAddress ipAddress, bool redirectApplied)
     {
+        return IsGuestSocketOutboundAllowed(ipAddress, redirectApplied);
+    }
+
+    private static bool IsGuestSocketOutboundAllowed(IPAddress ipAddress, bool redirectApplied)
+    {
         return redirectApplied || IsNetRedirectConfigured() || IPAddress.IsLoopback(ipAddress);
+    }
+
+    private static int MapSocketErrorToPosixErrno(SocketError socketError)
+    {
+        return socketError switch
+        {
+            SocketError.WouldBlock or SocketError.IOPending => 35,
+            SocketError.DestinationAddressRequired => 39,
+            SocketError.MessageSize => 40,
+            SocketError.ProtocolType => 41,
+            SocketError.ProtocolOption => 42,
+            SocketError.OperationNotSupported => 45,
+            SocketError.AddressFamilyNotSupported => 47,
+            SocketError.AddressAlreadyInUse => 48,
+            SocketError.AddressNotAvailable => 49,
+            SocketError.NetworkDown => 50,
+            SocketError.NetworkUnreachable => 51,
+            SocketError.ConnectionReset => 54,
+            SocketError.NoBufferSpaceAvailable => 55,
+            SocketError.IsConnected => 56,
+            SocketError.NotConnected => 57,
+            SocketError.TimedOut => 60,
+            SocketError.ConnectionRefused => 61,
+            SocketError.HostDown => 64,
+            SocketError.HostUnreachable => 65,
+            SocketError.AccessDenied => 13,
+            _ => 22,
+        };
     }
 
     private static bool TryEstablishHostTcpConnection(
         IPAddress ipAddress,
         int port,
-        int timeoutMs,
         out TcpClient client,
         out NetworkStream stream)
     {
         client = null!;
         stream = null!;
-        if (!TryConnectTcpClient(ipAddress, port, timeoutMs, out client))
+        if (!TryConnectTcpClient(ipAddress, port, out client))
         {
             return false;
         }
@@ -939,24 +1072,25 @@ internal static class KernelSocketCompatExports
         return true;
     }
 
-    private static bool TryConnectTcpClient(IPAddress ipAddress, int port, int timeoutMs, out TcpClient client)
+    private static bool TryConnectTcpClient(IPAddress ipAddress, int port, out TcpClient client)
     {
         client = new TcpClient();
         try
         {
-            var connectTask = client.ConnectAsync(ipAddress, port);
-            if (!connectTask.Wait(TimeSpan.FromMilliseconds(timeoutMs)))
-            {
-                client.Dispose();
-                client = null!;
-                return false;
-            }
+            // The guest call blocks. Do not require a thread-pool worker to complete it.
+            client.Connect(ipAddress, port);
 
             return true;
         }
-        catch (Exception)
+        catch (SocketException)
         {
-            try { client.Dispose(); } catch { }
+            client.Dispose();
+            client = null!;
+            return false;
+        }
+        catch (IOException)
+        {
+            client.Dispose();
             client = null!;
             return false;
         }

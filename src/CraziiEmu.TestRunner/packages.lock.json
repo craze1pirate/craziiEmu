@@ -86,9 +86,9 @@
       "craziiemu.core": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )",
-          "CraziiEmu.Libs": "[0.30.0-alpha, )",
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
+          "CraziiEmu.HLE": "[0.33.0-alpha, )",
+          "CraziiEmu.Libs": "[0.33.0-alpha, )",
+          "CraziiEmu.Logging": "[0.33.0-alpha, )",
           "Iced": "[1.21.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.Maths": "[2.23.0, )",
@@ -99,8 +99,7 @@
       "craziiemu.hle": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
-          "ppy.SDL3-CS": "[2026.629.0, )"
+          "CraziiEmu.Logging": "[0.33.0-alpha, )"
         }
       },
       "craziiemu.libatrac9": {
@@ -109,20 +108,20 @@
       "craziiemu.libs": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )",
-          "CraziiEmu.LibAtrac9": "[0.30.0-alpha, )",
-          "CraziiEmu.Logging": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Metal": "[0.30.0-alpha, )",
-          "CraziiEmu.ShaderCompiler.Vulkan": "[0.30.0-alpha, )",
+          "CraziiEmu.HLE": "[0.33.0-alpha, )",
+          "CraziiEmu.LibAtrac9": "[0.33.0-alpha, )",
+          "CraziiEmu.Logging": "[0.33.0-alpha, )",
+          "CraziiEmu.ShaderCompiler": "[0.33.0-alpha, )",
+          "CraziiEmu.ShaderCompiler.Vulkan": "[0.33.0-alpha, )",
           "FFmpeg.AutoGen": "[7.1.1, )",
           "NLayer": "[1.14.0, )",
           "Silk.NET.Input": "[2.23.0, )",
+          "Silk.NET.Maths": "[2.23.0, )",
           "Silk.NET.Vulkan": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.EXT": "[2.23.0, )",
           "Silk.NET.Vulkan.Extensions.KHR": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )",
-          "ppy.SDL3-CS": "[2026.629.0, )"
+          "System.IO.Hashing": "[10.0.0, )"
         }
       },
       "craziiemu.logging": {
@@ -131,19 +130,13 @@
       "craziiemu.shadercompiler": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.HLE": "[0.30.0-alpha, )"
-        }
-      },
-      "craziiemu.shadercompiler.metal": {
-        "type": "Project",
-        "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
+          "CraziiEmu.HLE": "[0.33.0-alpha, )"
         }
       },
       "craziiemu.shadercompiler.vulkan": {
         "type": "Project",
         "dependencies": {
-          "CraziiEmu.ShaderCompiler": "[0.30.0-alpha, )"
+          "CraziiEmu.ShaderCompiler": "[0.33.0-alpha, )"
         }
       },
       "FFmpeg.AutoGen": {
@@ -166,12 +159,6 @@
         "dependencies": {
           "NETStandard.Library": "1.6.1"
         }
-      },
-      "ppy.SDL3-CS": {
-        "type": "CentralTransitive",
-        "requested": "[2026.629.0, )",
-        "resolved": "2026.629.0",
-        "contentHash": "HgnHCdsOu7OiMbU+OG7E7rpkNajs4tm9ovejyc56AD1NNSJD8OLqXh+mGKlDBYem8+MBTrNKUWVcdKG76HhOVQ=="
       },
       "Silk.NET.Input": {
         "type": "CentralTransitive",
@@ -237,6 +224,12 @@
           "Silk.NET.Windowing.Common": "2.23.0",
           "Silk.NET.Windowing.Glfw": "2.23.0"
         }
+      },
+      "System.IO.Hashing": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.0, )",
+        "resolved": "10.0.0",
+        "contentHash": "MqSp5IfX9RdWVwTED0WSRL1kZDNB7GlFj64O/NAJs4uO1beBHWEAFLlC7j8Fw/PkI+SUzooLVNvAe4aEkSwsRg=="
       }
     }
   }
