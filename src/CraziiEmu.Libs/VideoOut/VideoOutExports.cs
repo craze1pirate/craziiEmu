@@ -429,7 +429,9 @@ public static partial class VideoOutExports
 
         lock (_stateGate)
         {
-            port.FlipRate = rate;
+            // If the host options specify 60+ fps, do not allow the guest to downgrade to 30/20 fps.
+            // Console Unity games (such as Among Us) set flipRate=1 for menus and loading screens.
+            port.FlipRate = HostVideoHost.CurrentOptions.RefreshRate >= 60 ? 0 : rate;
         }
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
@@ -1722,8 +1724,9 @@ public static partial class VideoOutExports
                 if (!_ports.TryGetValue(handle, out var port)) return false;
                 var now = Stopwatch.GetTimestamp();
                 readyAt ??= now;
+                var effectiveFlipRate = HostVideoHost.CurrentOptions.RefreshRate >= 60 ? 0 : port.FlipRate;
                 target = VideoOutDisplayClock.NextFlipTimestamp(port.OpenTimestamp, port.LastCpuFlipTimestamp,
-                    now, port.RefreshRate, port.FlipRate, flipMode, port.OutputHeight, port.WindowTop, port.WindowBottom, readyAt.Value);
+                    now, port.RefreshRate, effectiveFlipRate, flipMode, port.OutputHeight, port.WindowTop, port.WindowBottom, readyAt.Value);
                 if (_flipPacingDisabled || target <= now)
                 {
                     port.LastCpuFlipTimestamp = now;

@@ -188,8 +188,19 @@ public static partial class VideoOutExports
             if (_flipPacingDisabled || !request.GpuQueued) return true;
             if (request.FlipMode == VideoOutDisplayClock.FlipModeVsyncMultiple && request.ReadyTimestamp is null)
                 return false;
+
+            // When VSync is active or host refresh rate is 60+ Hz, presentation timing is handled
+            // by the Vulkan presentation engine (Mailbox/FIFO) and hardware vblank scanout.
+            // Introducing artificial software waits in C# causes Windows scheduler timer overshoots,
+            // missed vblank intervals, and alternating 33ms/0ms frame delivery spikes.
+            if (HostVideoHost.CurrentOptions.VSync || HostVideoHost.CurrentOptions.RefreshRate >= 60)
+            {
+                return true;
+            }
+
+            var effectiveFlipRate = HostVideoHost.CurrentOptions.RefreshRate >= 60 ? 0 : port.FlipRate;
             return VideoOutDisplayClock.NextFlipTimestamp(port.OpenTimestamp, port.LastPresentationTimestamp,
-                    timestamp, port.RefreshRate, port.FlipRate, request.FlipMode, port.OutputHeight,
+                    timestamp, port.RefreshRate, effectiveFlipRate, request.FlipMode, port.OutputHeight,
                     port.WindowTop, port.WindowBottom, request.ReadyTimestamp ?? timestamp) <= timestamp;
         }
     }
