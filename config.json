@@ -31,6 +31,8 @@
   "GraphicsApi": "Vulkan",
   "ResolutionScale": 1,
   "UiFullscreenOnStartup": false,
+  "VSync": true,
+  "TargetFps": 60,
   "MetricsOverlayMode": 0,
   "HotkeyMetricsOverlay": 114,
   "HotkeyVerboseConsole": 115

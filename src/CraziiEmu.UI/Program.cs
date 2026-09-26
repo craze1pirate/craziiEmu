@@ -46,6 +46,8 @@ internal static class Program
                         "auto" => CraziiEmu.Libs.VideoOut.HostHdrMode.Auto,
                         _ => CraziiEmu.Libs.VideoOut.HostHdrMode.Off,
                     },
+                    VSync = config.VSync,
+                    RefreshRate = config.TargetFps > 0 ? config.TargetFps : 60,
                 };
                 CraziiEmu.Libs.VideoOut.HostVideoHost.TryConfigureVideo(videoOptions);
 

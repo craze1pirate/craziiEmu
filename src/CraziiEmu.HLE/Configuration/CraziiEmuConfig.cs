@@ -53,6 +53,8 @@ public class CraziiEmuConfig
     public string HdrMode { get; set; } = "Disable";
     public bool UiFullscreenOnStartup { get; set; } = false;
     public bool EnableRenderDocCapture { get; set; } = false;
+    public bool VSync { get; set; } = true;
+    public int TargetFps { get; set; } = 60;
 
     public int MetricsOverlayMode { get; set; } = 0; // 0 = None, 1 = Minimal Mode, 2 = Standard Mode, 3 = Developer Mode
     public int HotkeyMetricsOverlay { get; set; } = 0x72; // VK 0x72 = F3

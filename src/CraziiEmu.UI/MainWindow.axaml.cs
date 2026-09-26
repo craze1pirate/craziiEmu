@@ -1062,6 +1062,24 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // Prefer optimized Release executable if available to ensure 60 FPS without Debug JIT overhead
+            var baseDirectory = AppContext.BaseDirectory;
+            var releaseCandidates = new[]
+            {
+                Path.Combine(baseDirectory, "CraziiEmu.exe"),
+                Path.Combine(baseDirectory, "..", "Release", "net10.0", "win-x64", "CraziiEmu.exe"),
+                Path.Combine(baseDirectory, "..", "..", "Release", "net10.0", "win-x64", "CraziiEmu.exe"),
+                @"D:\downloads\craziimerge\CraziiEmu.exe"
+            };
+            foreach (var candidate in releaseCandidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    processPath = Path.GetFullPath(candidate);
+                    break;
+                }
+            }
+
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = processPath,

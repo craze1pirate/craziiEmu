@@ -10,6 +10,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <OutputType>WinExe</OutputType>
     <AssemblyName>CraziiEmu</AssemblyName>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
