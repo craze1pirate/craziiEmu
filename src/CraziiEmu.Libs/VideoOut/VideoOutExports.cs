@@ -324,10 +324,14 @@ public static partial class VideoOutExports
             var handle = _nextHandle++;
             var timestampFrequency = KernelRuntimeCompatExports.TscFrequency;
             var openedAt = Stopwatch.GetTimestamp();
+            var targetRefresh = HostVideoHost.CurrentOptions.RefreshRate > 0
+                ? (uint)HostVideoHost.CurrentOptions.RefreshRate
+                : 60u;
             _ports[handle] = new VideoOutPortState
             {
                 Handle = handle,
                 OpenTimestamp = openedAt,
+                RefreshRate = targetRefresh,
                 DisplayClock = new VideoOutDisplayClock(openedAt,
                     KernelRuntimeCompatExports.ReadProcessTimeCounterAt(openedAt),
                     KernelRuntimeCompatExports.ReadTscCounter(), timestampFrequency),
@@ -1574,10 +1578,10 @@ public static partial class VideoOutExports
             $"pool_leases={poolLeases} pool_cached_mb={poolCachedBytes / 1024.0 / 1024.0:F1}");
     }
 
-    private static readonly bool _flipPacingDisabled = !string.Equals(
-        Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_FLIP_PACING"),
-        "1",
-        StringComparison.Ordinal);
+    private static bool _flipPacingDisabled =>
+        !HostVideoHost.CurrentOptions.VSync ||
+        string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_NO_FLIP_PACING"), "1", StringComparison.Ordinal) ||
+        string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_NO_FLIP_PACING"), "1", StringComparison.Ordinal);
     private static Thread? _vblankThread;
     private static readonly object _vblankThreadGate = new();
 
