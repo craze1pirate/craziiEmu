@@ -520,7 +520,7 @@ public static partial class VideoOutExports
         BinaryPrimitives.WriteInt32LittleEndian(status[0x00..0x04], resolutionClass);
         BinaryPrimitives.WriteInt32LittleEndian(status[0x04..0x08], 1);
         // The status uses a refresh-rate code, not the frequency used for pacing.
-        var refreshRateCode = port.RefreshRate >= 119
+        var refreshRateCode = (HostVideoHost.CurrentOptions.RefreshRate >= 60 || port.RefreshRate >= 119)
             ? SceVideoOutRefreshRate119_88Hz
             : SceVideoOutRefreshRate59_94Hz;
         BinaryPrimitives.WriteUInt64LittleEndian(status[0x08..0x10], refreshRateCode);
@@ -1637,8 +1637,11 @@ public static partial class VideoOutExports
                         continue;
                     }
 
-                    port.DisplayClock.Advance(now, port.RefreshRate);
-                    next = Math.Min(next, port.DisplayClock.NextTimestamp(port.RefreshRate));
+                    var effectiveRefreshRate = (HostVideoHost.CurrentOptions.RefreshRate >= 60 || port.RefreshRate >= 119)
+                        ? 120u
+                        : port.RefreshRate;
+                    port.DisplayClock.Advance(now, effectiveRefreshRate);
+                    next = Math.Min(next, port.DisplayClock.NextTimestamp(effectiveRefreshRate));
                     if (port.DisplayClock.Count <= port.PublishedVblankCount) continue;
                     port.PublishedVblankCount = port.DisplayClock.Count;
                     var dataHint = port.IsGen5
@@ -1675,16 +1678,18 @@ public static partial class VideoOutExports
 
     internal static void CompleteFlip(int handle, long flipArg)
     {
-        if (!TryGetPort(handle, out var port))
+        if (handle <= 0 || !TryGetPort(handle, out var port))
         {
             return;
         }
 
         ulong eventHint;
         FlipEventRegistration[]? flipEvents = null;
+        FlipEventRegistration[]? vblankEvents = null;
 
         lock (_stateGate)
         {
+            port.PublishedVblankCount++;
             port.FlipArg = flipArg;
             port.FlipPendingCount = Math.Max(0, port.FlipPendingCount - 1);
             eventHint = port.IsGen5
@@ -1693,6 +1698,10 @@ public static partial class VideoOutExports
             if (port.FlipEvents.Count != 0)
             {
                 flipEvents = port.FlipEvents.ToArray();
+            }
+            if (port.VblankEvents.Count != 0)
+            {
+                vblankEvents = port.VblankEvents.ToArray();
             }
         }
 
@@ -1710,6 +1719,28 @@ public static partial class VideoOutExports
                     port.IsGen5);
             }
         }
+
+        if (vblankEvents != null)
+        {
+            var dataHint = port.IsGen5 ? port.PublishedVblankCount : ((port.PublishedVblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
+            for (var i = 0; i < vblankEvents.Length; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    vblankEvents[i].Equeue,
+                    ident,
+                    OrbisKernelEventFilterVideoOut,
+                    dataHint,
+                    vblankEvents[i].UserData,
+                    port.IsGen5);
+            }
+        }
+
+        // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
+        if (flipArg != 0)
+        {
+            KernelSemaphoreCompatExports.SignalAllSemaphores();
+        }
     }
 
     // CPU submissions use the same per-port eligibility rules as queued GPU flips.
@@ -1724,10 +1755,19 @@ public static partial class VideoOutExports
                 if (!_ports.TryGetValue(handle, out var port)) return false;
                 var now = Stopwatch.GetTimestamp();
                 readyAt ??= now;
+                if (_flipPacingDisabled ||
+                    HostVideoHost.CurrentOptions.VSync ||
+                    HostVideoHost.CurrentOptions.RefreshRate >= 60 ||
+                    port.VblankEvents.Count > 0 ||
+                    port.FlipEvents.Count > 0)
+                {
+                    port.LastCpuFlipTimestamp = now;
+                    return true;
+                }
                 var effectiveFlipRate = HostVideoHost.CurrentOptions.RefreshRate >= 60 ? 0 : port.FlipRate;
                 target = VideoOutDisplayClock.NextFlipTimestamp(port.OpenTimestamp, port.LastCpuFlipTimestamp,
                     now, port.RefreshRate, effectiveFlipRate, flipMode, port.OutputHeight, port.WindowTop, port.WindowBottom, readyAt.Value);
-                if (_flipPacingDisabled || target <= now)
+                if (target <= now)
                 {
                     port.LastCpuFlipTimestamp = now;
                     return true;

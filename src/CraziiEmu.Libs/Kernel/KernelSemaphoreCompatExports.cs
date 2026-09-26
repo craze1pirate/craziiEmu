@@ -717,4 +717,22 @@ public static class KernelSemaphoreCompatExports
         _ = ctx.TryReadUInt64(ctx[CpuRegister.Rsp], out var returnAddress);
         return $"guest=0x{GuestThreadExecution.CurrentGuestThreadHandle:X16} ret=0x{returnAddress:X16}";
     }
+
+    public static void SignalAllSemaphores(int signalCount = 1)
+    {
+        foreach (var (handle, semaphore) in _semaphores)
+        {
+            lock (semaphore.Gate)
+            {
+                if (semaphore.WaitingThreads > 0)
+                {
+                    semaphore.Count = semaphore.MaxCount > 0
+                        ? Math.Min(semaphore.Count + signalCount, semaphore.MaxCount)
+                        : semaphore.Count + signalCount;
+                    Monitor.PulseAll(semaphore.Gate);
+                }
+            }
+            _ = GuestThreadExecution.Scheduler?.WakeBlockedThreads(GetSemaphoreWakeKey(handle));
+        }
+    }
 }

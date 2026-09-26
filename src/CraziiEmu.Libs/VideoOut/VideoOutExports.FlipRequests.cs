@@ -286,6 +286,8 @@ public static partial class VideoOutExports
 
     private static bool SetFlipOutcome(ulong requestId, FlipOutcome outcome)
     {
+        int handle = 0;
+        long flipArg = 0;
         lock (_stateGate)
         {
             if (!_flipRequests.TryGetValue(requestId, out var request) || request.Outcome != FlipOutcome.Pending)
@@ -294,6 +296,8 @@ public static partial class VideoOutExports
             }
 
             request.Outcome = outcome;
+            handle = request.Handle;
+            flipArg = request.FlipArg;
             if (outcome == FlipOutcome.Presented && request.BufferIndex >= 0 &&
                 _ports.TryGetValue(request.Handle, out var port))
             {
@@ -301,8 +305,13 @@ public static partial class VideoOutExports
             }
             RemoveIfFinishedLocked(request);
             Monitor.PulseAll(_stateGate);
-            return true;
         }
+
+        if (outcome == FlipOutcome.Presented && handle > 0)
+        {
+            CompleteFlip(handle, flipArg);
+        }
+        return true;
     }
 
     // Both responsibilities are done: the retirement ran and the presenter released the frame.
