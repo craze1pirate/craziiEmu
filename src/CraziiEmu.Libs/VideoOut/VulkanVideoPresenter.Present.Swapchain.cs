@@ -298,23 +298,14 @@ internal static unsafe partial class VulkanVideoPresenter
                 return PresentModeKHR.FifoKhr;
             }
 
-            if (_videoOptions.VSync)
+            if (!_videoOptions.VSync)
             {
                 for (var index = 0u; index < modeCount; index++)
                 {
-                    if (modes[index] == PresentModeKHR.FifoKhr)
+                    if (modes[index] == PresentModeKHR.ImmediateKhr)
                     {
-                        return PresentModeKHR.FifoKhr;
+                        return PresentModeKHR.ImmediateKhr;
                     }
-                }
-                return PresentModeKHR.FifoKhr;
-            }
-
-            for (var index = 0u; index < modeCount; index++)
-            {
-                if (modes[index] == PresentModeKHR.ImmediateKhr)
-                {
-                    return PresentModeKHR.ImmediateKhr;
                 }
             }
 

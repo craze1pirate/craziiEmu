@@ -227,6 +227,7 @@ public static partial class VideoOutExports
     private sealed class VideoOutPortState
     {
         public required int Handle { get; init; }
+        public bool IsGen5 { get; set; }
         public int FlipRate { get; set; }
         public required VideoOutDisplayClock DisplayClock { get; init; }
         public ulong PublishedVblankCount { get; set; }
@@ -332,6 +333,7 @@ public static partial class VideoOutExports
                 Handle = handle,
                 OpenTimestamp = openedAt,
                 RefreshRate = targetRefresh,
+                IsGen5 = ctx.TargetGeneration == Generation.Gen5,
                 DisplayClock = new VideoOutDisplayClock(openedAt,
                     KernelRuntimeCompatExports.ReadProcessTimeCounterAt(openedAt),
                     KernelRuntimeCompatExports.ReadTscCounter(), timestampFrequency),
@@ -1618,7 +1620,7 @@ public static partial class VideoOutExports
     private static void VblankTickLoop()
     {
         HostPlatform.Current.Threading.RequestTimerResolution();
-        var pending = new List<(ulong Equeue, ulong DataHint, ulong UserData)>();
+        var pending = new List<(ulong Equeue, ulong Ident, ulong DataHint, ulong UserData, bool IsGen5)>();
         while (Volatile.Read(ref _vblankStopRequested) == 0)
         {
             var next = long.MaxValue;
@@ -1637,10 +1639,13 @@ public static partial class VideoOutExports
                     next = Math.Min(next, port.DisplayClock.NextTimestamp(port.RefreshRate));
                     if (port.DisplayClock.Count <= port.PublishedVblankCount) continue;
                     port.PublishedVblankCount = port.DisplayClock.Count;
-                    var dataHint = (port.DisplayClock.Count & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+                    var dataHint = port.IsGen5
+                        ? port.DisplayClock.Count
+                        : (port.DisplayClock.Count & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+                    var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
                     foreach (var registration in port.VblankEvents)
                     {
-                        pending.Add((registration.Equeue, dataHint, registration.UserData));
+                        pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
                     }
                 }
                 if (next == long.MaxValue)
@@ -1651,17 +1656,57 @@ public static partial class VideoOutExports
                 }
             }
 
-            foreach (var (equeue, dataHint, userData) in pending)
+            foreach (var (equeue, ident, dataHint, userData, isGen5) in pending)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     equeue,
-                    SceVideoOutInternalEventVblank,
+                    ident,
                     OrbisKernelEventFilterVideoOut,
                     dataHint,
-                    userData);
+                    userData,
+                    isGen5);
             }
 
             HostTiming.SleepUntil(next);
+        }
+    }
+
+    internal static void CompleteFlip(int handle, long flipArg)
+    {
+        if (!TryGetPort(handle, out var port))
+        {
+            return;
+        }
+
+        ulong eventHint;
+        FlipEventRegistration[]? flipEvents = null;
+
+        lock (_stateGate)
+        {
+            port.FlipArg = flipArg;
+            port.FlipPendingCount = Math.Max(0, port.FlipPendingCount - 1);
+            eventHint = port.IsGen5
+                ? unchecked((ulong)flipArg)
+                : (SceVideoOutInternalEventFlip | ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16));
+            if (port.FlipEvents.Count != 0)
+            {
+                flipEvents = port.FlipEvents.ToArray();
+            }
+        }
+
+        if (flipEvents != null)
+        {
+            var ident = port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
+            for (var i = 0; i < flipEvents.Length; i++)
+            {
+                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
+                    flipEvents[i].Equeue,
+                    ident,
+                    OrbisKernelEventFilterVideoOut,
+                    eventHint,
+                    flipEvents[i].UserData,
+                    port.IsGen5);
+            }
         }
     }
 

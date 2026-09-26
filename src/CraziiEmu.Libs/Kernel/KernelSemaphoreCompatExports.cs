@@ -255,7 +255,7 @@ public static class KernelSemaphoreCompatExports
                     return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_TIMED_OUT);
                 }
 
-                Monitor.Wait(semaphore.Gate, (int)Math.Min(remaining, 100));
+                Monitor.Wait(semaphore.Gate, (int)Math.Clamp(remaining, 1, 10));
             }
 
             semaphore.Count -= needCount;

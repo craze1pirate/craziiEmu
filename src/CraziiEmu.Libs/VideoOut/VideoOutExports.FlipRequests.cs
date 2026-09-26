@@ -38,6 +38,7 @@ public static partial class VideoOutExports
         public int FlipMode;
         public long FlipArg;
         public bool GpuQueued;
+        public bool IsGen5;
         public long? ReadyTimestamp;
         public ulong EventHint;
         public FlipEventRegistration[]? FlipEvents;
@@ -121,6 +122,7 @@ public static partial class VideoOutExports
             }
 
             port.SubmitProcessTimeCounter = KernelRuntimeCompatExports.ReadProcessTimeCounter();
+            var isGen5 = port.IsGen5;
             request = new FlipRequest
             {
                 RequestId = ++_nextFlipRequestId,
@@ -129,8 +131,10 @@ public static partial class VideoOutExports
                 FlipMode = flipMode,
                 FlipArg = flipArg,
                 GpuQueued = gpuQueued,
-                EventHint = SceVideoOutInternalEventFlip |
-                    ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16),
+                IsGen5 = isGen5,
+                EventHint = isGen5
+                    ? unchecked((ulong)flipArg)
+                    : (SceVideoOutInternalEventFlip | ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16)),
                 FlipEventCount = port.FlipEvents.Count,
                 State = FlipRequestState.Reserved,
                 Outcome = FlipOutcome.Pending,
@@ -238,14 +242,16 @@ public static partial class VideoOutExports
 
         try
         {
+            var ident = request.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
             for (var eventIndex = 0; eventIndex < request.FlipEventCount; eventIndex++)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
                     flipEvents[eventIndex].Equeue,
-                    SceVideoOutInternalEventFlip,
+                    ident,
                     OrbisKernelEventFilterVideoOut,
                     request.EventHint,
-                    flipEvents[eventIndex].UserData);
+                    flipEvents[eventIndex].UserData,
+                    request.IsGen5);
             }
         }
         finally
