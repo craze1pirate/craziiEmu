@@ -534,7 +534,7 @@ public static class UnityScriptingMemTests
             const ulong expectedFlipArg = 0xDEAD_BEEF_CAFE_0001UL;
             KernelEventQueueCompatExports.TriggerDisplayEvent(
                 eqHandle,
-                ident: 3UL,
+                ident: 0UL,
                 filter: VideoOutExports.OrbisKernelEventFilterVideoOut,
                 eventHint: expectedFlipArg,
                 userData: 0x8888UL,
@@ -542,7 +542,8 @@ public static class UnityScriptingMemTests
 
             if (KernelEventQueueCompatExports.TryReservePendingEventForTest(eqHandle, out var ev))
             {
-                if (ev.Ident != 3UL || ev.Data != expectedFlipArg || ev.UserData != 0x8888UL)
+                var recoveredArg = (ev.Data >> 16) & 0x0000_FFFF_FFFF_FFFFUL;
+                if (ev.Ident != 0UL || recoveredArg != (expectedFlipArg & 0x0000_FFFF_FFFF_FFFFUL) || ev.UserData != 0x8888UL)
                 {
                     throw new InvalidOperationException(
                         $"Gen5 TriggerDisplayEvent mismatch: ident={ev.Ident}, data=0x{ev.Data:X16}, userData=0x{ev.UserData:X16}");

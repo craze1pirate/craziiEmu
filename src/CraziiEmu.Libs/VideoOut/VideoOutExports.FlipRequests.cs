@@ -132,9 +132,8 @@ public static partial class VideoOutExports
                 FlipArg = flipArg,
                 GpuQueued = gpuQueued,
                 IsGen5 = isGen5,
-                EventHint = isGen5
-                    ? unchecked((ulong)flipArg)
-                    : (SceVideoOutInternalEventFlip | ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16)),
+                EventHint = (isGen5 ? 0UL : SceVideoOutInternalEventFlip) |
+                    ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16),
                 FlipEventCount = port.FlipEvents.Count,
                 State = FlipRequestState.Reserved,
                 Outcome = FlipOutcome.Pending,
@@ -253,7 +252,7 @@ public static partial class VideoOutExports
 
         try
         {
-            var ident = request.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
+            var ident = request.IsGen5 ? 0UL : SceVideoOutInternalEventFlip;
             for (var eventIndex = 0; eventIndex < request.FlipEventCount; eventIndex++)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(

@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.GpuMemory;
@@ -1154,9 +1155,11 @@ public static partial class VideoOutExports
             return OrbisVideoOutErrorInvalidEvent;
         }
 
-        var decodedData = (ident == 2UL || ident == 3UL)
-            ? data
-            : unchecked((ulong)(unchecked((long)data) >> 16));
+        var decodedData = unchecked((ulong)(unchecked((long)data) >> 16));
+        if (isFlip && (data & 0x8000_0000_0000_0000UL) != 0)
+        {
+            decodedData |= 0xFFFF_0000_0000_0000UL;
+        }
         return ctx.TryWriteUInt64(dataAddress, decodedData)
             ? (int)OrbisGen2Result.ORBIS_GEN2_OK
             : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
@@ -1644,10 +1647,8 @@ public static partial class VideoOutExports
                     next = Math.Min(next, port.DisplayClock.NextTimestamp(effectiveRefreshRate));
                     if (port.DisplayClock.Count <= port.PublishedVblankCount) continue;
                     port.PublishedVblankCount = port.DisplayClock.Count;
-                    var dataHint = port.IsGen5
-                        ? port.DisplayClock.Count
-                        : (port.DisplayClock.Count & 0x0000_FFFF_FFFF_FFFFUL) << 16;
-                    var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
+                    var dataHint = (port.DisplayClock.Count & 0x0000_FFFF_FFFF_FFFFUL) << 16;
+                    var ident = port.IsGen5 ? 1UL : SceVideoOutInternalEventVblank;
                     foreach (var registration in port.VblankEvents)
                     {
                         pending.Add((registration.Equeue, ident, dataHint, registration.UserData, port.IsGen5));
@@ -1685,29 +1686,22 @@ public static partial class VideoOutExports
 
         ulong eventHint;
         FlipEventRegistration[]? flipEvents = null;
-        FlipEventRegistration[]? vblankEvents = null;
 
         lock (_stateGate)
         {
-            port.PublishedVblankCount++;
             port.FlipArg = flipArg;
             port.FlipPendingCount = Math.Max(0, port.FlipPendingCount - 1);
-            eventHint = port.IsGen5
-                ? unchecked((ulong)flipArg)
-                : (SceVideoOutInternalEventFlip | ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16));
+            eventHint = (port.IsGen5 ? 0UL : SceVideoOutInternalEventFlip) |
+                ((unchecked((ulong)flipArg) & 0x0000_FFFF_FFFF_FFFFUL) << 16);
             if (port.FlipEvents.Count != 0)
             {
                 flipEvents = port.FlipEvents.ToArray();
-            }
-            if (port.VblankEvents.Count != 0)
-            {
-                vblankEvents = port.VblankEvents.ToArray();
             }
         }
 
         if (flipEvents != null)
         {
-            var ident = port.IsGen5 ? 3UL : SceVideoOutInternalEventFlip;
+            var ident = port.IsGen5 ? 0UL : SceVideoOutInternalEventFlip;
             for (var i = 0; i < flipEvents.Length; i++)
             {
                 _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
@@ -1718,28 +1712,6 @@ public static partial class VideoOutExports
                     flipEvents[i].UserData,
                     port.IsGen5);
             }
-        }
-
-        if (vblankEvents != null)
-        {
-            var dataHint = port.IsGen5 ? port.PublishedVblankCount : ((port.PublishedVblankCount & 0x0000_FFFF_FFFF_FFFFUL) << 16);
-            var ident = port.IsGen5 ? 2UL : SceVideoOutInternalEventVblank;
-            for (var i = 0; i < vblankEvents.Length; i++)
-            {
-                _ = KernelEventQueueCompatExports.TriggerDisplayEvent(
-                    vblankEvents[i].Equeue,
-                    ident,
-                    OrbisKernelEventFilterVideoOut,
-                    dataHint,
-                    vblankEvents[i].UserData,
-                    port.IsGen5);
-            }
-        }
-
-        // Wake any guest threads waiting on semaphores for Unity (e.g. UnityGfxDeviceWorker, PreloadManager)
-        if (flipArg != 0)
-        {
-            KernelSemaphoreCompatExports.SignalAllSemaphores();
         }
     }
 

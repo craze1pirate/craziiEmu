@@ -1567,7 +1567,10 @@ public static class KernelEventQueueCompatExports
             }
 
             var timeBits = unchecked((ulong)Environment.TickCount64) & 0xFFFUL;
-            var eventData = isGen5 ? eventHint : (timeBits | (count << 12) | (eventHint & 0xFFFF_FFFF_FFFF_0000UL));
+            var payload = (eventHint & 0xFFFF_FFFF_FFFF_0000UL) != 0
+                ? (eventHint & 0xFFFF_FFFF_FFFF_0000UL)
+                : ((eventHint & 0x0000_FFFF_FFFF_FFFFUL) << 16);
+            var eventData = timeBits | (count << 12) | payload;
             var triggeredEvent = new KernelQueuedEvent(
                 ident,
                 filter,
@@ -1584,6 +1587,8 @@ public static class KernelEventQueueCompatExports
             {
                 events.AddLast(triggeredEvent);
             }
+
+            Monitor.PulseAll(_eventQueueGate);
         }
 
         WakeEventQueue(
@@ -1857,6 +1862,11 @@ public static class KernelEventQueueCompatExports
         EventQueueState state,
         string? detail = null)
     {
+        lock (_eventQueueGate)
+        {
+            Monitor.PulseAll(_eventQueueGate);
+        }
+
         if (_logEqueue)
         {
             TraceEventQueueHost(
