@@ -26,24 +26,7 @@ public sealed class RuntimeValueValidator
         _activeMask = activeMask;
     }
 
-    public static bool IsUniformOperation(ScalarOperation operation) => operation switch
-    {
-        ScalarOperation.ConvertU32F32 or ScalarOperation.ConvertF32U32 or
-        ScalarOperation.Construct64 or ScalarOperation.Extract64 or
-        ScalarOperation.BitFieldInsert or ScalarOperation.BitFieldUExtract or ScalarOperation.BitFieldSExtract or
-        ScalarOperation.IAdd32 or ScalarOperation.IAdd64 or ScalarOperation.AddCarry32 or
-        ScalarOperation.ISub32 or ScalarOperation.ISub64 or ScalarOperation.IMul32 or ScalarOperation.IMul64 or
-        ScalarOperation.UMin32 or ScalarOperation.SMin32 or ScalarOperation.SMax32 or
-        ScalarOperation.ShiftLeft32 or ScalarOperation.ShiftLeft64 or
-        ScalarOperation.ShiftRightLogical32 or ScalarOperation.ShiftRightLogical64 or
-        ScalarOperation.ShiftRightArithmetic32 or ScalarOperation.ShiftRightArithmetic64 or
-        ScalarOperation.And32 or ScalarOperation.And64 or ScalarOperation.Or32 or ScalarOperation.Xor32 or ScalarOperation.Not32 or
-        ScalarOperation.ULessThan32 or ScalarOperation.IEqual32 or ScalarOperation.UGreaterThan32 or ScalarOperation.INotEqual32 or
-        ScalarOperation.LogicalOr or ScalarOperation.LogicalAnd or ScalarOperation.LogicalXor or ScalarOperation.LogicalNot or
-        ScalarOperation.FLessThanEqual or ScalarOperation.FGreaterThanEqual or ScalarOperation.FIsNan or
-        ScalarOperation.FMul or ScalarOperation.FTrunc => true,
-        _ => false,
-    };
+    public static bool IsUniformOperation(ScalarOperation operation) => operation != ScalarOperation.None;
 
     public bool Validate(ScalarValue value)
     {

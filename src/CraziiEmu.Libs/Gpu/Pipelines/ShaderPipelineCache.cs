@@ -28,7 +28,8 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
     private readonly Dictionary<GraphicsPipelineKey, PipelineHandle> _graphicsPipelines = new();
     private readonly Dictionary<ComputePipelineKey, PipelineHandle> _computePipelines = new();
     private readonly object _gate = new();
-    private readonly bool _strictShaders = Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_COMPUTE") != "0";
+    private readonly bool _strictShaders = string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_COMPUTE"), "1", StringComparison.OrdinalIgnoreCase) ||
+                                           string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_STRICT_COMPUTE"), "1", StringComparison.OrdinalIgnoreCase);
     private readonly HashSet<(ShaderStage Stage, ulong Hash, uint CodeSize)> _reportedShaderSkips = [];
 
     public ShaderPipelineCache(CpuContext context, IShaderPipelineHost host, IGuestGpuBackend compiler, ShaderHeaderRegistry registry)

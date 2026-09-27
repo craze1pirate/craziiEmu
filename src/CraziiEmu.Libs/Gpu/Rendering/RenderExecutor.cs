@@ -48,7 +48,8 @@ public sealed partial class RenderExecutor
     private readonly HashSet<(ulong ShaderHash, ImageType ImageType, ImageViewType ViewType)> _reportedDrawImageTypeMismatches = [];
 
     public RenderExecutor(IRenderHost host, IShaderPipelineProvider pipelines)
-        : this(host, pipelines, Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_COMPUTE") != "0")
+        : this(host, pipelines, string.Equals(Environment.GetEnvironmentVariable("CRAZIIEMU_STRICT_COMPUTE"), "1", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_STRICT_COMPUTE"), "1", StringComparison.OrdinalIgnoreCase))
     {
     }
 
