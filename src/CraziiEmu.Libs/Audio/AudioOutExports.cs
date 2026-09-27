@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
@@ -230,23 +231,25 @@ public static class AudioOutExports
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        // Same rule as AudioOut2 PortGetState: never bulk-write onto the caller
-        // stack. Some titles place small locals next to the canary; a full
-        // SceAudioOutPortState write smashes it.
-        if (IsGuestStackAddress(stateAddress))
-        {
-            return ctx.SetReturn(0);
-        }
-
-        // SceAudioOutPortState: report a connected primary output at full volume
-        // so pacing/mixing code sees a live port. We do no host rerouting, so
-        // rerouteCounter and flag stay zero.
-        Span<byte> state = stackalloc byte[16];
+        // Port state matching KytyPS5 Libs::Audio::AudioOut::AudioOutGetPortState (32 bytes)
+        Span<byte> state = stackalloc byte[32];
         state.Clear();
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(state, 1);
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(
-            state[2..], (ushort)port.Channels);
-        state[7] = 127;
+        // offset 0: uint16 output = 1 (primary connected)
+        BinaryPrimitives.WriteUInt16LittleEndian(state[0..], 1);
+        // offset 2: uint8 channel = channels > 2 ? 2 : channels
+        state[2] = (byte)(port.Channels > 2 ? 2 : port.Channels);
+        // offset 3: uint8 reserved1 = 0
+        state[3] = 0;
+        // offset 4: int16 volume = 127
+        BinaryPrimitives.WriteInt16LittleEndian(state[4..], 127);
+        // offset 6: uint16 reroute_counter = 0
+        BinaryPrimitives.WriteUInt16LittleEndian(state[6..], 0);
+        // offset 8: uint64 flag = 0
+        BinaryPrimitives.WriteUInt64LittleEndian(state[8..], 0);
+        // offset 16: uint64 reserved2[2] = 0
+        BinaryPrimitives.WriteUInt64LittleEndian(state[16..], 0);
+        BinaryPrimitives.WriteUInt64LittleEndian(state[24..], 0);
+
         if (!ctx.Memory.TryWrite(stateAddress, state))
         {
             return ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
@@ -314,17 +317,16 @@ public static class AudioOutExports
 
         if (!Ports.TryGetValue(handle, out var port))
         {
-            // Host shutdown disposes the ports while guest audio threads are
-            // still draining their last buffers; report success so the guest
-            // winds down without a per-buffer error (and its WARN log flood).
             return ctx.SetReturn(_shutdown
                 ? 0
                 : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
+        // Matching KytyPS5: ptr == nullptr (sourceAddress == 0) paces the port and returns samples_num
         if (sourceAddress == 0)
         {
-            return ctx.SetReturn(0);
+            port.PaceSilence();
+            return ctx.SetReturn((int)port.BufferLength);
         }
 
         var buffer = ArrayPool<byte>.Shared.Rent(port.BufferByteLength);
@@ -341,7 +343,7 @@ public static class AudioOutExports
             if (port.Backend is null)
             {
                 port.PaceSilence();
-                return ctx.SetReturn(0);
+                return ctx.SetReturn((int)port.BufferLength);
             }
 
             var outputLength = port.PreservesGuestFormat
@@ -361,7 +363,7 @@ public static class AudioOutExports
                 ArrayPool<byte>.Shared.Return(output);
             }
 
-            return ctx.SetReturn(0);
+            return ctx.SetReturn((int)port.BufferLength);
         }
         finally
         {

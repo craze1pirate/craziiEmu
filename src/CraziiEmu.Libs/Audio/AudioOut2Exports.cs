@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using CraziiEmu.HLE;
 using CraziiEmu.HLE.Host;
@@ -583,23 +584,8 @@ public static class AudioOut2Exports
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        // Stack out-buffers with garbage handles were writing 0x20 bytes over
-        // caller frames / canaries (state=0x7FFFDE1FF688 right before fail).
-        // Heap outs still get a real state blob even when the handle wasn't
-        // minted by PortCreate — this title synthesizes port ids itself.
-        if (IsGuestStackAddress(stateAddress) &&
-            !(AllowStackOut("portstate") && Ports.ContainsKey(portHandle)))
-        {
-            TraceAudioOut2(
-                $"port-get-state skip-stack handle=0x{portHandle:X} state=0x{stateAddress:X}");
-            return SetReturn(ctx, 0);
-        }
-
         Span<byte> state = stackalloc byte[PortStateSize];
         state.Clear();
-        //   +0x00 u16 output   = CONNECTED_PRIMARY (1)
-        //   +0x02 u8  channels = from port format when known, else 2
-        //   +0x04 s16 volume   = -1 (N/A for main)
         byte channels = 2;
         if (Ports.TryGetValue(portHandle, out var port) &&
             TryDecodeDataFormat(port.DataFormat, out var decodedChannels, out _, out _))
@@ -609,7 +595,7 @@ public static class AudioOut2Exports
 
         BinaryPrimitives.WriteUInt16LittleEndian(state[0x00..], PortStateOutputConnectedPrimary);
         state[0x02] = channels;
-        BinaryPrimitives.WriteInt16LittleEndian(state[0x04..], -1);
+        BinaryPrimitives.WriteInt16LittleEndian(state[0x04..], 127);
 
         if (!ctx.Memory.TryWrite(stateAddress, state))
         {
@@ -677,17 +663,11 @@ public static class AudioOut2Exports
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
 
-        if (IsGuestStackAddress(infoAddress) && !AllowStackOut("speaker"))
-        {
-            TraceAudioOut2($"get-speaker-info skip-stack out=0x{infoAddress:X}");
-            return SetReturn(ctx, 0);
-        }
-
         Span<byte> info = stackalloc byte[SpeakerInfoSize];
         info.Clear();
-        BinaryPrimitives.WriteUInt32LittleEndian(info[0x00..], 2);
-        BinaryPrimitives.WriteUInt32LittleEndian(info[0x04..], 48000);
-        BinaryPrimitives.WriteUInt16LittleEndian(info[0x08..], PortStateOutputConnectedPrimary);
+        info[0x00] = 0;
+        BinaryPrimitives.WriteUInt32LittleEndian(info[0x04..], 0x03);
+        BinaryPrimitives.WriteUInt32LittleEndian(info[0x08..], 0);
 
         if (!ctx.Memory.TryWrite(infoAddress, info))
         {
@@ -827,8 +807,7 @@ public static class AudioOut2Exports
     {
         var userId = unchecked((int)ctx[CpuRegister.Rdi]);
         var outUserAddress = ctx[CpuRegister.Rsi];
-        if ((userId != 0 && userId != 1 && userId != 1000 && userId != 0x10000000 && userId != 255) ||
-            outUserAddress == 0)
+        if (outUserAddress == 0)
         {
             return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
         }
@@ -918,7 +897,6 @@ public static class AudioOut2Exports
                 {
                     if (port.ContextHandle != context.Handle ||
                         port.PcmAddress == 0 ||
-                        Interlocked.Exchange(ref port.PcmPending, 0) == 0 ||
                         !TryDecodeDataFormat(port.DataFormat, out var ch, out var bps, out var isFloat))
                     {
                         continue;
@@ -1209,9 +1187,11 @@ public static class AudioOut2Exports
             IsPlausibleGuestObjectPointer(destination) &&
             !IsGuestStackAddress(destination))
         {
-            Span<byte> zeros = stackalloc byte[SpeakerArrayCoefficientBytes];
-            zeros.Clear();
-            if (!ctx.Memory.TryWrite(destination, zeros))
+            Span<byte> coeffs = stackalloc byte[SpeakerArrayCoefficientBytes];
+            coeffs.Clear();
+            BinaryPrimitives.WriteSingleLittleEndian(coeffs[0x00..], 1.0f);
+            BinaryPrimitives.WriteSingleLittleEndian(coeffs[0x04..], 1.0f);
+            if (!ctx.Memory.TryWrite(destination, coeffs))
             {
                 TraceAudioOut2($"{label} write-failed dest=0x{destination:X}");
                 return SetReturn(ctx, (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);

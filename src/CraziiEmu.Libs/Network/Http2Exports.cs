@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Referred from KytyPS5 project
 
 using System.Collections.Concurrent;
 using System.Text;
@@ -191,6 +192,62 @@ public static class Http2Exports
         TraceHttp2("send_blocked", requestId, ctx[CpuRegister.Rsi], ctx[CpuRegister.Rdx], 0, 0);
         return ctx.SetReturn(Http2ErrorProhibited);
     }
+
+    [SysAbiExport(
+        Nid = "jjFahkBPCYs",
+        ExportName = "sceHttp2SetAuthEnabled",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetAuthEnabled(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "B37SruheQ5Y",
+        ExportName = "sceHttp2SslDisableOption",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SslDisableOption(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "EWcwMpbr5F8",
+        ExportName = "sceHttp2SslEnableOption",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SslEnableOption(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "BJgi0CH7al4",
+        ExportName = "sceHttp2SetRedirectCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetRedirectCallback(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "izvHhqgDt44",
+        ExportName = "sceHttp2SetRecvTimeOut",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetRecvTimeOut(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "XPtW45xiLHk",
+        ExportName = "sceHttp2SetSendTimeOut",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetSendTimeOut(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "-HIO4VT87v8",
+        ExportName = "sceHttp2SetConnectTimeOut",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetConnectTimeOut(CpuContext ctx) => ctx.SetReturn(0);
+
+    [SysAbiExport(
+        Nid = "YrWX+DhPHQY",
+        ExportName = "sceHttp2SetSslCallback",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libSceHttp2")]
+    public static int Http2SetSslCallback(CpuContext ctx) => ctx.SetReturn(0);
 
     private static void RemoveTemplateRequests(int templateId)
     {

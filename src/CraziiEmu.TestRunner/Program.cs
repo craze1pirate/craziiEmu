@@ -35,6 +35,10 @@ namespace CraziiEmu.TestRunner
             VulkanPipelineComplianceTests.RunAllTests();
             GpuMemoryAndHostViewsTests.RunAllTests();
             ModularGpuAndPresenterTests.RunAllTests();
+            UnifiedSocketTests.RunAllTests();
+            NetSocketOptionTests.RunAllTests();
+            KernelSocketErrnoTests.RunAllTests();
+            NetEpollTests.RunAllTests();
         }
     }
 }

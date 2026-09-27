@@ -501,17 +501,6 @@ public static partial class KernelMemoryCompatExports
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
-    [SysAbiExport(Nid = "T8fER+tIGgk", ExportName = "select",
-        Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
-    public static int PosixSelect(CpuContext ctx)
-    {
-        // nfds in Rdi; the fd_sets are left as-is (all reported ready) and the
-        // ready count returned is nfds so callers proceed without blocking.
-        var nfds = unchecked((int)ctx[CpuRegister.Rdi]);
-        ctx[CpuRegister.Rax] = unchecked((ulong)Math.Max(nfds, 0));
-        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
-    }
-
     // ---- Asynchronous I/O (executed synchronously) ----
 
     [SysAbiExport(Nid = "HgX7+AORI58", ExportName = "sceKernelAioSubmitReadCommands",

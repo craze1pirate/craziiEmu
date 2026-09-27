@@ -30,6 +30,16 @@ public static class SocketRegistry
         public bool Connected { get; set; }
         public bool NonBlocking { get; set; }
         public int LastError { get; set; }
+        public bool ReuseAddress { get; set; }
+        public bool KeepAlive { get; set; }
+        public bool Broadcast { get; set; }
+        public bool ReusePort { get; set; }
+        public bool IPv6Only { get; set; }
+        public bool NoDelay { get; set; }
+        public int SendBufferSize { get; set; }
+        public int ReceiveBufferSize { get; set; }
+        public int SendLowWater { get; set; } = 1;
+        public int ReceiveLowWater { get; set; } = 1;
 
         public void SetNonBlocking(bool nonBlocking)
         {
@@ -72,8 +82,68 @@ public static class SocketRegistry
 
     private static readonly ConcurrentDictionary<int, EmulatedSocket> _sockets = new();
 
+    public static bool TryCreateNativeSocket(int family, int type, int protocol, out Socket? socket)
+    {
+        socket = null;
+        var addressFamily = family switch
+        {
+            2 => AddressFamily.InterNetwork,      // AF_INET
+            28 => AddressFamily.InterNetworkV6,   // AF_INET6
+            _ => AddressFamily.Unknown
+        };
+
+        if (addressFamily == AddressFamily.Unknown)
+        {
+            return false;
+        }
+
+        var socketType = type switch
+        {
+            1 => SocketType.Stream,
+            2 => SocketType.Dgram,
+            3 => SocketType.Raw,
+            _ => SocketType.Unknown
+        };
+
+        if (socketType == SocketType.Unknown)
+        {
+            return false;
+        }
+
+        var protocolType = protocol switch
+        {
+            0 when socketType == SocketType.Stream => ProtocolType.Tcp,
+            0 when socketType == SocketType.Dgram => ProtocolType.Udp,
+            6 => ProtocolType.Tcp,
+            17 => ProtocolType.Udp,
+            _ => ProtocolType.Unknown
+        };
+
+        try
+        {
+            socket = new Socket(addressFamily, socketType, protocolType);
+            if (socketType == SocketType.Dgram && OperatingSystem.IsWindows())
+            {
+                // Disable WSAECONNRESET on UDP sockets on Windows (ICMP port unreachable)
+                const int SIO_UDP_CONNRESET = -1744830452; // 0x9800000C
+                socket.IOControl(SIO_UDP_CONNRESET, new byte[] { 0 }, null);
+            }
+            return true;
+        }
+        catch
+        {
+            socket = null;
+            return false;
+        }
+    }
+
     public static int Allocate(int family, int type, int protocol, Socket? nativeSocket = null)
     {
+        if (nativeSocket is null)
+        {
+            TryCreateNativeSocket(family, type, protocol, out nativeSocket);
+        }
+
         var fd = KernelMemoryCompatExports.AllocateGuestFileDescriptor();
         var sock = new EmulatedSocket
         {
@@ -108,6 +178,7 @@ public static class SocketRegistry
         if (_sockets.TryRemove(fd, out var socket))
         {
             socket.Dispose();
+            NetExports.RemoveSocketFromEpolls(fd);
             return true;
         }
         return false;
@@ -120,5 +191,6 @@ public static class SocketRegistry
             sock.Dispose();
         }
         _sockets.Clear();
+        NetExports.ClearEpolls();
     }
 }

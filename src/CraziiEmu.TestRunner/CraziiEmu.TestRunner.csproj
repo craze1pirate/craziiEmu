@@ -26,16 +26,13 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <Compile Remove="GraphicsDynamicStateTests.cs" />
     <Compile Remove="HRTimerTests.cs" />
     <Compile Remove="KernelSemaphoreLifecycleTests.cs" />
-    <Compile Remove="KernelSocketErrnoTests.cs" />
     <Compile Remove="MemoryPoolTests.cs" />
-    <Compile Remove="NetSocketOptionTests.cs" />
     <Compile Remove="NpWebApi2Tests.cs" />
     <Compile Remove="PadAndRudpTests.cs" />
     <Compile Remove="PsmlShareTests.cs" />
     <Compile Remove="PthreadStartTests.cs" />
     <Compile Remove="ShaderCfgTests.cs" />
     <Compile Remove="SyncOnAddressTests.cs" />
-    <Compile Remove="UnifiedSocketTests.cs" />
     <Compile Remove="UnityEngineCompatTests.cs" />
     <Compile Remove="UnityScriptingMemTests.cs" />
     <Compile Remove="Videodec2Tests.cs" />
