@@ -23,6 +23,7 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
 {
     public const int CachingPageBits = 14;
     public const ulong CachingPageSize = 1UL << CachingPageBits;
+    public const ulong MaxStreamingBufferSize = 1024 * 1024;
     public const ulong CachingPageCount = 1UL << (40 - CachingPageBits);
     public const ulong BdaPageTableSize = CachingPageCount * sizeof(ulong);
     public static readonly ResourceSlotIdentifier NullBufferId = new(0, 1);
@@ -206,7 +207,7 @@ public sealed unsafe class GuestBufferCache : IGuestBufferStore, IDisposable
         if (!isWritten &&
             !_tracker.HasGpuDirtyPages(guestAddress, size) &&
             _tracker.HasCpuDirtyPages(guestAddress, size) &&
-            (size <= CachingPageSize || (!isTexelBuffer && _tracker.IsCpuWriteHotRange(guestAddress, size))))
+            (size <= MaxStreamingBufferSize || (!isTexelBuffer && _tracker.IsCpuWriteHotRange(guestAddress, size))))
         {
             using var streamProfile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.BufferStreamUpload);
             if (_stream.TryMap(size, out var streamOffset, StreamOffsetAlignment, allowWait: false) &&

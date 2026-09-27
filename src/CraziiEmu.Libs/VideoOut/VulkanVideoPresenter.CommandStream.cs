@@ -181,6 +181,8 @@ internal static unsafe partial class VulkanVideoPresenter
             {
                 _commandStream.EnqueueCompute(queue, address, dwordCount, submissionId, geometrySnapshots);
             }
+
+            Presenter.WakeRenderThread();
         }
 
         // Runs slices until the budget ends or nothing is runnable; blocked heads retry every 100 ms.

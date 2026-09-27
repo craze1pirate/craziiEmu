@@ -29,7 +29,7 @@ public sealed class CommandStreamQueue
 {
     public const int ComputeQueueCount = 56;
     public const int QueueCount = 1 + ComputeQueueCount;
-    public const int AllBlockedRetryMilliseconds = 100;
+    public const int AllBlockedRetryMilliseconds = 1;
 
     private readonly ICommandStreamHost _host;
     private readonly object _gate = new();
@@ -437,16 +437,7 @@ public sealed class CommandStreamQueue
         processor.ConstantEngineComplete = true;
         var complete = processor.Process(submission.Commands, submission.Address, submission.DwordCount) == SubmissionProgress.Complete;
         submission.CommandsComplete = complete;
-        if (submission.Commands.MadeProgress)
-        {
-            if (complete)
-            {
-                _host.RunGarbageCollector();
-            }
-
-            _host.Flush();
-        }
-        else if (complete)
+        if (complete)
         {
             _host.RunGarbageCollector();
         }

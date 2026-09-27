@@ -26,7 +26,7 @@ public sealed partial class RenderExecutor
     private readonly record struct PreparedIndexBuffer(BufferBinding Binding, ulong Size, IndexType Type);
 
     // Merges the vertex ranges, obtains one host buffer per merged range and offsets every slot into it.
-    private BufferBinding[] AcquireVertexBuffers(VertexInputInfo vertexInput)
+    private void AcquireVertexBuffers(VertexInputInfo vertexInput, Span<BufferBinding> prepared)
     {
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.DrawVertexBufferAcquisition);
         var buffers = vertexInput.Buffers;
@@ -76,7 +76,6 @@ public sealed partial class RenderExecutor
             range.Binding = _host.ObtainBuffer(range.BaseAddress, size, isWritten: false);
         }
 
-        var prepared = new BufferBinding[buffers.Length];
         BufferBinding? nullBuffer = null;
         for (var slot = 0; slot < buffers.Length; slot++)
         {
@@ -106,8 +105,6 @@ public sealed partial class RenderExecutor
             ref readonly var owner = ref merged[found];
             prepared[slot] = new BufferBinding(owner.Binding.Handle, owner.Binding.Offset + vertex.Address - owner.BaseAddress);
         }
-
-        return prepared;
     }
 
     private PreparedIndexBuffer AcquireIndexBuffer(in IndexSource source)
@@ -219,7 +216,8 @@ public sealed partial class RenderExecutor
             _host.BindResources(pixelBindings);
         }
 
-        var vertexBuffers = AcquireVertexBuffers(vertexInput);
+        Span<BufferBinding> vertexBuffers = stackalloc BufferBinding[vertexInput.Buffers.Length];
+        AcquireVertexBuffers(vertexInput, vertexBuffers);
         var indexBuffer = AcquireIndexBuffer(in indexSource);
         state.Rendering = AcquireAttachments(ref state);
         // Nothing after the pipeline touches guest memory.
