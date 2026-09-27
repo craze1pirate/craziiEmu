@@ -111,9 +111,28 @@ internal sealed partial class WindowsWaveOutAudio : IHostAudioOutput
             var headerAddress = IntPtr.Zero;
             try
             {
+                var config = Configuration.CraziiEmuConfig.Instance;
+                var masterGain = config.GetMasterGain();
                 unsafe
                 {
-                    data.CopyTo(new Span<byte>((void*)dataAddress, data.Length));
+                    var dest = new Span<byte>((void*)dataAddress, data.Length);
+                    if (masterGain <= 0.0001f)
+                    {
+                        dest.Clear();
+                    }
+                    else if (Math.Abs(masterGain - 1.0f) < 0.001f)
+                    {
+                        data.CopyTo(dest);
+                    }
+                    else
+                    {
+                        var srcSamples = MemoryMarshal.Cast<byte, short>(data);
+                        var dstSamples = MemoryMarshal.Cast<byte, short>(dest);
+                        for (var i = 0; i < srcSamples.Length; i++)
+                        {
+                            dstSamples[i] = (short)Math.Clamp((int)MathF.Round(srcSamples[i] * masterGain), short.MinValue, short.MaxValue);
+                        }
+                    }
                 }
 
                 var header = new WaveHeader

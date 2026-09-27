@@ -1091,6 +1091,8 @@ public partial class MainWindow : Window
                 CreateNoWindow = true
             };
 
+            startInfo.Environment["CRAZIIEMU_CONFIG"] = Path.GetFullPath(CraziiEmuConfig.ConfigFilePath);
+
             if (CraziiEmuConfig.Instance.EnableRenderDocCapture)
             {
                 startInfo.Environment["CRAZIIEMU_RENDERDOC"] = "1";

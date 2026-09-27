@@ -6,7 +6,7 @@
   [![Platform](https://img.shields.io/badge/Platform-Windows%20Only%20(x64)-0078D4?style=flat&logo=windows)](https://github.com/craze1pirate/craziiEmu)
   [![Framework](https://img.shields.io/badge/.NET-10-512BD4?style=flat&logo=dotnet)](https://dotnet.microsoft.com/)
   [![Graphics](https://img.shields.io/badge/Graphics-Vulkan%201.3-E52E2D?style=flat&logo=vulkan)](https://www.vulkan.org/)
-  [![Release](https://img.shields.io/badge/Release-v0.33--alpha-blue?style=flat)](https://github.com/craze1pirate/craziiEmu/releases)
+  [![Release](https://img.shields.io/badge/Release-v0.34--alpha-blue?style=flat)](https://github.com/craze1pirate/craziiEmu/releases)
   [![License](https://img.shields.io/badge/License-GPL--2.0-22c55e?style=flat)](LICENSE)
 </div>
 
@@ -40,8 +40,20 @@ While initially inspired by and incorporating core foundations from the open-sou
 
 craziiEmu is actively progressing commercial game boot sequences and in-game execution:
 
-### *Dead Cells* (PPSA15552) — **Fully Playable**
-*Dead Cells* boots seamlessly into 2D gameplay with responsive combat, full controller input, and stable performance.
+### *Sonic Superstars*
+*Sonic Superstars* boots into 3D gameplay with responsive player movement and controls, rendering high-speed platforming environments at 10 - 18 FPS via the Vulkan backend.
+
+<div align="center">
+  <img src="./assets/images/sonic.png" width="88%" alt="Sonic Superstars Playable on craziiEmu"/>
+  <p><em>Sonic Superstars running playable on craziiEmu (Vulkan backend)</em></p>
+</div>
+
+*Current Status:* Playable with performance issues.
+
+---
+
+### *Dead Cells*
+*Dead Cells* boots seamlessly into 2D gameplay with responsive combat, full controller input, and stable performance at 60 FPS.
 
 <div align="center">
   <img src="./assets/images/dead-cells.png" width="88%" alt="Dead Cells Fully Playable on craziiEmu"/>
@@ -52,38 +64,38 @@ craziiEmu is actively progressing commercial game boot sequences and in-game exe
 
 ---
 
-### *Dreaming Sarah* — **Playable**
-*Dreaming Sarah* runs with full 2D graphics rendering, responsive player controls, and stable performance.
+### *Among Us*
+*Among Us* initializes runtime subsystems, renders intro logos, and boots into the interactive main menu running at a stable 60 FPS.
 
 <div align="center">
-  <img src="./assets/images/dreaming-sarah.png" width="88%" alt="Dreaming Sarah on craziiEmu"/>
-  <p><em>Dreaming Sarah running playable on craziiEmu (Vulkan backend)</em></p>
+  <img src="./assets/images/amongus.png" width="88%" alt="Among Us Main Menu on craziiEmu"/>
+  <p><em>Among Us running main menu at stable 60 FPS on craziiEmu (Vulkan backend)</em></p>
 </div>
 
-*Current Status:* Fully playable.
+*Current Status:* Main menu.
 
 ---
 
-### *Among Us* — **Intro / Logo (Not Playable Yet)**
-*Among Us* initializes through early boot sequences, mounts game files, and successfully presents developer and title intro logos via Vulkan swapchain presentation.
+### *Stray*
+*Stray* executes through Unreal Engine 4's custom memory allocator (`FMallocBinned2`), initializes native spinlocks, and renders early splash sequences and logos.
 
-*Current Status:* **Boots only until logo.** The game stops prior to reaching title menus or online/local lobbies due to pending networking and runtime stubs. It is **not playable yet**, with active research underway to advance its execution state.
+<div align="center">
+  <img src="./assets/images/stray.png" width="88%" alt="Stray Logos on craziiEmu"/>
+  <p><em>Stray rendering logos on craziiEmu (Vulkan backend)</em></p>
+</div>
+
+*Current Status:* Intro / Logos.
 
 ---
 
-### *Stray* (PPSA02100) — **Intro / Logo**
-*Stray* executes through Unreal Engine 4's custom memory allocator (`FMallocBinned2`), initializes native spinlocks, and renders early splash sequences.
+### Tested Games
 
----
-
-### Compatibility Tier Classification
-
-| Tier | Meaning | Representative Titles |
+| Status | Meaning | Tested Titles |
 | :--- | :--- | :--- |
-| **Playable** | Boots, reaches gameplay, and can be played with stable performance and sound. | *Dead Cells*, *Dreaming Sarah*, *void tRrLM(); //Void Terrarium* |
-| **In-Game** | Reaches gameplay loop, but performance issues or game-breaking glitches may occur. | — |
-| **Intro / Logo** | Boots past bootloader, initializes runtime services, and renders intro/title logos. | *Stray*, *Among Us*, *Naiad*, *Grand Theft Auto V* |
-| **Loads** | Parses ELF/SELF headers, loads modules, but crashes before rendering visual frames. | *Sonic Superstars* |
+| **Fully Playable** | Runs at stable 60fps with no glitches and performance issues | *Dreaming Sarah*, *Dead Cells*, *Minecraft*, *void tRrLM(); //Void Terrarium* |
+| **Playable** | Reaches gameplay loop, but performance issues or game-breaking glitches may occur. | *Sonic Superstars*, *Pac-Man World Re-PAC*, *Dredge* |
+| **Intro/Logos and Main Menu** | Boots past bootloader, renders intro logos, or reaches main menu | *Among Us*, *Grand Theft Auto V*, *Naiad*, *Stray*, *Poppy Playtime Chapter 1* |
+| **Doesn't Boot** | Does not boot or crashes during startup | *New Super Lucky's Super Tale*, *Grand Theft Auto Vice City: Definitive Edition*, *Pac-Man World 2 Re-PAC* |
 
 ---
 

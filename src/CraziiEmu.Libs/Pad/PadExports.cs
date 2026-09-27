@@ -127,9 +127,10 @@ public static class PadExports
         input.EnsureStarted();
         if (Interlocked.Exchange(ref _controlsAnnouncementLogged, 1) == 0)
         {
+            var config = CraziiEmuConfig.Instance.Input;
             Console.Error.WriteLine(input.DescribeConnectedGamepad() is { } gamepadName
                 ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback also active)."
-                : "[LOADER][INFO] Keyboard controls: Arrow keys = D-pad, WASD = left stick, IJKL = right stick, Z/Enter = Cross, X/Esc = Circle, C = Square, V = Triangle, Q = L1, E = R1, R = L2, F = R2, Tab/Backspace = Options. A DualSense or Xbox controller will be used automatically when plugged in.");
+                : $"[LOADER][INFO] Keyboard controls: {config.DescribeControls()}. A DualSense or Xbox controller will be used automatically when plugged in.");
         }
 
         return ctx.SetReturn(PrimaryPadHandle);
@@ -975,11 +976,11 @@ public static class PadExports
         if (input.IsKeyDown(config.DpadRight)) buttons |= OrbisPadButton.Right;
         if (input.IsKeyDown(config.DpadUp)) buttons |= OrbisPadButton.Up;
         if (input.IsKeyDown(config.DpadDown)) buttons |= OrbisPadButton.Down;
-        // Face buttons (configured + common fallbacks)
-        if (input.IsKeyDown(config.Cross) || input.IsKeyDown(0x20) || input.IsKeyDown(0x0D)) buttons |= OrbisPadButton.Cross;
-        if (input.IsKeyDown(config.Circle) || input.IsKeyDown(0xA0) || input.IsKeyDown(0x10) || input.IsKeyDown(0x1B)) buttons |= OrbisPadButton.Circle;
-        if (input.IsKeyDown(config.Square) || input.IsKeyDown(0x46)) buttons |= OrbisPadButton.Square;
-        if (input.IsKeyDown(config.Triangle) || input.IsKeyDown(0x45)) buttons |= OrbisPadButton.Triangle;
+        // Face buttons
+        if (input.IsKeyDown(config.Cross)) buttons |= OrbisPadButton.Cross;
+        if (input.IsKeyDown(config.Circle)) buttons |= OrbisPadButton.Circle;
+        if (input.IsKeyDown(config.Square)) buttons |= OrbisPadButton.Square;
+        if (input.IsKeyDown(config.Triangle)) buttons |= OrbisPadButton.Triangle;
         // Shoulder buttons
         if (input.IsKeyDown(config.L1)) buttons |= OrbisPadButton.L1;
         if (input.IsKeyDown(config.R1)) buttons |= OrbisPadButton.R1;
@@ -989,8 +990,8 @@ public static class PadExports
         if (input.IsKeyDown(config.L3)) buttons |= OrbisPadButton.L3;
         if (input.IsKeyDown(config.R3)) buttons |= OrbisPadButton.R3;
         // Options / Create
-        if (input.IsKeyDown(config.Options) || input.IsKeyDown(0x09)) buttons |= OrbisPadButton.Options;
-        if (input.IsKeyDown(config.Create) || input.IsKeyDown(0x08)) buttons |= OrbisPadButton.TouchPad;
+        if (input.IsKeyDown(config.Options)) buttons |= OrbisPadButton.Options;
+        if (input.IsKeyDown(config.Create)) buttons |= OrbisPadButton.TouchPad;
         return buttons;
     }
 

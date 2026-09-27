@@ -39,6 +39,7 @@ namespace CraziiEmu.TestRunner
             NetSocketOptionTests.RunAllTests();
             KernelSocketErrnoTests.RunAllTests();
             NetEpollTests.RunAllTests();
+            AudioAndInputTests.RunAllTests();
         }
     }
 }

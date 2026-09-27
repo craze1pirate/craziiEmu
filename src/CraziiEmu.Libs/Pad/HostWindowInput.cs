@@ -193,6 +193,9 @@ public static class HostWindowInput
         {
             lock (Gate)
             {
+                if (virtualKey == InputMap.MouseLeft) return _mouseLeftDown;
+                if (virtualKey == InputMap.MouseRight) return _mouseRightDown;
+                if (virtualKey == InputMap.MouseMiddle) return _mouseMiddleDown;
                 if (PressedVirtualKeys.Contains(virtualKey)) return true;
                 return TryMapVirtualKey(virtualKey, out var key) && Pressed.Contains(key);
             }

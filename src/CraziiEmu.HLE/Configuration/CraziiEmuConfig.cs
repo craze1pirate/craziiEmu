@@ -14,16 +14,33 @@ namespace CraziiEmu.HLE.Configuration;
 public class CraziiEmuConfig
 {
     private static CraziiEmuConfig? _instance;
-    private static string ConfigFilePath
+    public static string ConfigFilePath
     {
         get
         {
+            var envPath = Environment.GetEnvironmentVariable("CRAZIIEMU_CONFIG");
+            if (!string.IsNullOrEmpty(envPath))
+            {
+                return envPath;
+            }
+
             var basePath = AppContext.BaseDirectory;
             if (!string.IsNullOrEmpty(basePath))
             {
-                return Path.Combine(basePath, "config.json");
+                var candidate = Path.Combine(basePath, "config.json");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
             }
-            return "config.json";
+
+            var cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "config.json");
+            if (File.Exists(cwdCandidate))
+            {
+                return cwdCandidate;
+            }
+
+            return !string.IsNullOrEmpty(basePath) ? Path.Combine(basePath, "config.json") : "config.json";
         }
     }
 
@@ -74,6 +91,11 @@ public class CraziiEmuConfig
 
     private void CheckAndReloadIfModified()
     {
+        if (!ReferenceEquals(this, _instance))
+        {
+            return;
+        }
+
         try
         {
             var path = ConfigFilePath;
@@ -82,8 +104,9 @@ public class CraziiEmuConfig
                 var modified = File.GetLastWriteTimeUtc(path);
                 if (modified != _lastConfigFileModified)
                 {
-                    _lastConfigFileModified = modified;
-                    var json = File.ReadAllText(path);
+                    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var reader = new StreamReader(stream);
+                    var json = reader.ReadToEnd();
                     var updated = JsonSerializer.Deserialize<CraziiEmuConfig>(json);
                     if (updated != null)
                     {
@@ -95,6 +118,11 @@ public class CraziiEmuConfig
                         DisplayScaling = updated.DisplayScaling;
                         HdrMode = updated.HdrMode;
                         EnableRenderDocCapture = updated.EnableRenderDocCapture;
+                        if (updated.Input != null)
+                        {
+                            Input = updated.Input;
+                        }
+                        _lastConfigFileModified = modified;
                     }
                 }
             }
@@ -256,5 +284,67 @@ public class InputMap
     public int RightStickRight { get; set; } = MouseXPos; // Mouse X (+)
     public int RightStickUp { get; set; } = MouseYNeg;    // Mouse Y (-)
     public int RightStickDown { get; set; } = MouseYPos;  // Mouse Y (+)
+
+    public static string GetKeyName(int vk)
+    {
+        return vk switch
+        {
+            InputMap.MouseLeft => "Left Mouse",
+            InputMap.MouseRight => "Right Mouse",
+            InputMap.MouseMiddle => "Middle Mouse",
+            InputMap.MouseXNeg => "Mouse Left",
+            InputMap.MouseXPos => "Mouse Right",
+            InputMap.MouseYNeg => "Mouse Up",
+            InputMap.MouseYPos => "Mouse Down",
+            0x20 => "Space",
+            0xA0 => "Left Shift",
+            0xA1 => "Right Shift",
+            0xA2 => "Left Ctrl",
+            0xA3 => "Right Ctrl",
+            0xA4 => "Left Alt",
+            0xA5 => "Right Alt",
+            0x10 => "Shift",
+            0x11 => "Ctrl",
+            0x12 => "Alt",
+            0x0D => "Enter",
+            0x1B => "Escape",
+            0x09 => "Tab",
+            0x08 => "Backspace",
+            0x25 => "Left Arrow",
+            0x26 => "Up Arrow",
+            0x27 => "Right Arrow",
+            0x28 => "Down Arrow",
+            0x24 => "Home",
+            0x23 => "End",
+            0x21 => "Page Up",
+            0x22 => "Page Down",
+            0x2D => "Insert",
+            0x2E => "Delete",
+            >= 0x41 and <= 0x5A => ((char)vk).ToString(),
+            >= 0x30 and <= 0x39 => ((char)vk).ToString(),
+            >= 0x70 and <= 0x7B => $"F{vk - 0x70 + 1}",
+            _ => $"Key({vk})"
+        };
+    }
+
+    public string DescribeControls()
+    {
+        string dpad = (DpadUp == 0x26 && DpadDown == 0x28 && DpadLeft == 0x25 && DpadRight == 0x27)
+            ? "Arrow keys = D-pad"
+            : $"{GetKeyName(DpadUp)}/{GetKeyName(DpadDown)}/{GetKeyName(DpadLeft)}/{GetKeyName(DpadRight)} = D-pad";
+
+        string leftStick = (LeftStickUp == 0x57 && LeftStickLeft == 0x41 && LeftStickDown == 0x53 && LeftStickRight == 0x44)
+            ? "WASD = left stick"
+            : $"{GetKeyName(LeftStickUp)}{GetKeyName(LeftStickLeft)}{GetKeyName(LeftStickDown)}{GetKeyName(LeftStickRight)} = left stick";
+
+        string rightStick = (RightStickLeft == MouseXNeg && RightStickRight == MouseXPos && RightStickUp == MouseYNeg && RightStickDown == MouseYPos)
+            ? "Mouse = right stick"
+            : $"{GetKeyName(RightStickUp)}/{GetKeyName(RightStickDown)}/{GetKeyName(RightStickLeft)}/{GetKeyName(RightStickRight)} = right stick";
+
+        return $"{dpad}, {leftStick}, {rightStick}, " +
+               $"{GetKeyName(Cross)} = Cross, {GetKeyName(Circle)} = Circle, {GetKeyName(Square)} = Square, {GetKeyName(Triangle)} = Triangle, " +
+               $"{GetKeyName(L1)} = L1, {GetKeyName(R1)} = R1, {GetKeyName(L2)} = L2, {GetKeyName(R2)} = R2, " +
+               $"{GetKeyName(Options)} = Options";
+    }
 }
 
