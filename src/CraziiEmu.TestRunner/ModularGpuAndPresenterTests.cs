@@ -219,7 +219,13 @@ public static class ModularGpuAndPresenterTests
         Assert(width == 0 && height == 0, "Dimensions should be 0");
         Assert(serial == 0, "Serial should be 0");
 
-        Console.WriteLine("  [PASS] 5. AvPlayer fallback presentation query and idle safety verified");
+        // Verify FFmpeg probing native bindings are loaded and callable without throwing NotSupportedException
+        bool probed = CraziiEmu.Libs.Media.FfmpegMediaStream.TryProbe(
+            "non_existent_file.mp4",
+            out _, out _, out _, out _, out _, out _, out _, out _);
+        Assert(!probed, "Non-existent file should not probe successfully");
+
+        Console.WriteLine("  [PASS] 5. AvPlayer fallback presentation query, idle safety, and FFmpeg native bindings verified");
     }
 
     private static void TestVulkanVideoPresenterCompatibility()

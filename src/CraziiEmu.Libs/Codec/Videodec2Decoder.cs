@@ -169,9 +169,7 @@ internal sealed unsafe class Videodec2Decoder : IDisposable
             }
 
             _rootPathInitialized = true;
-            // Must be set before any ffmpeg.* call, or bindings resolve against the empty default RootPath.
-            ffmpeg.RootPath = Path.Combine(AppContext.BaseDirectory, "plugins");
-            DynamicallyLoadedBindings.Initialize();
+            CraziiEmu.Libs.Media.FfmpegRuntime.EnsureInitialized();
         }
     }
 

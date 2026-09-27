@@ -49,14 +49,31 @@ def main():
         'libHarfBuzzSharp.dll',
         'libSkiaSharp.dll'
     }
+    allowed_dirs = {'plugins'}
 
     # Clean any extra files or subdirectories
     for item in os.listdir(target_dir):
         full_path = os.path.join(target_dir, item)
         if os.path.isdir(full_path):
-            shutil.rmtree(full_path)
+            if item not in allowed_dirs:
+                shutil.rmtree(full_path)
+            else:
+                for sub in os.listdir(full_path):
+                    if sub.endswith('.pdb'):
+                        os.remove(os.path.join(full_path, sub))
         elif item not in allowed_files:
             os.remove(full_path)
+
+    # Ensure plugins folder has native FFmpeg binaries
+    plugins_target = os.path.join(target_dir, "plugins")
+    repo_plugins = os.path.join(REPO_ROOT, "plugins")
+    if os.path.exists(repo_plugins):
+        os.makedirs(plugins_target, exist_ok=True)
+        for f in os.listdir(repo_plugins):
+            if f.endswith('.dll'):
+                dst_file = os.path.join(plugins_target, f)
+                if not os.path.exists(dst_file):
+                    shutil.copy2(os.path.join(repo_plugins, f), dst_file)
 
     # Create ZIP archive
     if os.path.exists(zip_path):
@@ -65,12 +82,24 @@ def main():
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
         for file in sorted(allowed_files):
             full_path = os.path.join(target_dir, file)
-            zipf.write(full_path, file)
+            if os.path.exists(full_path):
+                zipf.write(full_path, file)
+        if os.path.exists(plugins_target):
+            for file in sorted(os.listdir(plugins_target)):
+                full_path = os.path.join(plugins_target, file)
+                if os.path.isfile(full_path):
+                    zipf.write(full_path, os.path.join("plugins", file))
 
     print("\n=== Release Contents ===")
     for f in sorted(os.listdir(target_dir)):
         p = os.path.join(target_dir, f)
-        print(f"  {f} ({os.path.getsize(p):,} bytes)")
+        if os.path.isdir(p):
+            print(f"  [{f}/]")
+            for sub in sorted(os.listdir(p)):
+                sub_p = os.path.join(p, sub)
+                print(f"    {sub} ({os.path.getsize(sub_p):,} bytes)")
+        else:
+            print(f"  {f} ({os.path.getsize(p):,} bytes)")
 
     print(f"\nCreated ZIP: {zip_path} ({os.path.getsize(zip_path):,} bytes)")
 

@@ -51,6 +51,63 @@ SPDX-License-Identifier: GPL-2.0-or-later
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <NativeLibraryFolderName>plugins</NativeLibraryFolderName>
+    <EffectiveRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</EffectiveRid>
+    <EffectiveRid Condition="'$(RuntimeIdentifier)' == '' And '$(OS)' == 'Windows_NT'">win-x64</EffectiveRid>
+    <FfmpegRuntimeTag>3b502d4</FfmpegRuntimeTag>
+    <FfmpegRuntimeDir>$(BaseIntermediateOutputPath)ffmpeg-runtime/$(FfmpegRuntimeTag)/$(EffectiveRid)</FfmpegRuntimeDir>
+    <FfmpegRuntimePackage Condition="'$(EffectiveRid)' == 'win-x64'">ffmpeg-windows-x64.zip</FfmpegRuntimePackage>
+    <FfmpegRuntimePackage Condition="'$(EffectiveRid)' == 'linux-x64'">ffmpeg-linux-x64.zip</FfmpegRuntimePackage>
+    <FfmpegRuntimePackage Condition="'$(EffectiveRid)' == 'osx-x64'">ffmpeg-macos-x64.zip</FfmpegRuntimePackage>
+    <FfmpegRuntimePackage Condition="'$(EffectiveRid)' == 'osx-arm64'">ffmpeg-macos-arm64.zip</FfmpegRuntimePackage>
+    <FfmpegRuntimeArchive>$(FfmpegRuntimeDir)/$(FfmpegRuntimePackage)</FfmpegRuntimeArchive>
+    <FfmpegRuntimeExtractDir>$(FfmpegRuntimeDir)/extracted</FfmpegRuntimeExtractDir>
+  </PropertyGroup>
+
+  <Target Name="FetchFfmpegRuntime"
+    BeforeTargets="Publish;Build"
+    Condition="'$(EffectiveRid)' != '' And '$(FfmpegRuntimePackage)' != ''">
+    <DownloadFile
+      SourceUrl="https://github.com/sharpemu/ffmpeg-core/releases/download/$(FfmpegRuntimeTag)/$(FfmpegRuntimePackage)"
+      DestinationFolder="$(FfmpegRuntimeDir)"
+      Condition="!Exists('$(FfmpegRuntimeArchive)')" />
+    <Unzip
+      SourceFiles="$(FfmpegRuntimeArchive)"
+      DestinationFolder="$(FfmpegRuntimeExtractDir)"
+      Condition="!Exists('$(FfmpegRuntimeExtractDir)')" />
+  </Target>
+
+  <Target Name="PublishFfmpegRuntime"
+    AfterTargets="Publish"
+    DependsOnTargets="FetchFfmpegRuntime"
+    Condition="'$(EffectiveRid)' != '' And '$(FfmpegRuntimePackage)' != ''">
+    <ItemGroup>
+      <_FfmpegRuntimeFiles Condition="$(EffectiveRid.StartsWith('win'))"
+        Include="$(FfmpegRuntimeExtractDir)/bin/*.dll" />
+      <_FfmpegRuntimeFiles Condition="!$(EffectiveRid.StartsWith('win'))"
+        Include="$(FfmpegRuntimeExtractDir)/lib/*.so;$(FfmpegRuntimeExtractDir)/lib/*.so.*;$(FfmpegRuntimeExtractDir)/lib/*.dylib" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FfmpegRuntimeFiles)"
+      DestinationFolder="$(PublishDir)$(NativeLibraryFolderName)"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="BuildFfmpegRuntime"
+    AfterTargets="Build"
+    DependsOnTargets="FetchFfmpegRuntime"
+    Condition="'$(EffectiveRid)' != '' And '$(FfmpegRuntimePackage)' != ''">
+    <ItemGroup>
+      <_FfmpegRuntimeFiles Condition="$(EffectiveRid.StartsWith('win'))"
+        Include="$(FfmpegRuntimeExtractDir)/bin/*.dll" />
+      <_FfmpegRuntimeFiles Condition="!$(EffectiveRid.StartsWith('win'))"
+        Include="$(FfmpegRuntimeExtractDir)/lib/*.so;$(FfmpegRuntimeExtractDir)/lib/*.so.*;$(FfmpegRuntimeExtractDir)/lib/*.dylib" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FfmpegRuntimeFiles)"
+      DestinationFolder="$(OutDir)$(NativeLibraryFolderName)"
+      SkipUnchangedFiles="true" />
+  </Target>
+
   <Target Name="RemovePdbsFromPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
     <ItemGroup>
       <PdbsToDelete Include="$([MSBuild]::EnsureTrailingSlash('$(PublishDir)'))**\*.pdb" />

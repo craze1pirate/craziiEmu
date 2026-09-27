@@ -276,6 +276,12 @@ internal sealed unsafe class FfmpegMediaStream : Stream
 
             return width > 0 && height > 0;
         }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[AVPLAYER][ERROR] in-process decoder failed to probe '{path}': {ex.Message}");
+            return false;
+        }
         finally
         {
             if (formatContext is not null)

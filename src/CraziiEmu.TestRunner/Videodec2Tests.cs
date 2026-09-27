@@ -847,7 +847,21 @@ public static class Videodec2Tests
             var mem = new DummyMemory();
             var ctx = CreateContext(mem);
             int res = AvPlayerExports.AvPlayerInit(ctx);
-            return (name, true, "AvPlayerExports.AvPlayerInit executed cleanly without regressions");
+            if (res != 0)
+            {
+                return (name, false, "AvPlayerInit failed");
+            }
+
+            // Verify FFmpeg native bindings and probing are available and do not throw NotSupportedException
+            bool probed = CraziiEmu.Libs.Media.FfmpegMediaStream.TryProbe(
+                "non_existent_file.mp4",
+                out _, out _, out _, out _, out _, out _, out _, out _);
+            if (probed)
+            {
+                return (name, false, "Unexpected probe success for non-existent file");
+            }
+
+            return (name, true, "AvPlayerInit and FFmpeg probe bindings executed cleanly without regressions");
         }
         catch (Exception ex) { return (name, false, ex.Message); }
     }
