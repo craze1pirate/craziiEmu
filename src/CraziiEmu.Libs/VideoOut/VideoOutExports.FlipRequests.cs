@@ -424,6 +424,7 @@ public static partial class VideoOutExports
             _ = TryDumpFrame(memory, port, bufferIndex, flipMode, flipArg);
         }
 
+        PaceFlip(handle, flipMode);
         PerfOverlay.RecordSubmit();
         TraceVideoOut(
             $"videoout.submit_flip handle={handle} index={bufferIndex} mode={flipMode} " +

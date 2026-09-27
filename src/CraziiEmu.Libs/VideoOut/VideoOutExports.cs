@@ -521,7 +521,7 @@ public static partial class VideoOutExports
         BinaryPrimitives.WriteInt32LittleEndian(status[0x00..0x04], resolutionClass);
         BinaryPrimitives.WriteInt32LittleEndian(status[0x04..0x08], 1);
         // The status uses a refresh-rate code, not the frequency used for pacing.
-        var refreshRateCode = (HostVideoHost.CurrentOptions.RefreshRate >= 60 || port.RefreshRate >= 119)
+        var refreshRateCode = (port.RefreshRate >= 119 || HostVideoHost.CurrentOptions.RefreshRate > 60)
             ? SceVideoOutRefreshRate119_88Hz
             : SceVideoOutRefreshRate59_94Hz;
         BinaryPrimitives.WriteUInt64LittleEndian(status[0x08..0x10], refreshRateCode);
@@ -1640,9 +1640,10 @@ public static partial class VideoOutExports
                         continue;
                     }
 
-                    var effectiveRefreshRate = (HostVideoHost.CurrentOptions.RefreshRate >= 60 || port.RefreshRate >= 119)
-                        ? 120u
-                        : port.RefreshRate;
+                    var targetRate = HostVideoHost.CurrentOptions.RefreshRate > 0
+                        ? (uint)HostVideoHost.CurrentOptions.RefreshRate
+                        : 60u;
+                    var effectiveRefreshRate = port.RefreshRate >= 119 ? Math.Max(120u, targetRate) : targetRate;
                     port.DisplayClock.Advance(now, effectiveRefreshRate);
                     next = Math.Min(next, port.DisplayClock.NextTimestamp(effectiveRefreshRate));
                     if (port.DisplayClock.Count <= port.PublishedVblankCount) continue;
@@ -1717,8 +1718,8 @@ public static partial class VideoOutExports
 
     private static long _lastFlipPacingTimestamp;
 
-    // CPU submissions use the same per-port eligibility rules as queued GPU flips.
-    private static bool PaceFlip(int handle, int flipMode)
+    // CPU submissions and GPU command stream flips use the same pacing rules.
+    internal static bool PaceFlip(int handle, int flipMode)
     {
         if (_flipPacingDisabled)
         {
@@ -1728,8 +1729,10 @@ public static partial class VideoOutExports
         int flipRate = 0;
         lock (_stateGate)
         {
-            if (!_ports.TryGetValue(handle, out var port)) return false;
-            flipRate = port.FlipRate;
+            if (_ports.TryGetValue(handle, out var port))
+            {
+                flipRate = port.FlipRate;
+            }
         }
 
         var targetFps = HostVideoHost.CurrentOptions.RefreshRate > 0 
