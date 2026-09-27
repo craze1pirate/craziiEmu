@@ -2742,4 +2742,26 @@ public static class KernelPthreadCompatExports
 
         return addresses.Count == 0 ? null : addresses;
     }
+
+    internal static void DumpActiveMutexes(Action<string> log)
+    {
+        foreach (var pair in _mutexStates)
+        {
+            var state = pair.Value;
+            var owner = state.OwnerThreadId;
+            var recursion = state.RecursionCount;
+            var waiterCount = state.QueuedWaiterCount;
+            if (owner != 0 || recursion != 0 || waiterCount != 0)
+            {
+                log($"[LOADER][ERROR]   Active mutex: addr=0x{pair.Key:X16} owner=0x{owner:X16} recursion={recursion} waiters={waiterCount} type={state.Type}");
+                lock (state.SyncRoot)
+                {
+                    foreach (var waiter in state.Waiters)
+                    {
+                        log($"[LOADER][ERROR]     Waiter: thread=0x{waiter.ThreadId:X16} coop={waiter.Cooperative} wakeKey='{waiter.WakeKey}'");
+                    }
+                }
+            }
+        }
+    }
 }

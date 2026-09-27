@@ -256,6 +256,14 @@ internal static unsafe partial class VulkanVideoPresenter
             {
                 _renderResolutionScale = _videoOptions.ResolutionScale;
             }
+            else if (double.TryParse(
+                Environment.GetEnvironmentVariable("CRAZIIEMU_RENDER_SCALE"),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var envScale) && envScale > 0 && envScale <= 4.0)
+            {
+                _renderResolutionScale = envScale;
+            }
 
             var targetWidth = _videoOptions.Width > 0 ? (int)_videoOptions.Width : (int)DefaultWindowWidth;
             var targetHeight = _videoOptions.Height > 0 ? (int)_videoOptions.Height : (int)DefaultWindowHeight;

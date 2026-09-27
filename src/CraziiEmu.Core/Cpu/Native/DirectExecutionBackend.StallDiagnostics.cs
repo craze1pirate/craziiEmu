@@ -2,9 +2,11 @@
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using System.IO;
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Iced.Intel;
 using Microsoft.Win32.SafeHandles;
 
 namespace CraziiEmu.Core.Cpu.Native;
@@ -103,7 +105,8 @@ public sealed unsafe partial class DirectExecutionBackend
         ReadCtxU64(contextRecord, 136), ReadCtxU64(contextRecord, 168), ReadCtxU64(contextRecord, 176),
         ReadCtxU64(contextRecord, 184), ReadCtxU64(contextRecord, 192), ReadCtxU64(contextRecord, 200),
         ReadCtxU64(contextRecord, 208), ReadCtxU64(contextRecord, 216), ReadCtxU64(contextRecord, 224),
-        ReadCtxU64(contextRecord, 232), ReadCtxU64(contextRecord, 240));
+        ReadCtxU64(contextRecord, 232), ReadCtxU64(contextRecord, 240),
+        ReadCtxU32(contextRecord, 68));
 
     internal static byte[] BuildThreadContextCaptureCode(nint suspendAddress, nint contextAddress, nint resumeAddress)
     {
@@ -137,47 +140,105 @@ public sealed unsafe partial class DirectExecutionBackend
         if (!TryCaptureThreadContext(Volatile.Read(ref _mainExecutionThreadHandle), out var context)) return;
 
         Console.Error.WriteLine($"[LOADER][ERROR] Live hardware context (main thread {context.ThreadId}):");
-        Console.Error.WriteLine($"[LOADER][ERROR]   RIP=0x{context.Rip:X16} RSP=0x{context.Rsp:X16} RBP=0x{context.Rbp:X16}");
+        Console.Error.WriteLine($"[LOADER][ERROR]   RIP=0x{context.Rip:X16}{ResolveHostAddressInfo(context.Rip)} RSP=0x{context.Rsp:X16} RBP=0x{context.Rbp:X16} RFLAGS=0x{context.EFlags:X8}");
         Console.Error.WriteLine($"[LOADER][ERROR]   RAX=0x{context.Rax:X16} RBX=0x{context.Rbx:X16} RCX=0x{context.Rcx:X16} RDX=0x{context.Rdx:X16}");
         Console.Error.WriteLine($"[LOADER][ERROR]   RSI=0x{context.Rsi:X16} RDI=0x{context.Rdi:X16} R8=0x{context.R8:X16} R9=0x{context.R9:X16}");
         Console.Error.WriteLine($"[LOADER][ERROR]   R10=0x{context.R10:X16} R11=0x{context.R11:X16} R12=0x{context.R12:X16} R13=0x{context.R13:X16} R14=0x{context.R14:X16} R15=0x{context.R15:X16}");
 
-        var modules = Array.Empty<(ulong Start, ulong Size, string Name)>();
-        try
+        if (context.R13 != 0 &&
+            TryReadDiagnosticHostQword(context.R13, out ulong pExceptionRecord) &&
+            TryReadDiagnosticHostQword(context.R13 + 8, out ulong pContextRecord) &&
+            pExceptionRecord != 0)
         {
-            using var process = Process.GetCurrentProcess();
-            modules = process.Modules.Cast<ProcessModule>().Select(module =>
-                (Start: unchecked((ulong)module.BaseAddress), Size: (ulong)module.ModuleMemorySize, Name: module.ModuleName)).ToArray();
-        }
-        catch (Win32Exception) { }
-        catch (InvalidOperationException) { }
-        string DescribeAddress(ulong address)
-        {
-            foreach (var module in modules)
-                if (address >= module.Start && address - module.Start < module.Size)
-                    return $"{module.Name}+0x{address - module.Start:X}";
-            return $"0x{address:X16}";
+            uint excCode = 0;
+            if (TryReadDiagnosticHostQword(pExceptionRecord, out ulong excRecordWord0))
+            {
+                excCode = unchecked((uint)excRecordWord0);
+            }
+            TryReadDiagnosticHostQword(pExceptionRecord + 16, out ulong excAddress);
+            ulong faultRip = 0, faultRsp = 0;
+            if (pContextRecord != 0)
+            {
+                TryReadDiagnosticHostQword(pContextRecord + 248, out faultRip);
+                TryReadDiagnosticHostQword(pContextRecord + 152, out faultRsp);
+            }
+            Console.Error.WriteLine($"[LOADER][ERROR] Stall VEH exception: code=0x{excCode:X8} addr=0x{excAddress:X16} rip=0x{faultRip:X16}{ResolveHostAddressInfo(faultRip)} rsp=0x{faultRsp:X16}");
         }
 
-        Console.Error.WriteLine($"[LOADER][ERROR]   RIP location: {DescribeAddress(context.Rip)}");
-        // The thread has resumed. These bytes are best-effort observations, not an atomic snapshot.
-        var instructionBytes = new byte[48];
-        if (context.Rip >= 32 && TryReadHostBytes(context.Rip - 32, instructionBytes))
-            Console.Error.WriteLine($"[LOADER][ERROR]   Live bytes @[RIP-32..RIP+16]: {Convert.ToHexString(instructionBytes)}");
-        var currentInstruction = new byte[16];
-        if (TryReadHostBytes(context.Rip, currentInstruction))
-            Console.Error.WriteLine($"[LOADER][ERROR]   Live bytes @RIP: {Convert.ToHexString(currentInstruction)}");
-
-        Console.Error.WriteLine("[LOADER][ERROR]   Live stack pointer candidates:");
-        for (var offset = 0; offset < 256; offset += sizeof(ulong))
+        ulong disasmStartRip = context.Rip >= 48 ? context.Rip - 48 : context.Rip;
+        byte[] disasmBytes = new byte[128];
+        if (TryReadHostBytes(disasmStartRip, disasmBytes))
         {
-            var address = context.Rsp + (ulong)offset;
-            if (address < context.Rsp || !TryReadDiagnosticHostQword(address, out var value)) break;
-            if (value != 0)
-                Console.Error.WriteLine($"[LOADER][ERROR]     [rsp+0x{offset:X2}] = 0x{value:X16} ({DescribeAddress(value)})");
+            Console.Error.WriteLine($"[LOADER][ERROR] Stall main-thread disasm window [0x{disasmStartRip:X16}..0x{disasmStartRip + 128:X16}]:");
+            var reader = new ByteArrayCodeReader(disasmBytes);
+            var decoder = Decoder.Create(64, reader);
+            decoder.IP = disasmStartRip;
+            var formatter = new NasmFormatter();
+            var output = new StringOutput();
+            while (decoder.IP < disasmStartRip + 128)
+            {
+                var inst = decoder.Decode();
+                if (inst.IsInvalid) break;
+                output.Reset();
+                formatter.Format(inst, output);
+                string marker = inst.IP == context.Rip ? " <--- STALL RIP" : "";
+                Console.Error.WriteLine($"[LOADER][ERROR]     0x{inst.IP:X16}: {output}{marker}");
+                if (inst.IP > context.Rip + 48) break;
+            }
+        }
+
+        if (context.Rsp != 0)
+        {
+            Console.Error.WriteLine("[LOADER][ERROR] Stall main-thread stack:");
+            for (var offset = 0; offset < 64 * 8; offset += sizeof(ulong))
+            {
+                var address = context.Rsp + (ulong)offset;
+                if (address < context.Rsp || !TryReadDiagnosticHostQword(address, out var value)) break;
+                if (value != 0)
+                {
+                    Console.Error.WriteLine($"[LOADER][ERROR]     [rsp+0x{offset:X2}] = 0x{value:X16}{ResolveHostAddressInfo(value)}");
+                }
+            }
         }
     }
 
+    private static string ResolveHostAddressInfo(ulong address)
+    {
+        if (address >= 0x0000000800000000UL && address < 0x0000000810000000UL)
+        {
+            return $" (eboot+0x{address - 0x0000000800000000UL:X})";
+        }
+        if (address >= 0x0000700000000000UL && address < 0x0000700010000000UL)
+        {
+            return $" (import_stub+0x{address - 0x0000700000000000UL:X})";
+        }
+        try
+        {
+            if (Win32GetModuleHandleExW(6u /* GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT */, (nint)address, out var hModule) && hModule != 0)
+            {
+                char[] nameBuf = new char[260];
+                uint len = Win32GetModuleFileNameW(hModule, nameBuf, (uint)nameBuf.Length);
+                if (len > 0)
+                {
+                    string fullPath = new string(nameBuf, 0, (int)len);
+                    string fileName = Path.GetFileName(fullPath);
+                    ulong offset = address - unchecked((ulong)hModule.ToInt64());
+                    return $" ({fileName}+0x{offset:X})";
+                }
+            }
+        }
+        catch
+        {
+        }
+        return string.Empty;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetModuleHandleExW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool Win32GetModuleHandleExW(uint dwFlags, nint lpModuleName, out nint phModule);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetModuleFileNameW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint Win32GetModuleFileNameW(nint hModule, [Out] char[] lpFilename, uint nSize);
+
     [DllImport("kernel32.dll")]
     private static extern uint GetThreadId(nint threadHandle);
-}
+}

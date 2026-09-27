@@ -758,6 +758,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private volatile bool _readyDispatchStop;
 
 	private Thread? _readyDispatchThread;
+	private int _readyDispatchHostThreadId;
 
 	private GCHandle _selfHandle;
 
@@ -886,7 +887,8 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		ulong R12,
 		ulong R13,
 		ulong R14,
-		ulong R15)
+		ulong R15,
+		uint EFlags = 0)
 	{
 		public bool IsValid => ThreadId != 0;
 	}
@@ -1205,6 +1207,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_stallWatchdogTriggered = 0;
 		_stallWatchdogStop = false;
 		_readyDispatchStop = false;
+		_readyDispatchHostThreadId = 0;
 		_patchedEa020eLookupCall = false;
 		MarkExecutionProgress();
 		BindTlsBase(context);
@@ -6675,11 +6678,13 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private static int GetStallWatchdogSeconds()
 	{
-		if (int.TryParse(Environment.GetEnvironmentVariable("SHARPEMU_STALL_WATCHDOG_SECONDS"), out var result))
+		var env = Environment.GetEnvironmentVariable("CRAZIIEMU_STALL_WATCHDOG_SECONDS") ??
+			Environment.GetEnvironmentVariable("SHARPEMU_STALL_WATCHDOG_SECONDS");
+		if (int.TryParse(env, out var result))
 		{
 			return Math.Max(0, result);
 		}
-		return 20;
+		return 30;
 	}
 
 
@@ -6712,10 +6717,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		dispatcherThread.Start();
 
 		long num = (long)((double)stallWatchdogSeconds * Stopwatch.Frequency);
-		int periodicSnapshotSeconds =
-			int.TryParse(Environment.GetEnvironmentVariable("SHARPEMU_PERIODIC_SNAPSHOT_SECONDS"), out var pss)
-				? Math.Max(0, pss)
-				: 0;
+		var pssEnv = Environment.GetEnvironmentVariable("CRAZIIEMU_PERIODIC_SNAPSHOT_SECONDS") ??
+			Environment.GetEnvironmentVariable("SHARPEMU_PERIODIC_SNAPSHOT_SECONDS");
+		int periodicSnapshotSeconds = int.TryParse(pssEnv, out var pss) ? Math.Max(0, pss) : 0;
 		long periodicSnapshotTicks = (long)((double)periodicSnapshotSeconds * Stopwatch.Frequency);
 		long lastPeriodicSnapshot = Stopwatch.GetTimestamp();
 		_stallWatchdogThread = new Thread(new ThreadStart(delegate
@@ -6819,7 +6823,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			return nid is
 				"Op8TBGY5KHg" or // pthread_cond_wait
 				"27bAgiJmOh0" or // pthread_cond_timedwait
-				"fzyMKs9kim0";   // sceKernelWaitEqueue
+				"fzyMKs9kim0" or // sceKernelWaitEqueue
+				"Zxa0VhQVTsk" or // sceKernelWaitSema
+				"onNY9Byn-W8";   // scePthreadJoin
 		}
 
 		return false;
@@ -6861,6 +6867,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_readyDispatchStop = false;
 		_readyDispatchThread = new Thread(new ThreadStart(delegate
 		{
+			Volatile.Write(ref _readyDispatchHostThreadId, unchecked((int)GetCurrentThreadId()));
 			while (!_readyDispatchStop)
 			{
 				GuestThreadState? readyThread;
@@ -6915,6 +6922,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			_readyDispatchStop = true;
 			Monitor.PulseAll(_guestThreadGate);
 		}
+		Volatile.Write(ref _readyDispatchHostThreadId, 0);
 		Thread? readyDispatchThread = _readyDispatchThread;
 		if (readyDispatchThread == null)
 		{
@@ -7070,7 +7078,44 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				Console.Error.WriteLine($"[LOADER][ERROR] Stall stack: [rsp]=0x{value:X16} [rsp+8]=0x{value2:X16}");
 			}
 
+			var trace = _recentImportTrace;
+			if (trace != null && _recentImportTraceCount > 0)
+			{
+				Console.Error.WriteLine($"[LOADER][ERROR] Recent imports ({_recentImportTraceCount}):");
+				int traceStart = (_recentImportTraceWriteIndex - _recentImportTraceCount + trace.Length) % trace.Length;
+				for (int i = 0; i < _recentImportTraceCount; i++)
+				{
+					int idx = (traceStart + i) % trace.Length;
+					var entry = trace[idx];
+					if (!string.IsNullOrEmpty(entry.Nid))
+					{
+						var exportName = _moduleManager.TryGetExport(entry.Nid, out var exp)
+							? $"{exp.LibraryName}:{exp.Name}"
+							: entry.Nid;
+						Console.Error.WriteLine(
+							$"[LOADER][ERROR]   #{entry.DispatchIndex}: {exportName} ({entry.Nid}) ret=0x{entry.ReturnRip:X16} " +
+							$"rdi=0x{entry.Arg0:X16} rsi=0x{entry.Arg1:X16} rdx=0x{entry.Arg2:X16}");
+					}
+				}
+			}
+
 			LogMainThreadStallContext();
+
+			bool isGateEntered = Monitor.IsEntered(_guestThreadGate);
+			string? gateOwner = _gateOwnerSite;
+			int gateOwnerTid = Volatile.Read(ref _gateOwnerManagedThreadId);
+			long gateAcquireTime = Volatile.Read(ref _gateAcquireTimestamp);
+			long gateHoldMs = gateAcquireTime != 0 ? (Stopwatch.GetTimestamp() - gateAcquireTime) * 1000 / Stopwatch.Frequency : 0;
+			Console.Error.WriteLine($"[LOADER][ERROR] Stall gate status: entered={isGateEntered} owner_site='{gateOwner ?? "none"}' owner_managed_tid={gateOwnerTid} hold_ms={gateHoldMs}");
+
+			var readyTid = Volatile.Read(ref _readyDispatchHostThreadId);
+			if (readyTid != 0 && TryCaptureHostThreadContext(readyTid, out var readyCtx))
+			{
+				Console.Error.WriteLine($"[LOADER][ERROR] Stall ready-dispatch thread: tid={readyTid} rip=0x{readyCtx.Rip:X16}{ResolveHostAddressInfo(readyCtx.Rip)} rsp=0x{readyCtx.Rsp:X16}");
+			}
+
+			Console.Error.WriteLine("[LOADER][ERROR] Stall active mutexes:");
+			CraziiEmu.Libs.Kernel.KernelPthreadCompatExports.DumpActiveMutexes(Console.Error.WriteLine);
 			var threads = SnapshotGuestThreads();
 			if (threads.Length != 0)
 			{

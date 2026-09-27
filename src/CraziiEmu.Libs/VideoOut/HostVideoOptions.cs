@@ -72,6 +72,7 @@ public sealed record HostVideoOptions
     {
         Width = Math.Clamp(Width, 640, 16384),
         Height = Math.Clamp(Height, 360, 16384),
+        ResolutionScale = ResolutionScale > 0f ? Math.Clamp(ResolutionScale, 0.25f, 4.0f) : 1.0f,
         DisplayIndex = Math.Max(0, DisplayIndex),
         RefreshRate = Math.Clamp(RefreshRate, 0, 1000),
         HdrMode = Enum.IsDefined(HdrMode) ? HdrMode : HostHdrMode.Auto,

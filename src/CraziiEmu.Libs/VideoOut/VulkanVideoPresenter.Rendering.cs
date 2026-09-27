@@ -496,11 +496,26 @@ internal static unsafe partial class VulkanVideoPresenter
         {
             using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.DrawDynamicStateRecording);
             var command = BeginBatchedGuestCommands();
-            var viewport = new Viewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight, state.ViewportMinDepth, state.ViewportMaxDepth);
+            var scale = (float)_renderResolutionScale;
+            var viewport = scale == 1.0f
+                ? new Viewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight, state.ViewportMinDepth, state.ViewportMaxDepth)
+                : new Viewport(
+                    state.ViewportX * scale,
+                    state.ViewportY * scale,
+                    Math.Max(1f, state.ViewportWidth * scale),
+                    Math.Max(1f, state.ViewportHeight * scale),
+                    state.ViewportMinDepth,
+                    state.ViewportMaxDepth);
             _vk.CmdSetViewport(command, 0, 1, &viewport);
-            var scissor = new Rect2D(
-                new Offset2D(state.Scissor.Left, state.Scissor.Top),
-                new Extent2D((uint)(state.Scissor.Right - state.Scissor.Left), (uint)(state.Scissor.Bottom - state.Scissor.Top)));
+            var scissor = scale == 1.0f
+                ? new Rect2D(
+                    new Offset2D(state.Scissor.Left, state.Scissor.Top),
+                    new Extent2D((uint)(state.Scissor.Right - state.Scissor.Left), (uint)(state.Scissor.Bottom - state.Scissor.Top)))
+                : new Rect2D(
+                    new Offset2D((int)Math.Round(state.Scissor.Left * scale), (int)Math.Round(state.Scissor.Top * scale)),
+                    new Extent2D(
+                        Math.Max(1u, (uint)Math.Round((state.Scissor.Right - state.Scissor.Left) * scale)),
+                        Math.Max(1u, (uint)Math.Round((state.Scissor.Bottom - state.Scissor.Top) * scale))));
             _vk.CmdSetScissor(command, 0, 1, &scissor);
             _vk.CmdSetLineWidth(command, state.LineWidth);
             var blendConstants = stackalloc float[4] { state.BlendRed, state.BlendGreen, state.BlendBlue, state.BlendAlpha };
