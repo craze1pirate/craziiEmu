@@ -1,3 +1,4 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -64,6 +65,9 @@ public static class OverlayRenderer
         double frametime = MetricsManager.Frametime.CurrentValue;
         double fps = MetricsManager.Fps.CurrentValue;
 
+        float maxFt = (float)Math.Max(33.3, Math.Ceiling(frametime / 16.6) * 16.6);
+        float maxFps = (float)Math.Max(120.0, Math.Ceiling(fps / 30.0) * 30.0);
+
         if (Mode == OverlayMode.Minimal)
         {
             DrawString(pixels, panelW, panelH, curX, curY, "Frame time".AsSpan(), ColorPink);
@@ -72,7 +76,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, 33.3f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, maxFt, ColorPink);
             curY += 28 + 6;
 
             DrawString(pixels, panelW, panelH, curX, curY, "Frames".AsSpan(), ColorPink);
@@ -81,7 +85,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, 120f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, maxFps, ColorPink);
         }
         else if (Mode == OverlayMode.Standard)
         {
@@ -91,7 +95,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, 33.3f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, maxFt, ColorPink);
             curY += 28 + 6;
 
             DrawString(pixels, panelW, panelH, curX, curY, "Frames".AsSpan(), ColorPink);
@@ -100,7 +104,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, 120f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, maxFps, ColorPink);
             curY += 28 + 16;
 
             DrawString(pixels, panelW, panelH, curX, curY, "GPU".AsSpan(), ColorGreen);
@@ -130,7 +134,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, 33.3f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, ftHistory, 0f, maxFt, ColorPink);
             curY += 28 + 6;
 
             DrawString(pixels, panelW, panelH, curX, curY, "Frames".AsSpan(), ColorPink);
@@ -139,7 +143,7 @@ public static class OverlayRenderer
             curY += lineH;
 
             DrawOutlineBox(pixels, panelW, panelH, curX, curY, innerW, 28, BoxBorderColor);
-            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, 120f, ColorPink);
+            DrawLineGraph(pixels, panelW, panelH, curX + 2, curY + 2, innerW - 4, 24, fpsHistory, 0f, maxFps, ColorPink);
             curY += 28 + 14;
 
             DrawString(pixels, panelW, panelH, curX, curY, "GPU".AsSpan(), ColorGreen);

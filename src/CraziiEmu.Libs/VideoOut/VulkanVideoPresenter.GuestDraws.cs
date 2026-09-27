@@ -26,8 +26,11 @@ internal static unsafe partial class VulkanVideoPresenter
         return (draws, ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency, pipelines, spirv);
     }
 
-    internal static void CountSpirvCompilation() =>
+    internal static void CountSpirvCompilation()
+    {
         Interlocked.Increment(ref _perfSpirvCompilations);
+        CraziiEmu.Libs.Metrics.MetricsManager.RecordSpirvCompilation();
+    }
 
     internal static ulong GetGuestImageByteCount(uint format, uint width, uint height)
     {

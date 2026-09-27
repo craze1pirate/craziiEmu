@@ -32,6 +32,7 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
             return false;
         }
 
+        Metrics.MetricsManager.RecordSpirvCompilation();
         shader = new VulkanCompiledGuestShader(compiled.Spirv);
         return true;
     }

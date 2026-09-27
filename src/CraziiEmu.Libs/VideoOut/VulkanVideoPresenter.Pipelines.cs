@@ -262,6 +262,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     Check(
                         _vk.CreateShaderModule(_device, &createInfo, null, out var module),
                         "vkCreateShaderModule");
+                    Metrics.MetricsManager.RecordSpirvCompilation();
                     return module;
                 }
             }

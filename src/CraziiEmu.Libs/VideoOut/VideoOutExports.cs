@@ -1715,38 +1715,52 @@ public static partial class VideoOutExports
         }
     }
 
+    private static long _lastFlipPacingTimestamp;
+
     // CPU submissions use the same per-port eligibility rules as queued GPU flips.
     private static bool PaceFlip(int handle, int flipMode)
     {
-        long? readyAt = null;
-        while (true)
+        if (_flipPacingDisabled)
         {
-            long target;
-            lock (_stateGate)
-            {
-                if (!_ports.TryGetValue(handle, out var port)) return false;
-                var now = Stopwatch.GetTimestamp();
-                readyAt ??= now;
-                if (_flipPacingDisabled ||
-                    HostVideoHost.CurrentOptions.VSync ||
-                    HostVideoHost.CurrentOptions.RefreshRate >= 60 ||
-                    port.VblankEvents.Count > 0 ||
-                    port.FlipEvents.Count > 0)
-                {
-                    port.LastCpuFlipTimestamp = now;
-                    return true;
-                }
-                var effectiveFlipRate = HostVideoHost.CurrentOptions.RefreshRate >= 60 ? 0 : port.FlipRate;
-                target = VideoOutDisplayClock.NextFlipTimestamp(port.OpenTimestamp, port.LastCpuFlipTimestamp,
-                    now, port.RefreshRate, effectiveFlipRate, flipMode, port.OutputHeight, port.WindowTop, port.WindowBottom, readyAt.Value);
-                if (target <= now)
-                {
-                    port.LastCpuFlipTimestamp = now;
-                    return true;
-                }
-            }
+            return true;
+        }
+
+        int flipRate = 0;
+        lock (_stateGate)
+        {
+            if (!_ports.TryGetValue(handle, out var port)) return false;
+            flipRate = port.FlipRate;
+        }
+
+        var targetFps = HostVideoHost.CurrentOptions.RefreshRate > 0 
+            ? HostVideoHost.CurrentOptions.RefreshRate 
+            : 60;
+
+        var refreshRate = flipRate switch
+        {
+            1 => Math.Min(30, targetFps / 2),
+            2 => Math.Min(20, targetFps / 3),
+            _ => targetFps,
+        };
+
+        var intervalTicks = Stopwatch.Frequency / refreshRate;
+        var now = Stopwatch.GetTimestamp();
+        var last = Interlocked.Read(ref _lastFlipPacingTimestamp);
+        var target = last + intervalTicks;
+        if (target <= now)
+        {
+            Interlocked.CompareExchange(ref _lastFlipPacingTimestamp, now, last);
+            return true;
+        }
+
+        var waitMilliseconds = (target - now) * 1000 / Stopwatch.Frequency;
+        if (waitMilliseconds is >= 0 and < 100)
+        {
             HostTiming.SleepUntil(target);
         }
+
+        Interlocked.CompareExchange(ref _lastFlipPacingTimestamp, target, last);
+        return true;
     }
 
     private static int RegisterBufferRange(VideoOutPortState port, int startIndex, ReadOnlySpan<ulong> addresses, BufferAttribute attribute, int requestedGroupIndex = -1)

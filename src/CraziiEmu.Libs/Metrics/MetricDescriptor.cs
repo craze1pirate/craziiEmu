@@ -1,3 +1,4 @@
+// Copyright (C) 2026 SharpEmu Emulator Project
 // Copyright (C) 2026 CraziiEmu Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -76,26 +77,21 @@ public class MetricDescriptor
         }
 
         var length = Math.Min(destination.Length, HistoryBuffer.Length);
-        if (_validSamples < HistoryBuffer.Length)
+        if (_validSamples < length)
         {
-            for (int i = 0; i < length; i++)
-            {
-                int srcIdx = (i * _validSamples) / length;
-                destination[i] = HistoryBuffer[srcIdx];
-            }
+            int empty = length - _validSamples;
+            destination.Slice(0, empty).Fill(HistoryBuffer[0]);
+            new ReadOnlySpan<float>(HistoryBuffer, 0, _validSamples).CopyTo(destination.Slice(empty));
             return;
         }
 
-        // Full ring buffer: copy older samples first, then newer samples
-        var tailLength = HistoryBuffer.Length - _historyIndex;
-        if (tailLength >= length)
+        // Full ring buffer: copy the most recent 'length' samples in chronological order
+        int startIdx = (_historyIndex - length + HistoryBuffer.Length) % HistoryBuffer.Length;
+        int firstChunk = Math.Min(length, HistoryBuffer.Length - startIdx);
+        new ReadOnlySpan<float>(HistoryBuffer, startIdx, firstChunk).CopyTo(destination);
+        if (firstChunk < length)
         {
-            new ReadOnlySpan<float>(HistoryBuffer, _historyIndex, length).CopyTo(destination);
-        }
-        else
-        {
-            new ReadOnlySpan<float>(HistoryBuffer, _historyIndex, tailLength).CopyTo(destination);
-            new ReadOnlySpan<float>(HistoryBuffer, 0, length - tailLength).CopyTo(destination.Slice(tailLength));
+            new ReadOnlySpan<float>(HistoryBuffer, 0, length - firstChunk).CopyTo(destination.Slice(firstChunk));
         }
     }
 }
